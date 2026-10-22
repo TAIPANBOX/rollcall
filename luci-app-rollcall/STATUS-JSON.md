@@ -25,7 +25,6 @@ in `root/usr/share/rpcd/acl.d/luci-app-rollcall.json`.
 | | `roles <name> sender\|primary\|backup\|none --json` | admin page |
 | | `admin takeover --json` | admin page, backup admin only |
 | | `admin confirm --json` | admin page, while a takeover is provisional |
-| | `admin recover <code> --json` | no page (see open points) |
 
 The admin group also carries the read entry, because the admin page reads the
 status too.
@@ -238,10 +237,11 @@ by the controller.
    admin group is shipped.
 2. The `env` parameter of rpcd `file.exec`, used by `set-token`, must be
    honoured by rpcd on 24.10 and 25.12. Confirm on hardware.
-3. `admin recover <code>` takes the recovery code as an argument, so the code
-   sits in the process list for the length of the call. The page does not offer
-   recover. The CLI should read the code from standard input, which is the
-   better form. Decide before any page offers recover.
+3. Recovery is CLI-only. Root on a router runs `rollcall admin recover` with the
+   recovery code. The LuCI ACL has no entry for it and no page offers it, so the
+   code never reaches rpcd or a LuCI request. Task 21 still decides how the CLI
+   reads the code; standard input is preferred over an argument, so the code
+   stays out of the process list.
 4. The admin group carries the read entry, so the admin page can read the
    status with that group alone. The parent menu item lists both groups. How
    LuCI treats several groups in one `depends` list (any one of them, or all)

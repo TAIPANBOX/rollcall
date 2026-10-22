@@ -29,8 +29,7 @@
 				"/usr/bin/rollcall roles * backup --json": [ "exec" ],
 				"/usr/bin/rollcall roles * none --json": [ "exec" ],
 				"/usr/bin/rollcall admin takeover --json": [ "exec" ],
-				"/usr/bin/rollcall admin confirm --json": [ "exec" ],
-				"/usr/bin/rollcall admin recover * --json": [ "exec" ]
+				"/usr/bin/rollcall admin confirm --json": [ "exec" ]
 			}
 		}
 	}
