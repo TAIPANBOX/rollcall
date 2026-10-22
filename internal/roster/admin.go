@@ -13,32 +13,40 @@ import (
 const TakeoverAfter = 10 * time.Minute
 
 // Prefer returns the one of two rosters of a split group that every member
-// keeps once the split heals (spec 6.1): the higher version; at equal
-// version the one signed with the higher authority, the recovery key, then
-// the primary, then a backup, then anyone else; at equal authority the one
-// whose Hash is lower, compared byte by byte.
+// keeps once the split heals: the one whose signer has the higher
+// authority, the recovery key, then the primary, then a backup, then anyone
+// else; at equal authority the higher version; at equal version the one
+// whose Hash is lower, compared byte by byte. Authority comes before the
+// version so that a side cannot win by making more rosters: a backup that
+// takes over during a split and then signs version after version still
+// loses to a single change by the live primary once the network heals.
+// This refines spec 6.1, which put the version first.
 //
-// a and b must each have been verified, link by link, from common, and ra
-// and rb are the rosters Verify returned for them. common is the last roster
-// both chains contain, the one before the split. Authority is the signer's
-// place in common.Admins, Admins[0] the primary and the rest backups, not
-// its place in ra or rb: a backup that took over during the split still
-// ranks as the backup, and a member made admin on one side only ranks below
-// both admins.
+// a and b are the tips of two branches that leave common, the last roster
+// both chains contain, and neither branch contains the other; each must have
+// been verified link by link from common, and ra and rb are the rosters
+// Verify returned for them. When one chain merely extends the other there
+// is nothing to settle: Verify accepts the extension link by link, and
+// Prefer must not be asked, since it could keep the older tip.
+//
+// Authority is the place of each tip's signer in common.Admins, Admins[0]
+// the primary and the rest backups, not its place in ra or rb: a backup that
+// took over during the split still ranks as the backup, and a member made
+// admin on one side only ranks below both admins.
 //
 // Prefer orders rosters one way: Prefer(a, b, ra, rb, common) and
 // Prefer(b, a, rb, ra, common) return the same roster, and folding Prefer
 // over any number of candidates picks the same one in every order. It
 // returns a or b as given, a when they are equal.
 func Prefer(a, b Signed, ra, rb, common Roster) Signed {
-	if ra.Version != rb.Version {
-		if ra.Version > rb.Version {
+	if wa, wb := authority(a, common), authority(b, common); wa != wb {
+		if wa > wb {
 			return a
 		}
 		return b
 	}
-	if wa, wb := authority(a, common), authority(b, common); wa != wb {
-		if wa > wb {
+	if ra.Version != rb.Version {
+		if ra.Version > rb.Version {
 			return a
 		}
 		return b

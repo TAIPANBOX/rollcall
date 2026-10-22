@@ -656,25 +656,67 @@ func outranks(t *testing.T, what string, variant func(k int) candidate, loser ca
 	t.Fatalf("%s: no variant with the higher hash in 64 tries", what)
 }
 
-// TestPreferVersion is the brief's test: the higher version wins whatever
-// the authority of the signers.
+// chainOf extends from (carried by fromS) by n versions, each signed by
+// who, and returns the tip.
+func chainOf(t *testing.T, name string, from Roster, fromS Signed, who *party, n int) candidate {
+	t.Helper()
+	tip := candidate{name, fromS, from}
+	for i := 0; i < n; i++ {
+		tip = forkOf(t, name, tip.r, tip.s, who, i, nil)
+	}
+	return tip
+}
+
+// TestPreferAuthorityBeatsVersion is the split the ordering exists for: the
+// network splits after version n; the primary makes one change on its side
+// (tip n+1), the backup takes over on its side and keeps signing (tip n+5).
+// Once the network heals the primary's branch wins: a side cannot win by
+// making more rosters. The recovery key beats both, whatever the versions.
+func TestPreferAuthorityBeatsVersion(t *testing.T) {
+	c := newTakeoverChain(t)
+	P, B := c.P, c.B
+	n := c.r1.Version
+	primary := forkOf(t, "primary's tip", c.r1, c.s1, &P, 0, nil)
+	backup := chainOf(t, "backup's takeover tip", c.t2, c.st2, &B, 4)
+	if primary.r.Version != n+1 || backup.r.Version != n+5 || !backup.r.Takeover {
+		t.Fatalf("fixture: primary at %d, backup at %d (takeover %v); want n+1 and n+5 with n = %d",
+			primary.r.Version, backup.r.Version, backup.r.Takeover, n)
+	}
+	preferBoth(t, "primary's tip at n+1 over the backup's takeover tip at n+5", primary, backup, c.r1, primary)
+
+	far := chainOf(t, "backup far ahead", backup.r, backup.s, &B, 20)
+	preferBoth(t, "primary's tip at n+1 over the backup's tip at n+25", primary, far, c.r1, primary)
+
+	rec := forkOf(t, "recovery tip", c.r1, c.s1, nil, 0, nil)
+	ahead := chainOf(t, "primary's tip at n+4", primary.r, primary.s, &P, 3)
+	preferBoth(t, "recovery at n+1 over the backup at n+5", rec, backup, c.r1, rec)
+	preferBoth(t, "recovery at n+1 over the backup at n+25", rec, far, c.r1, rec)
+	preferBoth(t, "recovery at n+1 over the primary at n+4", rec, ahead, c.r1, rec)
+}
+
+// TestPreferVersion is the brief's version test under the ruled order: at
+// equal authority the higher version wins, even when it has the higher
+// hash.
 func TestPreferVersion(t *testing.T) {
 	c := newTakeoverChain(t)
 	P, B := c.P, c.B
-	a2 := forkOf(t, "primary v2", c.r1, c.s1, &P, 0, nil)
-	a3 := forkOf(t, "primary v3", a2.r, a2.s, &P, 0, nil)
-	b2 := forkOf(t, "backup v2", c.r1, c.s1, &B, 0, nil)
-	b3 := forkOf(t, "backup v3", b2.r, b2.s, &B, 0, nil)
-	rec2 := forkOf(t, "recovery v2", c.r1, c.s1, nil, 0, nil)
-	t3 := forkOf(t, "backup v3 after its takeover", c.t2, c.st2, &B, 0, nil)
-
-	preferBoth(t, "primary's v3 over backup's v2", a3, b2, c.r1, a3)
-	preferBoth(t, "backup's v3 over primary's v2", b3, a2, c.r1, b3)
-	preferBoth(t, "backup's v3 over recovery v2", b3, rec2, c.r1, b3)
-	preferBoth(t, "backup's v3 after a takeover over primary's v2", t3, a2, c.r1, t3)
+	a2 := forkOf(t, "primary v2", c.r1, c.s1, &P, 100, nil)
+	outranks(t, "primary's v3 over primary's v2", func(k int) candidate {
+		x2 := forkOf(t, "primary v2'", c.r1, c.s1, &P, 200, nil)
+		return forkOf(t, "primary v3", x2.r, x2.s, &P, k, nil)
+	}, a2, c.r1)
+	b2 := forkOf(t, "backup v2", c.r1, c.s1, &B, 100, nil)
+	outranks(t, "backup's v3 after its takeover over backup's v2", func(k int) candidate {
+		return forkOf(t, "backup v3 after its takeover", c.t2, c.st2, &B, k, nil)
+	}, b2, c.r1)
+	r2 := forkOf(t, "recovery v2", c.r1, c.s1, nil, 100, nil)
+	outranks(t, "recovery v3 over recovery v2", func(k int) candidate {
+		x2 := forkOf(t, "recovery v2'", c.r1, c.s1, nil, 200, nil)
+		return forkOf(t, "recovery v3", x2.r, x2.s, nil, k, nil)
+	}, r2, c.r1)
 
 	// Versions far apart compare as numbers, not through a difference.
-	lo, hi := a2, b2
+	lo, hi := a2, forkOf(t, "primary v2 again", c.r1, c.s1, &P, 300, nil)
 	lo.r.Version, hi.r.Version = 1, math.MaxUint64
 	lo.name, hi.name = "version 1", "version MaxUint64"
 	preferBoth(t, "MaxUint64 over 1", lo, hi, c.r1, hi)
@@ -741,19 +783,19 @@ func TestPreferHashAtEqualAuthority(t *testing.T) {
 
 // TestPreferIsAnOrder folds Prefer over the candidates of a split in many
 // orders: every member must reach the same winner whatever order its copies
-// arrived in, and that winner is the first by (version down, authority down,
-// hash up), computed here without the package. The top version has two
-// forks by the primary, so the hash decides the winner.
+// arrived in, and that winner is the first by (authority down, version down,
+// hash up), computed here without the package. The candidates carry no
+// recovery signature, which would win outright: the primary's forks win on
+// authority, its two at the top version are split by the hash.
 func TestPreferIsAnOrder(t *testing.T) {
 	c := newTakeoverChain(t)
 	P, B, O := c.P, c.B, c.O
 	a2 := forkOf(t, "a2", c.r1, c.s1, &P, 0, nil)
 	x2 := forkOf(t, "x2", c.r1, c.s1, &P, 1, nil)
 	b2 := forkOf(t, "b2", c.r1, c.s1, &B, 0, nil)
-	rec2 := forkOf(t, "rec2", c.r1, c.s1, nil, 0, nil)
 	q2 := forkOf(t, "q2", c.r1, c.s1, &P, 2, func(r *Roster) { setAdmins(r, P.ID, O.ID) })
 	cands := []candidate{
-		a2, x2, b2, rec2, q2, {"t2", c.st2, c.t2},
+		a2, x2, b2, q2, {"t2", c.st2, c.t2},
 		forkOf(t, "a3", a2.r, a2.s, &P, 0, nil),
 		forkOf(t, "t3", c.t2, c.st2, &B, 0, nil),
 		forkOf(t, "q3", q2.r, q2.s, &O, 0, nil),
@@ -772,11 +814,11 @@ func TestPreferIsAnOrder(t *testing.T) {
 		return 0
 	}
 	before := func(x, y candidate) bool {
-		if x.r.Version != y.r.Version {
-			return x.r.Version > y.r.Version
-		}
 		if rank(x.s) != rank(y.s) {
 			return rank(x.s) > rank(y.s)
+		}
+		if x.r.Version != y.r.Version {
+			return x.r.Version > y.r.Version
 		}
 		return !higherHash(x.s, y.s)
 	}
