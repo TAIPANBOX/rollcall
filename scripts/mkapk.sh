@@ -85,7 +85,9 @@ if [ "$PKG" = rollcall ]; then
 	install -m 0755 "$FILES/etc/hotplug.d/iface/50-rollcall" "$DATA/etc/hotplug.d/iface/50-rollcall"
 	install -m 0644 "$FILES/etc/config/rollcall"             "$DATA/etc/config/rollcall"
 	install -m 0755 "$FILES/etc/uci-defaults/90-rollcall"    "$DATA/etc/uci-defaults/90-rollcall"
-	install -m 0644 "$FILES/etc/seccomp/rollcall.json"       "$DATA/etc/seccomp/rollcall.json"
+	# One profile per architecture, generated from packaging/seccomp: never the same file twice.
+	sh "$ROOT/packaging/seccomp/generate.sh" "$ARCH" > "$BUILD/rollcall.seccomp.json"
+	install -m 0644 "$BUILD/rollcall.seccomp.json" "$DATA/etc/seccomp/rollcall.json"
 	install -m 0644 "$FILES/etc/capabilities/rollcall.json"  "$DATA/etc/capabilities/rollcall.json"
 	install -m 0644 "$FILES/lib/upgrade/keep.d/rollcall"     "$DATA/lib/upgrade/keep.d/rollcall"
 else

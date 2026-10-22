@@ -15,8 +15,15 @@ start_service() {
 	config_load rollcall
 	config_get_bool icmp main icmp 0
 
+	# The control socket lives in its own directory, made here as root before the jail is built.
+	# Group write is needed: the daemon runs as rollcall and creates control.sock in it. The path
+	# is the constant ControlSocketPath in packaging/README.md.
+	mkdir -p /var/run/rollcall
+	chown root:rollcall /var/run/rollcall
+	chmod 0770 /var/run/rollcall
+
 	procd_open_instance
-	procd_set_param command "$DAEMON" -config /etc/config/rollcall -state /etc/rollcall -run /tmp/rollcall
+	procd_set_param command "$DAEMON" -config /etc/config/rollcall -state /etc/rollcall -run /var/run/rollcall
 	procd_set_param user rollcall
 	procd_set_param group rollcall
 	procd_set_param no_new_privs 1
@@ -29,7 +36,7 @@ start_service() {
 		procd_set_param capabilities /etc/capabilities/rollcall.json
 	fi
 	procd_add_jail rollcall log requirejail
-	procd_add_jail_mount_rw /etc/rollcall /tmp/rollcall
+	procd_add_jail_mount_rw /etc/rollcall /tmp/rollcall /var/run/rollcall
 	procd_add_jail_mount /etc/config/rollcall /etc/config/firewall /etc/config/system /etc/openwrt_release /etc/ssl/certs /usr/share/zoneinfo
 	procd_close_instance
 }

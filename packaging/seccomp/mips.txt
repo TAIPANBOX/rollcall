@@ -1,0 +1,7 @@
+# MIPS (o32) only: the 32-bit legacy names. Written from the o32 syscall table, not yet proven on
+# MIPS hardware. The 32-bit uid calls are left out because o32 does not list them.
+_llseek
+fcntl64
+fstat64
+mmap2
+newfstatat

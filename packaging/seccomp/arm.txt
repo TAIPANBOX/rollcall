@@ -1,0 +1,14 @@
+# 32-bit ARM only: the legacy names that the 32-bit ABI uses where the 64-bit names above do not
+# exist. Written from the ARM syscall table, not yet proven on ARM hardware.
+_llseek
+clock_gettime64
+fcntl64
+fstat64
+fstatat64
+getegid32
+geteuid32
+getgid32
+getuid32
+mmap2
+sigreturn
+ugetrlimit
