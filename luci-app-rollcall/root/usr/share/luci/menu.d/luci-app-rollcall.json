@@ -1,0 +1,24 @@
+{
+	"admin/services/rollcall": {
+		"title": "rollcall",
+		"order": 63,
+		"action": { "type": "firstchild" },
+		"depends": {
+			"acl": [ "luci-app-rollcall", "luci-app-rollcall-admin" ]
+		}
+	},
+
+	"admin/services/rollcall/status": {
+		"title": "Status",
+		"order": 1,
+		"action": { "type": "view", "path": "rollcall/status" },
+		"depends": { "acl": [ "luci-app-rollcall" ] }
+	},
+
+	"admin/services/rollcall/admin": {
+		"title": "Admin",
+		"order": 2,
+		"action": { "type": "view", "path": "rollcall/admin" },
+		"depends": { "acl": [ "luci-app-rollcall-admin" ] }
+	}
+}

@@ -1,0 +1,37 @@
+{
+	"luci-app-rollcall": {
+		"description": "Read rollcall status: members, roles, sender, recent reports, sandbox and storage state",
+		"read": {
+			"file": {
+				"/usr/bin/rollcall status --json": [ "exec" ]
+			}
+		}
+	},
+
+	"luci-app-rollcall-admin": {
+		"description": "Change the rollcall group: invite, remove, roles, rotate, Telegram token and chat, admin takeover",
+		"read": {
+			"comment": "the admin page also reads the status, so the admin group carries the same read entry",
+			"file": {
+				"/usr/bin/rollcall status --json": [ "exec" ]
+			}
+		},
+		"write": {
+			"comment": "each entry is one exact command form; * stands only for a router name or a role, which the daemon checks again",
+			"file": {
+				"/usr/bin/rollcall invite --json": [ "exec" ],
+				"/usr/bin/rollcall remove * --json": [ "exec" ],
+				"/usr/bin/rollcall rotate --json": [ "exec" ],
+				"/usr/bin/rollcall set-token --json": [ "exec" ],
+				"/usr/bin/rollcall bind-telegram --json": [ "exec" ],
+				"/usr/bin/rollcall roles * sender --json": [ "exec" ],
+				"/usr/bin/rollcall roles * primary --json": [ "exec" ],
+				"/usr/bin/rollcall roles * backup --json": [ "exec" ],
+				"/usr/bin/rollcall roles * none --json": [ "exec" ],
+				"/usr/bin/rollcall admin takeover --json": [ "exec" ],
+				"/usr/bin/rollcall admin confirm --json": [ "exec" ],
+				"/usr/bin/rollcall admin recover * --json": [ "exec" ]
+			}
+		}
+	}
+}
