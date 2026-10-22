@@ -98,7 +98,7 @@ func confirmedBy(agree, disagree []ids.MemberID) string {
 func wantConfirmations(t *testing.T, l *Log, ref ids.Hash, agree, disagree []ids.MemberID) {
 	t.Helper()
 	for i := 0; i < 20; i++ {
-		a, d := Confirmations(l, ref)
+		a, d := Confirmations(l, ref, anyMember)
 		if !slices.Equal(a, agree) || !slices.Equal(d, disagree) {
 			t.Fatalf("call %d: Confirmations = agree %v, disagree %v; want agree %v, disagree %v", i, a, d, agree, disagree)
 		}
@@ -110,9 +110,25 @@ func wantConfirmations(t *testing.T, l *Log, ref ids.Hash, agree, disagree []ids
 func wantCorrections(t *testing.T, l *Log, ref ids.Hash, want []Entry) {
 	t.Helper()
 	for i := 0; i < 20; i++ {
-		if got := Corrections(l, ref); !reflect.DeepEqual(got, want) {
+		if got := Corrections(l, ref, anyMember); !reflect.DeepEqual(got, want) {
 			t.Fatalf("call %d: Corrections = %d entries %v, want %d %v", i, len(got), seqs(got), len(want), seqs(want))
 		}
+	}
+}
+
+// anyMember is the membership predicate of a group nobody has left.
+func anyMember(ids.MemberID) bool { return true }
+
+// except returns the membership predicate of a group from which the given
+// members were removed; everyone else is still in it.
+func except(removed ...member) func(ids.MemberID) bool {
+	return func(o ids.MemberID) bool {
+		for _, m := range removed {
+			if m.id.ID == o {
+				return false
+			}
+		}
+		return true
 	}
 }
 
@@ -153,7 +169,7 @@ func TestConfirmationCount(t *testing.T) {
 	add(t, l, m8, KindWitness, json.RawMessage(`{"ref":"`+ref.String()+`","agree":true,"note":"","seen":3}`))
 
 	wantConfirmations(t, l, ref, idsOf(m2, m3, m4), idsOf(m5))
-	if got := confirmedBy(Confirmations(l, ref)); got != "confirmed by 3 of 4" {
+	if got := confirmedBy(Confirmations(l, ref, anyMember)); got != "confirmed by 3 of 4" {
 		t.Fatalf("the message would say %q, want %q", got, "confirmed by 3 of 4")
 	}
 	wantConfirmations(t, l, wantHash(back), idsOf(m5), nil)
@@ -204,7 +220,7 @@ func TestConfirmationsNeedTheEvent(t *testing.T) {
 		witness(t, l, w3, wantHash(s), true, "")
 		wantConfirmations(t, l, wantHash(event), idsOf(w2), nil)
 		for name, h := range map[string]ids.Hash{"boot": wantHash(boot), "correction": wantHash(corr), "witness": wantHash(s)} {
-			if a, d := Confirmations(l, h); a != nil || d != nil {
+			if a, d := Confirmations(l, h, anyMember); a != nil || d != nil {
 				t.Fatalf("statements about a %s entry counted: agree %v, disagree %v", name, a, d)
 			}
 		}
@@ -308,11 +324,74 @@ func TestCorrectionsLookup(t *testing.T) {
 	wantCorrections(t, l, ref, want)
 	wantCorrections(t, l, ref2, []Entry{l.Range(ap.id.ID, 2, 2)[0], c1b, c3b})
 
-	got := Corrections(l, ref)
+	got := Corrections(l, ref, anyMember)
 	got[0].Body[1], got[0].Sig[0], got[0].Seq = 'X', got[0].Sig[0]^1, 99
 	wantCorrections(t, l, ref, want)
 	if r := l.Range(ap.id.ID, 1, 1); !reflect.DeepEqual(r, []Entry{c1}) {
 		t.Fatal("a stored correction changed with a caller's copy")
+	}
+}
+
+// TestRemovedMemberNotCounted: a member removed from the group after it made
+// statements stops counting at once. Its witness statements are not counted
+// and its corrections are not returned, although its entries stay in its
+// chain. The membership predicate is asked outside the log's lock, so it may
+// read the log itself, as a roster lookup that takes a lock would.
+func TestRemovedMemberNotCounted(t *testing.T) {
+	origin, m2, m3, m4 := testMember(1), testMember(2), testMember(3), testMember(4)
+	l := testLog()
+	event := add(t, l, origin, KindEvent, silent)
+	ref := wantHash(event)
+	witness(t, l, m2, ref, true, "")
+	s3 := witness(t, l, m3, ref, true, "")
+	witness(t, l, m4, ref, false, "")
+	c2 := correct(t, l, m2, []ids.Hash{ref}, "link_lost", "")
+	c3 := correct(t, l, m3, []ids.Hash{ref}, "link_lost", "")
+
+	for _, c := range []struct {
+		name            string
+		isMember        func(ids.MemberID) bool
+		agree, disagree []ids.MemberID
+		corrections     []Entry
+	}{
+		{"all members", anyMember, idsOf(m2, m3), idsOf(m4), []Entry{c2, c3}},
+		{"m3 removed", except(m3), idsOf(m2), idsOf(m4), []Entry{c2}},
+		{"m3 and m4 removed", except(m3, m4), idsOf(m2), nil, []Entry{c2}},
+		{"everyone removed", except(origin, m2, m3, m4), nil, nil, nil},
+		{"a predicate that reads the log", func(o ids.MemberID) bool { return l.Head(o).Seq > 0 }, idsOf(m2, m3), idsOf(m4), []Entry{c2, c3}},
+	} {
+		a, d := Confirmations(l, ref, c.isMember)
+		if !slices.Equal(a, c.agree) || !slices.Equal(d, c.disagree) {
+			t.Errorf("%s: Confirmations = agree %v, disagree %v; want agree %v, disagree %v", c.name, a, d, c.agree, c.disagree)
+		}
+		if got := Corrections(l, ref, c.isMember); !reflect.DeepEqual(got, c.corrections) {
+			t.Errorf("%s: Corrections = %d entries %v, want %d %v", c.name, len(got), seqs(got), len(c.corrections), seqs(c.corrections))
+		}
+	}
+	if got := l.Range(m3.id.ID, 1, 2); !reflect.DeepEqual(got, []Entry{s3, c3}) {
+		t.Fatalf("m3's chain = %v, want its statement and correction kept", seqs(got))
+	}
+}
+
+// TestNilMembershipCountsNobody: without a membership predicate nobody is a
+// member, so nothing is counted and nothing returned (fail closed), from a
+// log that does hold statements and corrections.
+func TestNilMembershipCountsNobody(t *testing.T) {
+	origin, m2, m3 := testMember(1), testMember(2), testMember(3)
+	l := testLog()
+	event := add(t, l, origin, KindEvent, silent)
+	ref := wantHash(event)
+	witness(t, l, m2, ref, true, "")
+	witness(t, l, m3, ref, false, "")
+	correct(t, l, m2, []ids.Hash{ref}, "member_back", "")
+	if a, d := Confirmations(l, ref, anyMember); len(a) != 1 || len(d) != 1 {
+		t.Fatalf("with every member: agree %v, disagree %v; want one each", a, d)
+	}
+	if a, d := Confirmations(l, ref, nil); a != nil || d != nil {
+		t.Fatalf("nil predicate: Confirmations = agree %v, disagree %v; want nil, nil", a, d)
+	}
+	if got := Corrections(l, ref, nil); got != nil {
+		t.Fatalf("nil predicate: Corrections = %d entries %v, want nil", len(got), seqs(got))
 	}
 }
 
@@ -608,8 +687,8 @@ func TestStatementsConcurrent(t *testing.T) {
 	var writers, readers sync.WaitGroup
 	stop := make(chan struct{})
 	for _, read := range []func(){
-		func() { Confirmations(l, ref) },
-		func() { Corrections(l, ref) },
+		func() { Confirmations(l, ref, anyMember) },
+		func() { Corrections(l, ref, anyMember) },
 		func() { l.Prune(15, 0, t0) },
 	} {
 		readers.Add(1)
@@ -687,7 +766,7 @@ func TestStatementsConcurrent(t *testing.T) {
 		t.Fatalf("%d forked origins, want 32", len(f))
 	}
 	wantConfirmations(t, l, ref, idsOf(testMember(2), testMember(4), testMember(6)), idsOf(testMember(3), testMember(5), testMember(7)))
-	got := Corrections(l, ref)
+	got := Corrections(l, ref, anyMember)
 	if len(got) != 6*8 {
 		t.Fatalf("%d corrections, want %d", len(got), 6*8)
 	}

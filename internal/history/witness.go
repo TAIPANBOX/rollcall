@@ -242,8 +242,16 @@ func decodeStatement(body []byte, v any) error {
 // len(agree)+len(disagree), "confirmed by 3 of 4"; how many members could
 // have witnessed is for the caller to know.
 //
+// isMember reports whether an origin is in the group now, from the current
+// roster. A nil isMember counts nobody: both lists are nil (fail closed). It
+// is called outside the Log's lock, so it may take a lock of its own or read
+// l, and it may be called more than once for one origin.
+//
 // It computes on each call from the log as it is then:
 //
+//   - Only members count. The statements of an origin isMember reports false
+//     for are ignored, so a member removed from the group stops counting at
+//     once, although its entries stay in the log until they are pruned.
 //   - Only an event counts. If l holds no entry of KindEvent whose Hash is
 //     ref (it has not arrived yet, it was pruned, or ref names an entry of
 //     another kind), both lists are nil. Statements about an event that has
@@ -258,14 +266,17 @@ func decodeStatement(body []byte, v any) error {
 //     highest Seq); its statements about other entries do not matter.
 //   - A statement DecodeWitness refuses is skipped as if it were not there,
 //     and the count goes on.
-func Confirmations(l *Log, ref ids.Hash) (agree, disagree []ids.MemberID) {
+func Confirmations(l *Log, ref ids.Hash, isMember func(ids.MemberID) bool) (agree, disagree []ids.MemberID) {
+	if isMember == nil {
+		return nil, nil
+	}
 	event, held, statements, forked := l.snapshot(ref, KindWitness)
 	if !held || event.Kind != KindEvent {
 		return nil, nil
 	}
 	latest := map[ids.MemberID]bool{} // origin: Agree of its latest statement about ref
 	for _, s := range statements {    // each origin's in ascending Seq
-		if s.Origin == event.Origin || forked[s.Origin] {
+		if s.Origin == event.Origin || forked[s.Origin] || !isMember(s.Origin) {
 			continue
 		}
 		b, err := DecodeWitness(s)
@@ -290,15 +301,20 @@ func Confirmations(l *Log, ref ids.Hash) (agree, disagree []ids.MemberID) {
 // entry whose Hash is ref, in ascending order of the origin's MemberID bytes
 // and then of Seq, nil if there are none. A correction is returned whether
 // or not l still holds the entry it refers to. As in Confirmations, a
-// correction from a forked origin is left out, and so is one
-// DecodeCorrection refuses; the lookup goes on past both. The entry ref
-// names is never changed: a correction is a new entry in its author's
-// chain, and the reader applies it.
-func Corrections(l *Log, ref ids.Hash) []Entry {
+// correction from an origin isMember reports false for (a member removed
+// from the group) is left out, and so are one from a forked origin and one
+// DecodeCorrection refuses; the lookup goes on past all three. A nil
+// isMember returns nothing (fail closed); isMember is called as in
+// Confirmations. The entry ref names is never changed: a correction is a
+// new entry in its author's chain, and the reader applies it.
+func Corrections(l *Log, ref ids.Hash, isMember func(ids.MemberID) bool) []Entry {
+	if isMember == nil {
+		return nil
+	}
 	_, _, corrections, forked := l.snapshot(ref, KindCorrection)
 	var out []Entry
 	for _, c := range corrections {
-		if forked[c.Origin] {
+		if forked[c.Origin] || !isMember(c.Origin) {
 			continue
 		}
 		b, err := DecodeCorrection(c)
