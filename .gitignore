@@ -1,0 +1,16 @@
+# build output
+/dist/
+/bin/
+*.ipk
+*.apk
+coverage.out
+# agent scratch
+/.superpowers/
+# never commit secrets
+*.pem
+*.key
+.env
+.env.*
+*.secret
+secrets/
+keys/
