@@ -580,15 +580,28 @@ func isZeroKey(k Key) bool {
 	return k.ID == 0 && k.Secret == nil && k.NotAfter.IsZero()
 }
 
-// wantOpenErr asserts that Open fails with want and returns the zero Key.
-func wantOpenErr(t *testing.T, blob []byte, self *identity.Identity, admins []ed25519.PublicKey, want error, what string) {
+// adminsOf maps each member's ID to its signing public key.
+func adminsOf(ms ...*identity.Identity) map[ids.MemberID]ed25519.PublicKey {
+	admins := make(map[ids.MemberID]ed25519.PublicKey, len(ms))
+	for _, m := range ms {
+		admins[m.ID] = pubOf(m)
+	}
+	return admins
+}
+
+// wantOpenErr asserts that Open fails with want and returns the zero Key
+// and the zero signer ID.
+func wantOpenErr(t *testing.T, blob []byte, self *identity.Identity, admins map[ids.MemberID]ed25519.PublicKey, want error, what string) {
 	t.Helper()
-	k, err := Open(blob, self, admins)
+	k, signer, err := Open(blob, self, admins)
 	if !errors.Is(err, want) {
 		t.Errorf("%s: Open = %v, want %v", what, err, want)
 	}
 	if !isZeroKey(k) {
 		t.Errorf("%s: Open returned key %d with a %d-byte secret alongside the error", what, k.ID, len(k.Secret))
+	}
+	if signer != (ids.MemberID{}) {
+		t.Errorf("%s: Open returned signer %v alongside the error", what, signer)
 	}
 }
 
@@ -604,24 +617,30 @@ func TestDeliverRoundTrip(t *testing.T) {
 		t.Errorf("blob is %d bytes, want %d", len(blob), fmtBlobSize)
 	}
 
-	got, err := Open(blob, m, []ed25519.PublicKey{pubOf(admin)})
+	got, signer, err := Open(blob, m, adminsOf(admin))
 	if err != nil {
 		t.Fatalf("Open = %v", err)
 	}
 	if !reflect.DeepEqual(got, k) {
 		t.Errorf("Open = epoch %d, NotAfter %v; want epoch %d, NotAfter %v, same secret", got.ID, got.NotAfter, k.ID, k.NotAfter)
 	}
-
-	// The admin key may be anywhere in the list, after keys that are invalid
-	// or belong to someone else.
-	mixed := []ed25519.PublicKey{nil, pubOf(admin)[:31], mustHex(t, identityPoint), pubOf(other), pubOf(backup), pubOf(admin)}
-	if got, err := Open(blob, m, mixed); err != nil || !keysEqual(got, k) {
-		t.Errorf("Open with the admin key last in a mixed list = %v", err)
+	if signer != admin.ID {
+		t.Errorf("Open returned signer %v, want the sealing admin %v", signer, admin.ID)
 	}
-	// A delivery signed by the backup admin opens against [primary, backup].
+
+	// Other entries in the map, valid or not, do not disturb the admin's.
+	mixed := adminsOf(admin, other, backup)
+	mixed[ids.MemberID{1}] = nil
+	mixed[ids.MemberID{2}] = pubOf(admin)[:31]
+	mixed[ids.MemberID{3}] = mustHex(t, identityPoint)
+	if got, signer, err := Open(blob, m, mixed); err != nil || !keysEqual(got, k) || signer != admin.ID {
+		t.Errorf("Open with a mixed admin map = signer %v, %v; want %v, nil", signer, err, admin.ID)
+	}
+	// A delivery signed by the backup admin opens against {primary, backup}
+	// and names the backup.
 	byBackup := seal(t, k, m, backup)
-	if got, err := Open(byBackup, m, []ed25519.PublicKey{pubOf(admin), pubOf(backup)}); err != nil || !keysEqual(got, k) {
-		t.Errorf("Open of a delivery signed by the backup admin = %v", err)
+	if got, signer, err := Open(byBackup, m, adminsOf(admin, backup)); err != nil || !keysEqual(got, k) || signer != backup.ID {
+		t.Errorf("Open of a delivery signed by the backup admin = signer %v, %v; want %v, nil", signer, err, backup.ID)
 	}
 
 	// The returned secret does not share memory with the blob.
@@ -669,7 +688,7 @@ func probeSig() []byte {
 
 func TestDeliverRejectsNonAdminSignature(t *testing.T) {
 	admin, m, other := member(t), member(t), member(t)
-	admins := []ed25519.PublicKey{pubOf(admin)}
+	admins := adminsOf(admin)
 	k := testKey(9, 9)
 
 	// Sealed correctly, but signed by a member who is not an admin.
@@ -677,10 +696,21 @@ func TestDeliverRejectsNonAdminSignature(t *testing.T) {
 	wantOpenErr(t, byOther, m, admins, ErrSignature, "signed by a non-admin member")
 
 	good := seal(t, k, m, admin)
-	wantOpenErr(t, good, m, nil, ErrSignature, "nil admin list")
-	wantOpenErr(t, good, m, []ed25519.PublicKey{}, ErrSignature, "empty admin list")
-	wantOpenErr(t, good, m, []ed25519.PublicKey{nil, pubOf(admin)[:31], append(bytes.Clone(pubOf(admin)), 0), pubOf(other)},
-		ErrSignature, "admin list of wrong-length keys and another member")
+	wantOpenErr(t, good, m, nil, ErrSignature, "nil admin map")
+	wantOpenErr(t, good, m, map[ids.MemberID]ed25519.PublicKey{}, ErrSignature, "empty admin map")
+	// The signer's own entry holds a key that is unusable or not its own.
+	for name, bad := range map[string]ed25519.PublicKey{
+		"nil":                     nil,
+		"31 bytes":                pubOf(admin)[:31],
+		"33 bytes":                append(bytes.Clone(pubOf(admin)), 0),
+		"another member's key":    pubOf(other),
+		"small-order (identity)":  mustHex(t, identityPoint),
+		"admin key, one bit off":  flipBit(pubOf(admin), 0),
+		"admin key, top bit flip": flipBit(pubOf(admin), 255),
+	} {
+		wantOpenErr(t, good, m, map[ids.MemberID]ed25519.PublicKey{admin.ID: bad, other.ID: pubOf(other)},
+			ErrSignature, "the signer's entry holds a "+name+" key")
+	}
 
 	msg := good[:fmtSigOff]
 	resign := func(s []byte) []byte { return append(bytes.Clone(msg), s...) }
@@ -697,15 +727,61 @@ func TestDeliverRejectsNonAdminSignature(t *testing.T) {
 	if !ed25519.Verify(weak, append([]byte(fmtSigPrefix), msg...), probeSig()) {
 		t.Fatal("oracle: the probe signature does not verify under the identity point")
 	}
-	wantOpenErr(t, forged, m, []ed25519.PublicKey{weak}, ErrSignature, "forgery under a small-order admin key")
+	wantOpenErr(t, forged, m, map[ids.MemberID]ed25519.PublicKey{admin.ID: weak}, ErrSignature, "forgery under a small-order admin key")
+}
+
+// flipBit returns a copy of b with bit i flipped.
+func flipBit(b []byte, i int) []byte {
+	c := bytes.Clone(b)
+	c[i/8] ^= 1 << (i % 8)
+	return c
+}
+
+// TestOpenChecksSignerID: the signature must verify under the key that the
+// admin map holds for the signer ID inside the blob, and Open returns that
+// ID. One admin cannot pass a delivery off as another's.
+func TestOpenChecksSignerID(t *testing.T) {
+	a, b, m, stranger := member(t), member(t), member(t), member(t)
+	both := adminsOf(a, b)
+	k := testKey(9, 9)
+
+	// Signed by admin a, but naming admin b; both are admins.
+	posing, err := Seal(k, m.Recv.PublicKey(), m.ID, b.ID, a.Sign)
+	if err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	wantOpenErr(t, posing, m, both, ErrSignature, "signed by admin a under admin b's ID")
+
+	// The signer ID is not in the map, though the signing key is.
+	unknown, err := Seal(k, m.Recv.PublicKey(), m.ID, stranger.ID, a.Sign)
+	if err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	wantOpenErr(t, unknown, m, both, ErrSignature, "signed by admin a under an ID absent from the map")
+	wantOpenErr(t, seal(t, k, m, a), m, adminsOf(b), ErrSignature, "signed by a, map holds only b")
+	// a's key filed under another ID does not count for a.
+	wantOpenErr(t, seal(t, k, m, a), m, map[ids.MemberID]ed25519.PublicKey{b.ID: pubOf(a)}, ErrSignature, "a's key filed under b's ID")
+
+	// The zero member ID never signs, even if the map holds a key for it.
+	zeroSigner := handSeal(t, fmtVersion, handPlaintext(9, uint64(testNotAfter.Unix()), testSecret(9)),
+		m.Recv.PublicKey(), m.ID, ids.MemberID{}, a.Sign)
+	wantOpenErr(t, zeroSigner, m, map[ids.MemberID]ed25519.PublicKey{{}: pubOf(a), a.ID: pubOf(a)}, ErrSignature, "zero signer ID")
+
+	// The returned signer is the sealer's ID.
+	for _, admin := range []*identity.Identity{a, b} {
+		got, signer, err := Open(seal(t, k, m, admin), m, both)
+		if err != nil || !keysEqual(got, k) || signer != admin.ID {
+			t.Errorf("delivery sealed by %v: Open = signer %v, %v; want %v, nil", admin.ID, signer, err, admin.ID)
+		}
+	}
 }
 
 func TestDeliverRejectsOtherRecipient(t *testing.T) {
 	admin, a, b := member(t), member(t), member(t)
-	admins := []ed25519.PublicKey{pubOf(admin)}
+	admins := adminsOf(admin)
 	blob := seal(t, testKey(9, 9), a, admin)
 	wantOpenErr(t, blob, b, admins, ErrDecrypt, "delivery for a opened by b")
-	if _, err := Open(blob, a, admins); err != nil {
+	if _, _, err := Open(blob, a, admins); err != nil {
 		t.Errorf("the same delivery opened by a = %v", err)
 	}
 }
@@ -715,7 +791,7 @@ func TestDeliverRejectsOtherRecipient(t *testing.T) {
 // right receive key.
 func TestDeliverBoundToRecipientID(t *testing.T) {
 	admin, a, b := member(t), member(t), member(t)
-	admins := []ed25519.PublicKey{pubOf(admin)}
+	admins := adminsOf(admin)
 	k := testKey(9, 9)
 
 	// a's receive key, b's member ID.
@@ -725,7 +801,7 @@ func TestDeliverBoundToRecipientID(t *testing.T) {
 	}
 	wantOpenErr(t, blob, a, admins, ErrDecrypt, "sealed to a's key for b's ID, opened by a")
 	twin := &identity.Identity{ID: b.ID, Sign: a.Sign, Recv: a.Recv}
-	if got, err := Open(blob, twin, admins); err != nil || !keysEqual(got, k) {
+	if got, _, err := Open(blob, twin, admins); err != nil || !keysEqual(got, k) {
 		t.Errorf("opened by a's receive key under b's ID = %v, want the key (the ID is the only difference)", err)
 	}
 
@@ -779,11 +855,11 @@ func TestDeliverWireFormat(t *testing.T) {
 // without the package, including the edge values of NotAfter.
 func TestOpenHandBuiltBlob(t *testing.T) {
 	admin, m := member(t), member(t)
-	admins := []ed25519.PublicKey{pubOf(admin)}
+	admins := adminsOf(admin)
 	for _, na := range []uint64{1, uint64(testNotAfter.Unix()), fmtMaxUnix} {
 		pt := handPlaintext(77, na, testSecret(77))
 		blob := handSeal(t, fmtVersion, pt, m.Recv.PublicKey(), m.ID, admin.ID, admin.Sign)
-		got, err := Open(blob, m, admins)
+		got, _, err := Open(blob, m, admins)
 		if err != nil {
 			t.Errorf("NotAfter %d: Open = %v", na, err)
 			continue
@@ -797,7 +873,7 @@ func TestOpenHandBuiltBlob(t *testing.T) {
 
 func TestOpenRejectsMalformed(t *testing.T) {
 	admin, m := member(t), member(t)
-	admins := []ed25519.PublicKey{pubOf(admin)}
+	admins := adminsOf(admin)
 	good := seal(t, testKey(9, 9), m, admin)
 
 	cases := map[string][]byte{
@@ -832,7 +908,7 @@ func TestOpenRejectsMalformed(t *testing.T) {
 // signature, before any decryption.
 func TestOpenSingleBitFlips(t *testing.T) {
 	admin, m := member(t), member(t)
-	admins := []ed25519.PublicKey{pubOf(admin)}
+	admins := adminsOf(admin)
 	good := seal(t, testKey(9, 9), m, admin)
 	for i := range good {
 		b := bytes.Clone(good)
@@ -841,8 +917,8 @@ func TestOpenSingleBitFlips(t *testing.T) {
 		if i == 0 {
 			want = ErrFormat
 		}
-		k, err := Open(b, m, admins)
-		if err != want || !isZeroKey(k) {
+		k, signer, err := Open(b, m, admins)
+		if err != want || !isZeroKey(k) || signer != (ids.MemberID{}) {
 			t.Errorf("bit %d of byte %d flipped: Open = %v, want %v", i%8, i, err, want)
 		}
 	}
@@ -852,7 +928,7 @@ func TestOpenSingleBitFlips(t *testing.T) {
 // signature, then decryption, then the plaintext's values.
 func TestOpenCheckOrder(t *testing.T) {
 	admin, a, b, other := member(t), member(t), member(t), member(t)
-	admins := []ed25519.PublicKey{pubOf(admin)}
+	admins := adminsOf(admin)
 	k := testKey(9, 9)
 
 	// Not decryptable by a, and not signed by an admin: the signature is
@@ -872,7 +948,7 @@ func TestOpenCheckOrder(t *testing.T) {
 
 func TestOpenRejectsBadSelf(t *testing.T) {
 	admin, m := member(t), member(t)
-	admins := []ed25519.PublicKey{pubOf(admin)}
+	admins := adminsOf(admin)
 	blob := seal(t, testKey(9, 9), m, admin)
 	dh, err := hpke.DHKEM(ecdh.X25519()).GenerateKey()
 	if err != nil {
@@ -892,10 +968,11 @@ func TestOpenRejectsBadSelf(t *testing.T) {
 // carrying values a key may not have.
 func TestOpenRejectsBadPlaintext(t *testing.T) {
 	admin, m := member(t), member(t)
-	admins := []ed25519.PublicKey{pubOf(admin)}
+	admins := adminsOf(admin)
 	open := func(na uint64, secret []byte) (Key, error) {
 		blob := handSeal(t, fmtVersion, handPlaintext(9, na, secret), m.Recv.PublicKey(), m.ID, admin.ID, admin.Sign)
-		return Open(blob, m, admins)
+		k, _, err := Open(blob, m, admins)
+		return k, err
 	}
 	ok := uint64(testNotAfter.Unix())
 	for name, c := range map[string]struct {
@@ -956,7 +1033,7 @@ func TestDecodePlaintextLength(t *testing.T) {
 // return their fields unchanged.
 func TestOpenPlaintextSweep(t *testing.T) {
 	admin, m := member(t), member(t)
-	admins := []ed25519.PublicKey{pubOf(admin)}
+	admins := adminsOf(admin)
 	rng := rand.New(rand.NewPCG(6, 2026))
 	edgeIDs := []uint32{0, 1, math.MaxUint32 - 1, math.MaxUint32}
 	edgeNA := []uint64{0, 1, 2, 1 << 31, 1 << 32, fmtMaxUnix - 1, fmtMaxUnix, fmtMaxUnix + 1, 1<<63 - 1, 1 << 63, math.MaxUint64}
@@ -981,7 +1058,7 @@ func TestOpenPlaintextSweep(t *testing.T) {
 			}
 		}
 		blob := handSeal(t, fmtVersion, handPlaintext(id, na, secret), m.Recv.PublicKey(), m.ID, admin.ID, admin.Sign)
-		got, err := Open(blob, m, admins)
+		got, _, err := Open(blob, m, admins)
 		valid := !allZeroBytes(secret) && na >= 1 && na <= fmtMaxUnix
 		switch {
 		case valid && err != nil:
@@ -1007,7 +1084,7 @@ func TestOpenPlaintextSweep(t *testing.T) {
 // back in UTC; Seal refuses values the format cannot carry.
 func TestNotAfterRoundTrip(t *testing.T) {
 	admin, m := member(t), member(t)
-	admins := []ed25519.PublicKey{pubOf(admin)}
+	admins := adminsOf(admin)
 	kyiv := time.FixedZone("UTC+3", 3*3600)
 	for _, c := range []struct{ in, want time.Time }{
 		{testNotAfter.Add(999 * time.Millisecond), testNotAfter},
@@ -1016,7 +1093,7 @@ func TestNotAfterRoundTrip(t *testing.T) {
 		{time.Unix(fmtMaxUnix, 0), time.Unix(fmtMaxUnix, 0).UTC()},
 	} {
 		k := Key{ID: 1, Secret: testSecret(1), NotAfter: c.in}
-		got, err := Open(seal(t, k, m, admin), m, admins)
+		got, _, err := Open(seal(t, k, m, admin), m, admins)
 		if err != nil || !reflect.DeepEqual(got.NotAfter, c.want) {
 			t.Errorf("NotAfter %v: opened as %#v (%v), want %#v", c.in, got.NotAfter, err, c.want)
 		}
@@ -1201,16 +1278,16 @@ func TestErrorsCarryNoKeyBytes(t *testing.T) {
 	_, err = Seal(k, m.Recv.PublicKey(), m.ID, admin.ID, admin.Sign[:63])
 	note(err)
 
-	admins := []ed25519.PublicKey{pubOf(admin)}
+	admins := adminsOf(admin)
 	blob := seal(t, k, m, admin)
-	_, err = Open(blob[:100], m, admins)
+	_, _, err = Open(blob[:100], m, admins)
 	note(err)
-	_, err = Open(blob, m, []ed25519.PublicKey{pubOf(other)})
+	_, _, err = Open(blob, m, adminsOf(other))
 	note(err)
-	_, err = Open(blob, other, admins)
+	_, _, err = Open(blob, other, admins)
 	note(err)
 	zero := handSeal(t, fmtVersion, handPlaintext(1, 0, canary), m.Recv.PublicKey(), m.ID, admin.ID, admin.Sign)
-	_, err = Open(zero, m, admins)
+	_, _, err = Open(zero, m, admins)
 	note(err)
 
 	for _, err := range errs {
@@ -1241,7 +1318,7 @@ func fixedIdentity(t testing.TB, n byte) *identity.Identity {
 // one the admin sealed, and always fail with one of the package's errors.
 func FuzzOpen(f *testing.F) {
 	admin, m := fixedIdentity(f, 0x11), fixedIdentity(f, 0x22)
-	admins := []ed25519.PublicKey{pubOf(admin)}
+	admins := adminsOf(admin)
 	want := testKey(9, 9)
 	good := seal(f, want, m, admin)
 	f.Add(good)
@@ -1255,15 +1332,15 @@ func FuzzOpen(f *testing.F) {
 		f.Add(b)
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {
-		k, err := Open(data, m, admins)
+		k, signer, err := Open(data, m, admins)
 		if err == nil {
-			if !keysEqual(k, want) {
+			if !keysEqual(k, want) || signer != admin.ID {
 				t.Fatalf("Open accepted %d bytes as epoch %d, which the admin never sealed", len(data), k.ID)
 			}
 			return
 		}
-		if !isZeroKey(k) {
-			t.Fatalf("Open returned a key alongside %v", err)
+		if !isZeroKey(k) || signer != (ids.MemberID{}) {
+			t.Fatalf("Open returned a key or signer alongside %v", err)
 		}
 		switch err {
 		case ErrFormat, ErrSignature, ErrDecrypt, ErrInvalidKey:

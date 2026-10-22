@@ -44,11 +44,16 @@
 // before it, the version and the signer ID as well as the ciphertext.
 //
 // Open checks, cheapest first: its own arguments (ErrInvalid), the length and
-// version (ErrFormat), the signature against the admin keys (ErrSignature),
-// and only then decrypts (ErrDecrypt) and reads the plaintext
-// (ErrInvalidKey). Nothing is decrypted under a signature that does not
-// verify. Open does not decide whether a key is fresh: a captured delivery
-// opens again, and Ring.Install is where an old epoch is refused.
+// version (ErrFormat), the signature (ErrSignature), and only then decrypts
+// (ErrDecrypt) and reads the plaintext (ErrInvalidKey). The signature is
+// verified under one key only: the one the admins map holds for the signer
+// ID inside the blob. A zero or unknown signer ID, or a key that
+// sig.ValidPublicKey rejects, is ErrSignature, and no other admin's key is
+// tried, so one admin cannot present a delivery as another's. On success
+// Open returns the key and that signer ID. Nothing is decrypted under a
+// signature that does not verify. Open does not decide whether a key is
+// fresh: a captured delivery opens again, and Ring.Install is where an old
+// epoch is refused.
 //
 // Every error is a sentinel, or wraps one with a message from the HPKE
 // library; none carries key bytes.
@@ -297,27 +302,34 @@ func Seal(k Key, to hpke.PublicKey, recipient, signer ids.MemberID, admin ed2551
 	return append(blob, sig.Sign(admin, sigKind, blob)...), nil
 }
 
-// Open checks a delivery and returns the key it carries for self. adminPubs
-// are the public keys of the admins whose deliveries self accepts; keys that
-// sig.ValidPublicKey rejects are skipped. The order of the checks and their
-// errors are in the package comment. On error the Key is the zero Key. The
+// Open checks a delivery and returns the key it carries for self and the
+// member ID of the admin who signed it. admins maps the member ID of each
+// admin whose deliveries self accepts to that admin's signing public key;
+// the signature must verify under the entry for the signer ID the blob
+// names. The order of the checks and their errors are in the package
+// comment. On error the Key is the zero Key and the ID the zero ID. The
 // returned secret does not share memory with blob, and blob is not modified.
-func Open(blob []byte, self *identity.Identity, adminPubs []ed25519.PublicKey) (Key, error) {
+func Open(blob []byte, self *identity.Identity, admins map[ids.MemberID]ed25519.PublicKey) (Key, ids.MemberID, error) {
 	if self == nil || self.Recv == nil || self.Recv.KEM().ID() != recvKEM.ID() || self.ID == (ids.MemberID{}) {
-		return Key{}, ErrInvalid
+		return Key{}, ids.MemberID{}, ErrInvalid
 	}
 	if len(blob) != BlobSize || blob[0] != blobVersion {
-		return Key{}, ErrFormat
+		return Key{}, ids.MemberID{}, ErrFormat
 	}
-	if !signedByAdmin(blob, adminPubs) {
-		return Key{}, ErrSignature
+	signer := ids.MemberID(blob[offSigner:offCiphertext])
+	if !signedBy(blob, signer, admins) {
+		return Key{}, ids.MemberID{}, ErrSignature
 	}
 	pt, err := hpke.Open(self.Recv, kdf, aead, deliveryInfo(self.ID), blob[offCiphertext:offSig])
 	if err != nil {
-		return Key{}, ErrDecrypt
+		return Key{}, ids.MemberID{}, ErrDecrypt
 	}
 	defer clear(pt)
-	return decodePlaintext(pt)
+	k, err := decodePlaintext(pt)
+	if err != nil {
+		return Key{}, ids.MemberID{}, err
+	}
+	return k, signer, nil
 }
 
 // decodePlaintext reads epoch ID | NotAfter | secret. A plaintext of another
@@ -340,19 +352,20 @@ func decodePlaintext(pt []byte) (Key, error) {
 	}, nil
 }
 
-// signedByAdmin reports whether the signature at the end of blob is a valid
-// "epoch" signature, over everything before it, by one of adminPubs.
-func signedByAdmin(blob []byte, adminPubs []ed25519.PublicKey) bool {
-	msg, s := blob[:offSig], blob[offSig:]
-	for _, pub := range adminPubs {
-		if sig.ValidPublicKey(pub) != nil {
-			continue
-		}
-		if sig.Verify(pub, sigKind, msg, s) {
-			return true
-		}
+// signedBy reports whether the signature at the end of blob is a valid
+// "epoch" signature, over everything before it, by the key that admins
+// holds for signer, the ID the blob names. No other key is tried, so one
+// admin cannot present a delivery as another's. The zero ID, an ID absent
+// from admins, and a key that sig.ValidPublicKey rejects all give false.
+func signedBy(blob []byte, signer ids.MemberID, admins map[ids.MemberID]ed25519.PublicKey) bool {
+	if signer == (ids.MemberID{}) {
+		return false
 	}
-	return false
+	pub, ok := admins[signer]
+	if !ok || sig.ValidPublicKey(pub) != nil {
+		return false
+	}
+	return sig.Verify(pub, sigKind, blob[:offSig], blob[offSig:])
 }
 
 // deliveryInfo returns the HPKE info for a delivery to recipient: the label
