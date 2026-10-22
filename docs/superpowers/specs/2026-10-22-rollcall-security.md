@@ -325,8 +325,12 @@ boot sequences raise a `duplicate_identity` alert.
   confirmed the takeover as root on the backup or has used the recovery code. A
   backup cannot keep the role by cutting the primary off for ten minutes.
 - **Conflicts.** If the network splits and both sides change the roster, after healing
-  the higher version wins; at the same version the higher authority wins: recovery
-  key, then primary, then backup.
+  the branch whose latest roster was signed with the higher authority wins: recovery
+  key, then primary, then backup, judged against the last roster both sides shared.
+  At equal authority the higher version wins, then the lower hash. Authority comes
+  first so that a compromised backup cannot win by making many changes during the
+  split. (Refined during implementation on 2026-10-22; the first draft ranked the
+  version first.)
 - **Visibility.** Every roster change, role change and takeover is announced in the
   chat with the name of the router that signed it ("ap-office removed by admin
   gateway"). If an admin router is taken over by an attacker, its changes are seen at
