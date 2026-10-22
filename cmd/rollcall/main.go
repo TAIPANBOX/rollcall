@@ -1,4 +1,4 @@
-// Command rollcall is the rollcall command-line tool. Task 1 only prints its version.
+// Command rollcall is the rollcall command-line tool.
 package main
 
 import "fmt"

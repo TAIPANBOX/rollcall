@@ -1,4 +1,4 @@
-// Command rollcalld is the rollcall daemon. Task 1 only prints its version.
+// Command rollcalld is the rollcall daemon.
 package main
 
 import "fmt"
