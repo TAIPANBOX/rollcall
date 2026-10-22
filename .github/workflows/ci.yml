@@ -1,0 +1,49 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  gates:
+    name: format, vet, test, gates and vulnerabilities
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed for:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Verify modules
+        run: go mod verify
+
+      - name: Build with the release flags
+        run: CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=ci" -o "$RUNNER_TEMP/" ./cmd/...
+
+      - name: Test with the race detector and coverage profile
+        run: go test -race -coverprofile=coverage.out ./...
+
+      - name: Coverage is not below the committed baseline
+        run: ROLLCALL_COVERAGE=1 go test ./internal/gates -run TestCoverageNotBelowBaseline -v
+
+      - name: Vulnerability check
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
