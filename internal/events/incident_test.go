@@ -157,8 +157,8 @@ func one(t *testing.T, evs []Event) Incident {
 func dump(incs []Incident) string {
 	var b bytes.Buffer
 	for i, inc := range incs {
-		fmt.Fprintf(&b, "  %d: members %v events %v witnesses %v refs %d start %v end %v approx %v\n",
-			i, short(inc.Members), inc.Events, short(inc.Witnesses), len(inc.Refs),
+		fmt.Fprintf(&b, "  %d: members %v causes %d events %v witnesses %v refs %d start %v end %v approx %v\n",
+			i, short(inc.Members), inc.Causes, inc.Events, short(inc.Witnesses), len(inc.Refs),
 			inc.Start.Wall.Format(time.RFC3339Nano), inc.End.Wall.Format(time.RFC3339Nano), inc.Approximate)
 	}
 	return b.String()
@@ -209,8 +209,8 @@ func TestGatewayRebootIsOneIncident(t *testing.T) {
 				if len(inc.Members) == 0 || inc.Members[0] != gw.id.String() {
 					t.Fatalf("Members = %v, want the main router %s first", short(inc.Members), gw.id.String()[:2])
 				}
-				if want := names(gw.id, ap2.id, ap3.id, ap4.id, ap5.id); !slices.Equal(inc.Members, want) {
-					t.Errorf("Members = %v, want %v", short(inc.Members), short(want))
+				if want := names(gw.id, ap2.id, ap3.id, ap4.id, ap5.id); !slices.Equal(inc.Members, want) || inc.Causes != 1 {
+					t.Errorf("Members = %v, Causes %d; want %v, 1", short(inc.Members), inc.Causes, short(want))
 				}
 				if want := names(ap2.id, ap3.id, ap4.id, ap5.id); !slices.Equal(inc.Witnesses, want) {
 					t.Errorf("Witnesses = %v, want %v", short(inc.Witnesses), short(want))
@@ -293,8 +293,8 @@ func TestSiteWideOutageNamesAllWitnesses(t *testing.T) {
 		if !slices.Equal(inc.Witnesses, all) {
 			t.Errorf("incident %d: Witnesses = %v, want all three %v", i, short(inc.Witnesses), short(all))
 		}
-		if !slices.Equal(inc.Members, all) {
-			t.Errorf("incident %d: Members = %v, want all three %v", i, short(inc.Members), short(all))
+		if !slices.Equal(inc.Members, all) || inc.Causes != 0 {
+			t.Errorf("incident %d: Members = %v, Causes %d; want all three %v and no cause", i, short(inc.Members), inc.Causes, short(all))
 		}
 		if !slices.Equal(inc.Events, c.types) {
 			t.Errorf("incident %d: Events = %v, want %v", i, inc.Events, c.types)
@@ -313,7 +313,8 @@ func TestSiteWideOutageNamesAllWitnesses(t *testing.T) {
 
 // TestUnrelatedMembersStaySeparate: events about different members with no
 // shared cause are separate incidents even at the same instant, so a planned
-// reboot never hides inside a crash and two crashes are two messages.
+// reboot never hides inside a crash. (The same absence of several members is
+// rule (d), in TestSameAbsenceOfSeveralMembers.)
 func TestUnrelatedMembersStaySeparate(t *testing.T) {
 	a, b := member(0x0a), member(0x0b)
 	pairs := []struct {
@@ -322,8 +323,8 @@ func TestUnrelatedMembersStaySeparate(t *testing.T) {
 		s1, s2 ids.MemberID
 	}{
 		{"planned reboot and crash", RebootPlanned, RebootUnplanned, a, b},
-		{"two crashes", RebootUnplanned, RebootUnplanned, a, b},
-		{"two members silent", MemberSilent, MemberSilent, a, b},
+		{"planned reboot and upgrade", RebootPlanned, Upgraded, a, b},
+		{"two link losses", LinkLost, LinkLost, a, b},
 		{"upgrade and link loss", Upgraded, LinkLost, a, b},
 		{"member back and member silent", MemberBack, MemberSilent, a, b},
 		{"two forks", Fork, Fork, a, b},
@@ -376,6 +377,94 @@ func TestUnrelatedMembersStaySeparate(t *testing.T) {
 			t.Errorf("second incident: members %v events %v, want the crash alone", short(incs[1].Members), incs[1].Events)
 		}
 	})
+}
+
+// TestSameAbsenceOfSeveralMembers is rule (d): the same kind of absence of
+// several members within the window of the incident's first event is one
+// incident naming them all, so a power cut of the whole site, or an upgrade
+// of every router, is one message. Different kinds of absence of different
+// members stay apart, and no incident holds several members with several
+// kinds of absence, so each member's absence can be told from the incident.
+func TestSameAbsenceOfSeveralMembers(t *testing.T) {
+	a, b, c := member(0x0a), member(0x0b), member(0x0c)
+	type in struct {
+		typ     Type
+		subject ids.MemberID
+		w       router
+		at      time.Duration
+	}
+	cases := []struct {
+		name   string
+		evs    []in
+		want   [][]string // Members of each incident, in order
+		causes []int      // Causes of each incident
+	}{
+		{"power cut: three routers rebooted unexpectedly within 10 s",
+			[]in{{RebootUnplanned, c, ap2, 0}, {RebootUnplanned, a, ap3, 4 * time.Second}, {RebootUnplanned, b, ap2, 10 * time.Second}},
+			[][]string{names(a, b, c)}, []int{3}},
+		{"two crashes 15 s apart",
+			[]in{{RebootUnplanned, a, ap2, 0}, {RebootUnplanned, b, ap3, 15 * time.Second}},
+			[][]string{names(a), names(b)}, []int{1, 1}},
+		{"an upgrade and a crash of two members",
+			[]in{{Upgraded, a, ap2, 0}, {RebootUnplanned, b, ap3, 2 * time.Second}},
+			[][]string{names(a), names(b)}, []int{1, 1}},
+		{"every router upgraded",
+			[]in{{Upgraded, b, ap2, 0}, {Upgraded, a, ap3, time.Second}, {Upgraded, c, ap4, 2 * time.Second}},
+			[][]string{names(a, b, c)}, []int{3}},
+		{"several members silent, seen by several",
+			[]in{{MemberSilent, b, ap2, 0}, {MemberSilent, a, ap2, time.Second}, {MemberSilent, b, ap3, 2 * time.Second}},
+			[][]string{names(a, b)}, []int{2}},
+		{"several members back",
+			[]in{{MemberBack, b, ap2, 0}, {MemberBack, a, ap3, 3 * time.Second}},
+			[][]string{names(a, b)}, []int{2}},
+		{"planned reboots of two",
+			[]in{{RebootPlanned, a, ap2, 0}, {RebootPlanned, b, ap3, 3 * time.Second}},
+			[][]string{names(a, b)}, []int{2}},
+		{"planned reboot and crash",
+			[]in{{RebootPlanned, a, ap2, 0}, {RebootUnplanned, b, ap3, time.Second}},
+			[][]string{names(a), names(b)}, []int{1, 1}},
+		{"link losses of two members stay apart",
+			[]in{{LinkLost, a, ap2, 0}, {LinkLost, b, ap3, time.Second}},
+			[][]string{names(a), names(b)}, []int{1, 1}},
+		{"several members, then another kind of absence of one of them",
+			[]in{{RebootUnplanned, a, ap2, 0}, {RebootUnplanned, b, ap3, time.Second}, {MemberSilent, a, ap4, 2 * time.Second}},
+			[][]string{names(a, b), names(a)}, []int{2, 1}},
+		{"one member twice, then another member",
+			[]in{{MemberSilent, a, ap2, 0}, {RebootUnplanned, a, ap3, time.Second}, {RebootUnplanned, b, ap4, 2 * time.Second}},
+			[][]string{names(a), names(b)}, []int{1, 1}},
+		{"one member twice, then another member of the first kind",
+			[]in{{MemberSilent, a, ap2, 0}, {RebootUnplanned, a, ap3, time.Second}, {MemberSilent, b, ap4, 2 * time.Second}},
+			[][]string{names(a), names(b)}, []int{1, 1}},
+		{"the internet goes first, then two routers come back rebooted",
+			[]in{{InternetLost, ap4.id, ap4, 0}, {RebootUnplanned, b, ap2, 2 * time.Second}, {RebootUnplanned, a, ap3, 4 * time.Second}},
+			[][]string{names(a, b, ap4.id)}, []int{2}},
+		{"power cut while a router on a UPS loses the internet",
+			[]in{{RebootUnplanned, a, ap2, 0}, {InternetLost, ap4.id, ap4, time.Second}, {RebootUnplanned, b, ap2, 3 * time.Second},
+				{WanDown, ap5.id, ap5, 5 * time.Second}, {RebootUnplanned, c, ap3, 9 * time.Second}},
+			[][]string{names(a, b, c, ap4.id, ap5.id)}, []int{3}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := &fixture{}
+			var evs []Event
+			for _, e := range c.evs {
+				evs = append(evs, f.ev(e.typ, e.subject, e.w, e.at))
+			}
+			incs := Coalesce(evs, DefaultWindow)
+			var got [][]string
+			var causes []int
+			refs := 0
+			for _, inc := range incs {
+				got = append(got, inc.Members)
+				causes = append(causes, inc.Causes)
+				refs += len(inc.Refs)
+			}
+			if !reflect.DeepEqual(got, c.want) || !slices.Equal(causes, c.causes) || refs != len(evs) {
+				t.Errorf("members per incident %v, causes %v (%d refs); want %v, %v (%d):\n%s",
+					got, causes, refs, c.want, c.causes, len(evs), dump(incs))
+			}
+		})
+	}
 }
 
 // TestSameFactFromSeveralWitnesses: several members reporting the same fact
@@ -745,6 +834,7 @@ func TestIncidentFields(t *testing.T) {
 		Start:       ap2.at(0),
 		End:         ap2.at(7 * time.Second),
 		Members:     names(gw.id, ap2.id),
+		Causes:      1,
 		Events:      []Type{InternetLost, MemberSilent, RebootUnplanned},
 		Witnesses:   names(ap2.id, ap3.id),
 		Approximate: false,
@@ -880,6 +970,11 @@ func mixed() []Event {
 		f.stamped(MemberSilent, member(0x0e), ap.id, clock.Stamp{Wall: t0.Add(-threeYears), Mono: 100 * time.Second, Boot: ap.boot}),
 		f.stamped(InternetLost, ap.id, ap.id, clock.Stamp{Wall: t0.Add(6 * time.Second), Mono: 106 * time.Second, Trusted: true, Boot: ap.boot}),
 		f.ev(RosterChangesDropped, site, gw, 2*time.Minute),
+		f.ev(RebootUnplanned, member(0x0c), ap2, 4*time.Minute),
+		f.ev(RebootUnplanned, member(0x0a), ap3, 4*time.Minute+2*time.Second),
+		f.ev(InternetLost, ap5.id, ap5, 4*time.Minute+3*time.Second),
+		f.ev(RebootUnplanned, member(0x0b), ap2, 4*time.Minute+4*time.Second),
+		f.ev(MemberSilent, member(0x0a), ap4, 4*time.Minute+5*time.Second),
 		// One instant of one boot, written in two time zones: the result
 		// must not depend on which of the two anchors the timeline.
 		f.stamped(InternetLost, kitchen.id, kitchen.id, kitchen.at(3*time.Minute)),
@@ -986,6 +1081,7 @@ func TestCoalesceSweep(t *testing.T) {
 			members, witnesses, typeSet := map[string]bool{}, map[string]bool{}, map[Type]bool{}
 			anyUntrusted, flood, hasLink := false, false, false
 			absent := map[ids.MemberID]bool{}
+			absentTypes := map[Type]bool{}
 			facts := map[string]bool{}
 			for _, e := range mine {
 				if e.Subject != (ids.MemberID{}) {
@@ -999,6 +1095,7 @@ func TestCoalesceSweep(t *testing.T) {
 				switch {
 				case absence[e.Type] && e.Subject != (ids.MemberID{}):
 					absent[e.Subject] = true
+					absentTypes[e.Type] = true
 				case link[e.Type]:
 					hasLink = true
 				case e.Type == UnderFlood:
@@ -1010,9 +1107,12 @@ func TestCoalesceSweep(t *testing.T) {
 			if !sameSet(inc.Members, members) || !sameSet(inc.Witnesses, witnesses) {
 				t.Fatalf("%s: members %v witnesses %v do not match the events", where, inc.Members, inc.Witnesses)
 			}
-			if !slices.IsSorted(inc.Witnesses) || len(inc.Members) > 1 && !slices.IsSorted(inc.Members[1:]) ||
-				len(absent) == 0 && !slices.IsSorted(inc.Members) {
-				t.Fatalf("%s: lists not in ID order: members %v witnesses %v", where, inc.Members, inc.Witnesses)
+			if inc.Causes != len(absent) {
+				t.Fatalf("%s: Causes %d, but %d members are absent", where, inc.Causes, len(absent))
+			}
+			if !slices.IsSorted(inc.Witnesses) || !slices.IsSorted(inc.Members[:inc.Causes]) ||
+				!slices.IsSorted(inc.Members[inc.Causes:]) {
+				t.Fatalf("%s: lists not in ID order: members %v (causes %d) witnesses %v", where, inc.Members, inc.Causes, inc.Witnesses)
 			}
 			if len(inc.Events) != len(typeSet) {
 				t.Fatalf("%s: Events %v, want each of %d types once", where, inc.Events, len(typeSet))
@@ -1025,17 +1125,18 @@ func TestCoalesceSweep(t *testing.T) {
 			if inc.Approximate != (anyUntrusted || spanApprox) {
 				t.Fatalf("%s: Approximate %v, untrusted stamp %v, length approximate %v", where, inc.Approximate, anyUntrusted, spanApprox)
 			}
-			if len(absent) > 1 {
-				t.Fatalf("%s: absences of %d members in one incident", where, len(absent))
+			// Rule (d): several absent members only with one kind of
+			// absence, and never link_lost.
+			if len(absent) > 1 && (len(absentTypes) != 1 || absentTypes[LinkLost]) {
+				t.Fatalf("%s: absences %v of %d members in one incident", where, inc.Events, len(absent))
 			}
 			for m := range absent {
-				if inc.Members[0] != m.String() {
-					t.Fatalf("%s: absent member %s not named first in %v", where, m, inc.Members)
+				if !slices.Contains(inc.Members[:inc.Causes], m.String()) {
+					t.Fatalf("%s: absent member %s not among the causes %v", where, m, inc.Members[:inc.Causes])
 				}
 			}
 			// Exactly one kind of cause: one fact (one type about one
-			// subject), or a flood, or absences of one member and link
-			// events.
+			// subject), or a flood, or absences and link events.
 			kinds := 0
 			if len(facts) > 0 {
 				kinds++

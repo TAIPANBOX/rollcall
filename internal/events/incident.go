@@ -28,10 +28,16 @@ type Incident struct {
 	// Wall placed, in UTC, on the corrected clock of their witness's boot
 	// (see Coalesce). clock.Duration(Start, End) is the incident's length.
 	Start, End clock.Stamp
-	// Members are hex member IDs: the cause first when the incident has one
-	// (it holds an absence: silent, back, rebooted, upgraded, link lost),
-	// then every other member the events are about, in ID order.
+	// Members are hex member IDs: first the causes, the members whose
+	// absence (silent, back, rebooted, upgraded, link lost) the incident
+	// reports, in ID order; then every other member the events are about, in
+	// ID order.
 	Members []string
+	// Causes is how many of the leading Members are causes: 0 for an
+	// incident without an absence, 1 for one member, more under rule (d) of
+	// Coalesce. With more than one, every absence in the incident is of one
+	// type, so each cause had that one thing happen.
+	Causes int
 	// Events lists each type once, in the order it first appears.
 	Events []Type
 	// Witnesses are the hex IDs of the members that saw the events, in ID
@@ -90,20 +96,32 @@ func roleOf(e Event) role {
 // window puts every event in an incident of its own.
 //
 // Cause. Events share a cause when one of these holds; anything else stays
-// apart, so events about different members with no shared cause are
-// separate incidents:
+// apart:
 //
-//   - Absence of member X (MemberSilent, MemberBack, RebootPlanned,
-//     RebootUnplanned, Upgraded, LinkLost about X): X is the cause. Further
-//     absences of X join. Absences of another member never do.
-//   - Link events (WanDown, WanUp, InternetLost, InternetRestored,
-//     UplinkSwitched), from any member, X included, join an absence of X in
-//     the window: the main router reboots and the access points lose the
-//     internet. A link event that has two such causes in reach joins the
-//     earlier. An absence that arrives after link events in the window
-//     becomes their cause.
-//   - Link events with no absence group together into one site-wide
+//   - (a) Absence of member X (MemberSilent, MemberBack, RebootPlanned,
+//     RebootUnplanned, Upgraded, LinkLost about X): X is a cause. Further
+//     absences of X join, of any type, while X is the only cause. Link
+//     events (WanDown, WanUp, InternetLost, InternetRestored, UplinkSwitched),
+//     from any member, X included, join an incident with a cause in the
+//     window: the main router reboots and the access points lose the
+//     internet. A link event that has two such incidents in reach joins the
+//     earlier; it never merges them. An absence that arrives after link
+//     events in the window becomes their cause.
+//   - (b) Link events with no absence group together into one site-wide
 //     incident naming every witness: the internet is gone for everyone.
+//   - (c) Events about different members with no shared cause are separate
+//     incidents: different kinds of absence of different members (a planned
+//     reboot and a crash, an upgrade and a crash), link losses of two
+//     members, alarms about two members.
+//   - (d) The same kind of absence (MemberSilent, RebootUnplanned,
+//     RebootPlanned, Upgraded or MemberBack, not LinkLost) of two or more
+//     members, within the window of the incident's first event, is one
+//     incident naming them all: a power cut of the whole site, every router
+//     upgraded. Link events join it as under (a). An incident with several
+//     causes takes only that one kind of absence, from new members or from
+//     its causes; an incident whose one cause had two kinds of absence takes
+//     no other member. So no incident holds several members with several
+//     kinds of absence, and each cause's absence can be read from it.
 //   - UnderFlood from any members groups into one site-wide flood.
 //   - Any other type (alarms, membership, roster changes, types of newer
 //     versions), and an absence whose subject is zero, groups only with the
@@ -232,10 +250,22 @@ func record(e Event) []byte {
 
 // group is an incident being built.
 type group struct {
-	role    role         // roleAbsence once an absence has joined
-	subject ids.MemberID // roleAbsence: the cause; roleFact: the subject of the fact
-	typ     Type         // roleFact: the type of the fact
-	items   []item       // in time order; items[0] opened the window
+	role    role           // roleAbsence once an absence has joined
+	causes  []ids.MemberID // roleAbsence: the absent members, in the order they joined
+	subject ids.MemberID   // roleFact: the subject of the fact
+	typ     Type           // roleFact: the type of the fact; roleAbsence: the one type of every absence, "" once mixed
+	items   []item         // in time order; items[0] opened the window
+}
+
+// shared reports whether absences of type t of several members are one
+// incident (rule (d)). A link loss is not: two members' links break for two
+// reasons as often as for one.
+func shared(t Type) bool {
+	switch t {
+	case MemberSilent, RebootUnplanned, RebootPlanned, Upgraded, MemberBack:
+		return true
+	}
+	return false
 }
 
 // accepts reports whether e shares the group's cause. The window is checked
@@ -243,7 +273,16 @@ type group struct {
 func (g *group) accepts(e Event) bool {
 	switch roleOf(e) {
 	case roleAbsence:
-		return g.role == roleLink || g.role == roleAbsence && g.subject == e.Subject
+		switch {
+		case g.role == roleLink:
+			return true // the cause of the link events before it
+		case g.role != roleAbsence:
+			return false
+		case slices.Contains(g.causes, e.Subject):
+			return len(g.causes) == 1 || e.Type == g.typ // one member: any kind; several: their one kind
+		default:
+			return e.Type == g.typ && shared(e.Type) // rule (d)
+		}
 	case roleLink:
 		return g.role == roleLink || g.role == roleAbsence
 	case roleFlood:
@@ -253,10 +292,18 @@ func (g *group) accepts(e Event) bool {
 	}
 }
 
-// add puts it into the group; an absence makes its subject the cause.
+// add puts it into the group; an absence makes its subject a cause.
 func (g *group) add(it item) {
-	if roleOf(it.ev) == roleAbsence {
-		g.role, g.subject = roleAbsence, it.ev.Subject
+	if e := it.ev; roleOf(e) == roleAbsence {
+		switch {
+		case g.role != roleAbsence: // a new group, or link events taken over
+			g.role, g.typ = roleAbsence, e.Type
+		case e.Type != g.typ:
+			g.typ = "" // one member, several kinds of absence
+		}
+		if !slices.Contains(g.causes, e.Subject) {
+			g.causes = append(g.causes, e.Subject)
+		}
 	}
 	g.items = append(g.items, it)
 }
@@ -283,11 +330,13 @@ func (g *group) incident() Incident {
 		recs = append(recs, it.rec)
 	}
 
-	if g.role == roleAbsence {
-		inc.Members = append(inc.Members, g.subject.String())
-		delete(members, g.subject)
+	causes := map[ids.MemberID]bool{}
+	for _, c := range g.causes {
+		causes[c] = true
+		delete(members, c)
 	}
-	inc.Members = append(inc.Members, named(members)...)
+	inc.Members = append(named(causes), named(members)...)
+	inc.Causes = len(g.causes)
 	inc.Witnesses = named(witnesses)
 
 	_, approx := clock.Duration(inc.Start, inc.End)
