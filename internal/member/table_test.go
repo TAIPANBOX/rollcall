@@ -2004,3 +2004,54 @@ func TestCorruptStateFileSetAside(t *testing.T) {
 		}
 	})
 }
+
+func TestRelayedHeartbeatCounted(t *testing.T) {
+	ms := members(4)
+	r02, r03 := ms[1], ms[2]
+
+	// A relayed heartbeat teaches no clock offset: when the helper got it
+	// is only its word.
+	t.Run("no offset", func(t *testing.T) {
+		f := newFixtureOf(t, ms[:3], start)
+		h := start + s
+		untrusted := func(m tm, now time.Duration) {
+			b := f.beat(m)
+			b.ClockTrusted = false
+			if _, err := f.tab.Observe(testEpoch, enc(t, b, m), at(now)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := f.tab.Observe(testEpoch, enc(t, f.beat(r02), r02), at(h)); err != nil { // trusted
+			t.Fatal(err)
+		}
+		for d := time.Duration(0); d <= 15*s; d += 5 * s {
+			untrusted(r03, h+d)
+		}
+		want, ok := f.tab.Offset()
+		if !ok {
+			t.Fatal("no offset from r02")
+		}
+		f.tick(at(h + 15*s))
+		if got := f.tab.IndirectProbeRequest(r02.id.ID); !slices.Equal(got, idsOf(r03)) {
+			t.Fatalf("helpers %x", got)
+		}
+		if _, err := f.relay(r03, r02, enc(t, f.beat(r02), r02), 2*s, at(h+16*s)); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := f.tab.Offset(); got != want {
+			t.Errorf("Offset after a relayed heartbeat %v, want %v", got, want)
+		}
+	})
+
+	// Garbage in an answer is counted like garbage in a packet.
+	t.Run("malformed counted", func(t *testing.T) {
+		f, _, h := liarSetup(t)
+		before := f.tab.Counters().Malformed
+		if _, err := f.relay(r03, r02, []byte("heard it"), 0, at(h+16*s)); !errors.Is(err, ErrMalformed) {
+			t.Fatalf("garbage: %v", err)
+		}
+		if c := f.tab.Counters(); c.Malformed != before+1 || c.Relayed != 0 {
+			t.Errorf("counters %+v, want one more malformed, none relayed", c)
+		}
+	})
+}
