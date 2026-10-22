@@ -18,11 +18,11 @@ in `root/usr/share/rpcd/acl.d/luci-app-rollcall.json`.
 |---|---|---|
 | `luci-app-rollcall` (read) | `status --json` | status page, admin page |
 | `luci-app-rollcall-admin` (write) | `invite --json` | admin page |
-| | `remove <name> --json` | admin page |
+| | `remove --json -- <name>` | admin page |
 | | `rotate --json` | admin page |
 | | `set-token --json` | admin page (token in the environment, see below) |
 | | `bind-telegram --json` | admin page |
-| | `roles <name> sender\|primary\|backup\|none --json` | admin page |
+| | `roles --json sender\|primary\|backup\|none -- <name>` | admin page |
 | | `admin takeover --json` | admin page, backup admin only |
 | | `admin confirm --json` | admin page, while a takeover is provisional |
 
@@ -220,8 +220,12 @@ Messages and errors are plain English sentences.
 - `set-token` reads the bot token from the environment variable
   `TELEGRAM_ROLLCALL_TOKEN`. It never takes the token as an argument, so the
   token does not appear in a process list. The reply never repeats the token.
-- `remove <name>`, `roles <name> <role>`: the name is checked by the daemon
-  against the roster. The page passes a name it read from the status report.
+- Name arguments come last, after `--`. Options come before it. The name is the
+  only glob in each admin entry, and the entries fix the order:
+  `remove --json -- <name>` and `roles --json <role> -- <name>`. The CLI accepts
+  exactly one name after `--`, checks it with the roster name rule
+  (`[a-z0-9-]`, at most 32 characters) and rejects anything else. The page passes
+  a name it read from the status report.
 - `admin takeover` is provisional until `admin confirm` runs, as in the
   security document, section 6.1.
 
@@ -231,7 +235,7 @@ These are not settled by this file. Each one is checked on hardware or decided
 by the controller.
 
 1. rpcd argument matching. The ACL keys name the full command line
-   (`/usr/bin/rollcall roles * sender --json`). That matching must be confirmed
+   (`/usr/bin/rollcall roles --json sender -- *`). That matching must be confirmed
    on a router with rpcd of the target release (Task 27, step 2). If rpcd
    matches only the path, the ACL has to be narrowed another way before the
    admin group is shipped.

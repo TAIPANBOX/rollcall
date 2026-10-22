@@ -9,10 +9,11 @@
  * reported lately, and what is not working.
  *
  * Everything shown comes from `rollcall status --json`, whose fields are
- * written down in luci-app-rollcall/STATUS-JSON.md. Every value is put on the
- * page as a text node, so a router name or an incident text that carries
- * markup is shown as plain characters. The status report holds no join code,
- * token or key, and this page never asks for one.
+ * written down in luci-app-rollcall/STATUS-JSON.md. Every value reaches the
+ * page as a text node: E() gets its children as an array or an element, and
+ * each value is wrapped in T(), so a router name or an incident text that
+ * carries markup is shown as plain characters. The status report holds no
+ * join code, token or key, and this page never asks for one.
  */
 
 var ROLLCALL = '/usr/bin/rollcall';
@@ -24,6 +25,11 @@ var callExec = rpc.declare({
 	method: 'exec',
 	params: [ 'command', 'params' ]
 });
+
+/* A text node holding s. Every value from the daemon goes through here. */
+function T(s) {
+	return document.createTextNode(String(s == null ? '' : s));
+}
 
 /* The label tables are functions so that _() runs after the translations load. */
 function roleLabels() {
@@ -111,15 +117,17 @@ function loadStatus() {
 	});
 }
 
+/* value is an array of child nodes. */
 function labelRow(label, value) {
 	return E('tr', { 'class': 'tr' }, [
-		E('td', { 'class': 'td left', 'style': 'width:28%' }, label),
-		E('td', { 'class': 'td left' }, value)
+		E('td', { 'class': 'td left', 'style': 'width:28%' }, [ T(label) ]),
+		E('td', { 'class': 'td left' }, [].concat(value))
 	]);
 }
 
+/* children is an array of child nodes. */
 function alertBox(severity, children) {
-	return E('div', { 'class': 'alert-message ' + severity }, children);
+	return E('div', { 'class': 'alert-message ' + severity }, [].concat(children));
 }
 
 function roleNames(roles) {
@@ -133,14 +141,14 @@ function memberTable(st) {
 	var self = st.self || {};
 	var members = Array.isArray(st.members) ? st.members : [];
 	if (!members.length) {
-		return E('p', {}, _('No members are known yet.'));
+		return E('p', {}, [ _('No members are known yet.') ]);
 	}
 	var states = memberStateLabels();
 	var head = E('tr', { 'class': 'tr table-titles' }, [
-		E('th', { 'class': 'th' }, _('Router')),
-		E('th', { 'class': 'th' }, _('Roles')),
-		E('th', { 'class': 'th' }, _('State')),
-		E('th', { 'class': 'th' }, _('Last seen'))
+		E('th', { 'class': 'th' }, [ _('Router') ]),
+		E('th', { 'class': 'th' }, [ _('Roles') ]),
+		E('th', { 'class': 'th' }, [ _('State') ]),
+		E('th', { 'class': 'th' }, [ _('Last seen') ])
 	]);
 	var rows = members.map(function (m) {
 		var roles = Array.isArray(m.roles) ? m.roles : [];
@@ -153,10 +161,10 @@ function memberTable(st) {
 			? m.last_seen_seconds + ' ' + _('s ago')
 			: _('never');
 		return E('tr', { 'class': 'tr' }, [
-			E('td', { 'class': 'td left' }, name),
-			E('td', { 'class': 'td left' }, roleText),
-			E('td', { 'class': 'td left' }, lookup(states, m.state, text(m.state))),
-			E('td', { 'class': 'td left' }, seen)
+			E('td', { 'class': 'td left' }, [ T(name) ]),
+			E('td', { 'class': 'td left' }, [ T(roleText) ]),
+			E('td', { 'class': 'td left' }, [ T(lookup(states, m.state, text(m.state))) ]),
+			E('td', { 'class': 'td left' }, [ T(seen) ])
 		]);
 	});
 	return E('table', { 'class': 'table' }, [ head ].concat(rows));
@@ -165,23 +173,23 @@ function memberTable(st) {
 function incidentTable(st) {
 	var incidents = Array.isArray(st.incidents) ? st.incidents : [];
 	if (!incidents.length) {
-		return E('p', {}, _('Nothing has been reported. A quiet group sends nothing.'));
+		return E('p', {}, [ _('Nothing has been reported. A quiet group sends nothing.') ]);
 	}
 	var head = E('tr', { 'class': 'tr table-titles' }, [
-		E('th', { 'class': 'th' }, _('Time')),
-		E('th', { 'class': 'th' }, _('What was reported')),
-		E('th', { 'class': 'th' }, _('Confirmed')),
-		E('th', { 'class': 'th' }, _('Sent'))
+		E('th', { 'class': 'th' }, [ _('Time') ]),
+		E('th', { 'class': 'th' }, [ _('What was reported') ]),
+		E('th', { 'class': 'th' }, [ _('Confirmed') ]),
+		E('th', { 'class': 'th' }, [ _('Sent') ])
 	]);
 	var rows = incidents.map(function (inc) {
 		var confirmed = (typeof inc.confirmed_by === 'number' && typeof inc.members === 'number')
 			? _('confirmed by') + ' ' + inc.confirmed_by + ' ' + _('of') + ' ' + inc.members
 			: '-';
 		return E('tr', { 'class': 'tr' }, [
-			E('td', { 'class': 'td left' }, text(inc.time)),
-			E('td', { 'class': 'td left' }, text(inc.text)),
-			E('td', { 'class': 'td left' }, confirmed),
-			E('td', { 'class': 'td left' }, inc.delivered ? _('sent') : _('waiting'))
+			E('td', { 'class': 'td left' }, [ T(text(inc.time)) ]),
+			E('td', { 'class': 'td left' }, [ T(text(inc.text)) ]),
+			E('td', { 'class': 'td left' }, [ T(confirmed) ]),
+			E('td', { 'class': 'td left' }, [ inc.delivered ? _('sent') : _('waiting') ])
 		]);
 	});
 	return E('table', { 'class': 'table' }, [ head ].concat(rows));
@@ -190,11 +198,12 @@ function incidentTable(st) {
 function discoveryNode(st) {
 	var problems = Array.isArray(st.discovery) ? st.discovery : [];
 	if (!problems.length) {
-		return E('span', {}, _('no problems'));
+		return E('span', {}, [ _('no problems') ]);
 	}
-	return E('ul', {}, problems.map(function (p) {
-		return E('li', {}, text(p.interface) + ': ' + text(p.error));
-	}));
+	var items = problems.map(function (p) {
+		return E('li', {}, [ T(text(p.interface) + ': ' + text(p.error)) ]);
+	});
+	return E('ul', {}, [].concat(items));
 }
 
 function sandboxText(sb) {
@@ -230,71 +239,72 @@ function buildPage(st) {
 	var nodes = [];
 
 	if (st.problem) {
-		nodes.push(alertBox('warning', st.problem));
+		nodes.push(alertBox('warning', [ T(st.problem) ]));
 		return nodes;
 	}
 
 	if (st.running === false) {
 		nodes.push(alertBox('warning', [
-			E('p', {}, _('rollcall is not running on this router.')),
-			E('p', {}, text(st.error))
+			E('p', {}, [ _('rollcall is not running on this router.') ]),
+			E('p', {}, [ T(text(st.error)) ])
 		]));
 		return nodes;
 	}
 
 	if (st.initialised === false) {
-		nodes.push(alertBox('warning',
-			_('rollcall is not set up on this router yet. Run rollcall init on the first router, or rollcall join on the others.')));
+		nodes.push(alertBox('warning', [
+			_('rollcall is not set up on this router yet. Run rollcall init on the first router, or rollcall join on the others.')
+		]));
 		return nodes;
 	}
 
 	var storageFailed = !!(st.storage && st.storage.ok === false);
 	if (storageFailed) {
 		nodes.push(alertBox('error', [
-			E('strong', {}, _('Storage error: ')),
-			text(st.storage.error),
-			E('p', {}, _('History stays in RAM until the flash write works again. Copies on the other routers cover this one if it loses power.'))
+			E('strong', {}, [ _('Storage error: ') ]),
+			T(text(st.storage.error)),
+			E('p', {}, [ _('History stays in RAM until the flash write works again. Copies on the other routers cover this one if it loses power.') ])
 		]));
 	}
 
 	var tg = st.telegram || {};
 	if (tg.state === 'bot_blocked' || tg.state === 'tls_failed' || tg.state === 'rate_limited') {
-		nodes.push(alertBox('warning', lookup(telegramLabels(), tg.state, text(tg.state))));
+		nodes.push(alertBox('warning', [ T(lookup(telegramLabels(), tg.state, text(tg.state))) ]));
 	}
 
 	var self = st.self || {};
 	var selfRoles = Array.isArray(self.roles) ? roleNames(self.roles) : [];
 
-	nodes.push(E('h3', {}, _('This router')));
+	nodes.push(E('h3', {}, [ _('This router') ]));
 	nodes.push(E('table', { 'class': 'table' }, [
-		labelRow(_('Name'), text(self.name)),
-		labelRow(_('Roles'), selfRoles.length ? selfRoles.join(', ') : _('member'))
+		labelRow(_('Name'), [ T(text(self.name)) ]),
+		labelRow(_('Roles'), [ T(selfRoles.length ? selfRoles.join(', ') : _('member')) ])
 	]));
 
-	nodes.push(E('h3', {}, _('Group')));
+	nodes.push(E('h3', {}, [ _('Group') ]));
 	nodes.push(E('table', { 'class': 'table' }, [
-		labelRow(_('Site'), text(st.site)),
-		labelRow(_('Sender now'), st.sender ? String(st.sender) : _('none: no member can reach Telegram right now')),
-		labelRow(_('Topology'), lookup(topologyLabels(), st.topology, _('unknown topology'))),
-		labelRow(_('Telegram from this router'), telegramText(tg)),
-		labelRow(_('Sandbox'), sandboxText(st.sandbox)),
-		labelRow(_('Storage'), storageFailed ? _('error, see above') : _('ok')),
-		labelRow(_('Group key'), groupKeyText(st.group_key)),
-		labelRow(_('Discovery errors'), discoveryNode(st)),
-		labelRow(_('Report generated'), text(st.generated))
+		labelRow(_('Site'), [ T(text(st.site)) ]),
+		labelRow(_('Sender now'), [ T(st.sender ? String(st.sender) : _('none: no member can reach Telegram right now')) ]),
+		labelRow(_('Topology'), [ T(lookup(topologyLabels(), st.topology, _('unknown topology'))) ]),
+		labelRow(_('Telegram from this router'), [ T(telegramText(tg)) ]),
+		labelRow(_('Sandbox'), [ T(sandboxText(st.sandbox)) ]),
+		labelRow(_('Storage'), [ T(storageFailed ? _('error, see above') : _('ok')) ]),
+		labelRow(_('Group key'), [ T(groupKeyText(st.group_key)) ]),
+		labelRow(_('Discovery errors'), [ discoveryNode(st) ]),
+		labelRow(_('Report generated'), [ T(text(st.generated)) ])
 	]));
 
-	nodes.push(E('h3', {}, _('Routers')));
+	nodes.push(E('h3', {}, [ _('Routers') ]));
 	nodes.push(memberTable(st));
 
-	nodes.push(E('h3', {}, _('Recent reports')));
+	nodes.push(E('h3', {}, [ _('Recent reports') ]));
 	nodes.push(incidentTable(st));
 
 	return nodes;
 }
 
 function pageContent(st) {
-	return [ E('h2', {}, _('rollcall status')) ].concat(buildPage(st));
+	return [ E('h2', {}, [ _('rollcall status') ]) ].concat(buildPage(st));
 }
 
 return view.extend({

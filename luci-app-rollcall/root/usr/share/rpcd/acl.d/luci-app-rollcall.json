@@ -17,17 +17,17 @@
 			}
 		},
 		"write": {
-			"comment": "each entry is one exact command form; * stands only for a router name or a role, which the daemon checks again",
+			"comment": "each entry is one exact command form. Options come before --, and a router name, the only glob, comes last after --; the CLI accepts exactly one name there and checks it against the roster name rule. Recovery is not here: it is CLI-only, as root on the router.",
 			"file": {
 				"/usr/bin/rollcall invite --json": [ "exec" ],
-				"/usr/bin/rollcall remove * --json": [ "exec" ],
+				"/usr/bin/rollcall remove --json -- *": [ "exec" ],
 				"/usr/bin/rollcall rotate --json": [ "exec" ],
 				"/usr/bin/rollcall set-token --json": [ "exec" ],
 				"/usr/bin/rollcall bind-telegram --json": [ "exec" ],
-				"/usr/bin/rollcall roles * sender --json": [ "exec" ],
-				"/usr/bin/rollcall roles * primary --json": [ "exec" ],
-				"/usr/bin/rollcall roles * backup --json": [ "exec" ],
-				"/usr/bin/rollcall roles * none --json": [ "exec" ],
+				"/usr/bin/rollcall roles --json sender -- *": [ "exec" ],
+				"/usr/bin/rollcall roles --json primary -- *": [ "exec" ],
+				"/usr/bin/rollcall roles --json backup -- *": [ "exec" ],
+				"/usr/bin/rollcall roles --json none -- *": [ "exec" ],
 				"/usr/bin/rollcall admin takeover --json": [ "exec" ],
 				"/usr/bin/rollcall admin confirm --json": [ "exec" ]
 			}
