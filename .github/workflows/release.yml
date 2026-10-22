@@ -1,0 +1,221 @@
+name: release
+
+# A release is made from a version tag and from nothing else: a push to a branch never runs
+# this file. The tag must be vX.Y.Z or vX.Y.Z-rcN; the build embeds the version without the v.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions: {}
+
+jobs:
+  test:
+    name: tests and the tag format
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: The tag names a release
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          if ! printf '%s\n' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$'; then
+            echo "tag $TAG is not vX.Y.Z or vX.Y.Z-rcN"
+            exit 1
+          fi
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test with the race detector
+        run: go test -race -count=1 ./...
+
+  # Two independent builds on two runners. compare below requires them to be byte-identical.
+  build-a:
+    name: build every target (first)
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.test.outputs.version }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build every target
+        run: make build VERSION="$VERSION"
+
+      - name: Keep the binaries
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: binaries-a
+          path: dist/bin/
+          if-no-files-found: error
+
+  build-b:
+    name: build every target (second)
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.test.outputs.version }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build every target
+        run: make build VERSION="$VERSION"
+
+      - name: Keep the binaries
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: binaries-b
+          path: dist/bin/
+          if-no-files-found: error
+
+  compare:
+    name: the two builds are byte-identical
+    needs: [build-a, build-b]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Fetch the first build
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: binaries-a
+          path: a
+
+      - name: Fetch the second build
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: binaries-b
+          path: b
+
+      - name: Every binary matches
+        run: |
+          set -eu
+          test -n "$(find a -type f)"
+          diff -r a b
+          (cd a && find . -type f | LC_ALL=C sort | xargs sha256sum)
+
+  # Packages, SBOMs and the checksum file, all from the binaries that compare has checked.
+  package:
+    name: packages, SBOMs and checksums
+    needs: [test, compare]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.test.outputs.version }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Fetch the binaries that compare checked
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: binaries-a
+          path: dist/bin
+
+      - name: Keep a copy of them, to prove the packages use them
+        run: cp -a dist/bin "$RUNNER_TEMP/expected"
+
+      - name: Packages and the release set
+        run: make release VERSION="$VERSION"
+
+      - name: The packaged binaries are the compared ones
+        run: diff -r "$RUNNER_TEMP/expected" dist/bin
+
+      - name: SBOM for each binary, cyclonedx-gomod pinned to v1.12.0
+        run: |
+          set -eu
+          for cmd in rollcalld rollcall; do
+            go run github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.12.0 app \
+              -json -licenses -main "cmd/$cmd" -output "dist/release/$cmd-$VERSION.cdx.json" .
+          done
+          cd dist/release
+          rm -f SHA256SUMS
+          shasum -a 256 * > SHA256SUMS
+
+      - name: Keep the release set
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-set
+          path: dist/release/
+          if-no-files-found: error
+
+  publish:
+    name: attest every file and publish
+    needs: [test, package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Fetch the release set
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: release-set
+          path: release
+
+      - name: The checksums match the files
+        run: (cd release && shasum -a 256 -c SHA256SUMS)
+
+      - name: Attest every file
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: 'release/*'
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          flags=""
+          case "$TAG" in
+            *-rc*) flags="--prerelease" ;;
+          esac
+          # shellcheck disable=SC2086 # $flags is either empty or one flag
+          gh release create "$TAG" --verify-tag --title "rollcall $TAG" $flags release/*

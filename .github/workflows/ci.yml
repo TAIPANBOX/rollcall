@@ -47,3 +47,146 @@ jobs:
 
       - name: Vulnerability check
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+  # Two builds of one commit must be byte-identical. Each build has its own step, its own
+  # build cache and its own output directory, and -trimpath keeps the checkout path out.
+  reproducible:
+    name: linux/arm64 builds are byte-identical
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build linux/arm64, first time
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/first"
+          for cmd in rollcalld rollcall; do
+            GOCACHE="$RUNNER_TEMP/cache-first" CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+              go build -trimpath -buildvcs=false -ldflags "-s -w -X main.version=ci" \
+              -o "$RUNNER_TEMP/first/$cmd" "./cmd/$cmd"
+          done
+
+      - name: Build linux/arm64, second time, with an empty cache
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/second"
+          for cmd in rollcalld rollcall; do
+            GOCACHE="$RUNNER_TEMP/cache-second" CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+              go build -trimpath -buildvcs=false -ldflags "-s -w -X main.version=ci" \
+              -o "$RUNNER_TEMP/second/$cmd" "./cmd/$cmd"
+          done
+
+      - name: Compare the sha256 of both builds
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP"
+          sha256sum first/rollcalld first/rollcall second/rollcalld second/rollcall
+          for cmd in rollcalld rollcall; do
+            a=$(sha256sum "first/$cmd" | cut -d' ' -f1)
+            b=$(sha256sum "second/$cmd" | cut -d' ' -f1)
+            if [ "$a" != "$b" ]; then
+              echo "$cmd differs between the two builds"
+              exit 1
+            fi
+          done
+
+  # The mutation score is recorded, not gated: --threshold-efficacy 0 never fails a package,
+  # and the job is continue-on-error until a threshold is agreed. The 80 percent target in the
+  # plan is not enforced here. gremlins is pinned to an exact release and run only in CI.
+  mutation:
+    name: mutation score (reported, not gating)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Run gremlins v0.6.0 on the core packages
+        run: |
+          set -u
+          mkdir -p mutation
+          for p in sig wire replay epoch roster pairing history elect deliver node; do
+            go run github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0 unleash \
+              --threshold-efficacy 0 --output "mutation/$p.json" "./internal/$p" \
+              > "mutation/$p.txt" 2>&1
+            echo "$p: exit $?" >> mutation/exit-codes.txt
+          done
+
+      - name: Put the scores on the run page
+        if: always()
+        run: |
+          {
+            echo "### gremlins (reported, not gating)"
+            for f in mutation/*.txt; do
+              echo "- $(basename "$f" .txt): $(grep -i -m1 'efficacy' "$f" || echo 'no efficacy line; see the artifact')"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the scores
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mutation-scores
+          path: mutation/
+          if-no-files-found: warn
+
+  # The Linux half of the packaging. mkipk takes its GNU tar branch here (macOS has bsdtar),
+  # and mkapk runs apk-tools v3 from the digest-pinned alpine image. Both run on every push, so
+  # a packaging break shows before a tag is cut.
+  packaging:
+    name: packages build and contain the right files
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build the x86_64 release set with a test version
+        run: make release VERSION=0.0.0-ci TARGETS=x86_64
+
+      - name: The ipk and the apk contain what the router needs
+        run: |
+          set -eu
+          cd dist/release
+          shasum -a 256 -c SHA256SUMS
+          ipk=rollcall_0.0.0-ci_x86_64.ipk
+          tar -xzf "$ipk" -C "$RUNNER_TEMP"
+          tar -tzf "$RUNNER_TEMP/data.tar.gz" | sort > "$RUNNER_TEMP/got"
+          for f in ./usr/bin/rollcalld ./usr/bin/rollcall ./etc/init.d/rollcall \
+                   ./etc/config/rollcall ./etc/seccomp/rollcall.json ./lib/upgrade/keep.d/rollcall; do
+            grep -qx "$f" "$RUNNER_TEMP/got" || { echo "missing from the ipk: $f"; exit 1; }
+          done
+          tar -xzf "$RUNNER_TEMP/control.tar.gz" -C "$RUNNER_TEMP"
+          grep -qx /etc/config/rollcall "$RUNNER_TEMP/conffiles" || { echo "config is not a conffile"; exit 1; }
+          apk=rollcall-0.0.0_pre0-r1-x86_64.apk
+          docker run --rm -v "$PWD:/work" -w /work \
+            alpine@sha256:020dfcbaaf4cc1078bf2d9c7ba31a8466e334061dcd2f248001d68f79e52c000 \
+            apk adbdump "$apk" | grep -q 'name: etc/seccomp' || { echo "apk lacks the seccomp profile"; exit 1; }
