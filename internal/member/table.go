@@ -38,11 +38,13 @@ const MaxHelpers = 2
 // sequence number above the one it started with, in one run.
 const MaxBootSeqRaise = 1 << 20
 
-// The store file of the peers' boot sequence numbers.
+// The peer state file in the store, and the suffix of the name a corrupt one
+// is set aside under (the store refuses names that start with a dot).
 const (
-	peerBootSeqFile    = "peer-bootseq.json"
-	peerBootSeqVersion = 1
-	maxPeerBootSeqFile = 16 << 10
+	peerStateFile    = "peer-state.json"
+	peerStateVersion = 1
+	maxPeerStateFile = 16 << 10
+	corruptSuffix    = ".corrupt"
 )
 
 var (
@@ -70,9 +72,12 @@ var (
 	// ErrBadReport reports a probe answer that says the target was heard in
 	// the future.
 	ErrBadReport = errors.New("member: probe answer with a negative age")
-	// ErrBootSeqFile reports a store file of peers' boot sequence numbers
-	// that does not decode.
-	ErrBootSeqFile = errors.New("member: the peers' boot sequence file is corrupt")
+	// ErrStateFile reports a peer state file in the store that does not
+	// decode.
+	ErrStateFile = errors.New("member: the peer state file is corrupt")
+	// ErrNotFresher reports a relayed heartbeat that is not newer than the
+	// one the Table holds of its sender.
+	ErrNotFresher = errors.New("member: relayed heartbeat is not newer than the one held")
 )
 
 // Config is what a Table starts from.
@@ -119,14 +124,20 @@ type Config struct {
 // stays suspect (at 15, 20 and 25 s by default). For each, the node calls
 // IndirectProbeRequest, which names up to MaxHelpers helpers, the members with
 // the lowest IDs that the Table hears directly and that are neither suspect
-// nor silent, and sends them the probe. A helper answers with Report; the
-// node passes each answer, after Admit, to RecordReport. An answer counts
-// only while its target is still suspect, and only from a member asked during
-// that suspicion; one that says the helper heard the target more recently
-// than the Table did moves the target's last hearing to that moment, so the
-// target is silent only once nobody asked has heard it for SilentMissed
-// intervals. A helper is trusted with this as a member of the roster: a
-// helper that lies can keep a dead member from being reported.
+// nor silent, and sends them the probe. A helper answers with Report, which
+// carries the target's latest heartbeat as the helper received it, signed by
+// the target. The node passes each answer, after Admit, to RecordReport. An
+// answer counts only while its target is still suspect, only from a member
+// asked during that suspicion, and only through that heartbeat: it must pass
+// the same checks as a heartbeat received directly (the target's key in the
+// roster, the replay window, every field), and it must be newer than the
+// newest the Table holds of the target (a higher boot sequence number, or
+// the same with a higher counter). The target is then last heard when the
+// helper says it received that heartbeat, but not before the Table's own
+// last direct hearing. A helper's word alone saves nobody, and a helper can
+// replay only heartbeats the target really sent: once relayed, a heartbeat is
+// the newest the Table holds, so a dead member is silent 30 s after the last
+// heartbeat it sent that anyone asked received.
 //
 // # What a heartbeat shows
 //
@@ -139,6 +150,11 @@ type Config struct {
 // heartbeat arrives gets its MemberSilent from Observe, before the return, so
 // what is reported does not depend on when Tick ran. Every event is
 // witnessed by Config.Self.
+//
+// A heartbeat relayed by a helper shows the same: a new boot is a reboot,
+// stamped when the helper received it, and RecordReport returns the event.
+// It does not count as heard directly, so it never makes its sender a helper,
+// and it teaches no clock offset (its arrival time is the helper's word).
 //
 // Observe also reports, in Observed.RosterMismatch, a heartbeat that
 // announces a roster hash other than Config.RosterHash (or the last
@@ -164,14 +180,20 @@ type Config struct {
 // # Replay
 //
 // Per peer, the Table keeps a replay.Window, which it checks before the
-// signature and records in only after it, and the highest boot sequence
-// number it has accepted from that peer. That number is also kept in the
-// store, in one small file written when a number rises (at most once a
-// minute, by the store's Flusher), and loaded by New, so that after a restart
-// of the local member a packet from an older boot of a peer is still refused.
-// A restart still empties the windows, so the packets of a peer's current
-// boot are taken again from the first one that arrives, in rising counter
-// order.
+// signature and records in only after it, and the boot sequence number, boot
+// ID and highest counter of the boot it has accepted packets from. Those
+// three are kept in the store, in one small file, peer-state.json, that the
+// store's Flusher writes at most once a minute after any packet was
+// accepted, and New loads them: after a restart of the local member a packet
+// of a peer's older boot is refused, and so is one of the stored boot with a
+// counter at or below the stored one, which is how far a recording can still
+// be replayed (at most a minute of heartbeats). A packet of the stored boot
+// number with another boot ID is a duplicate identity, as below.
+//
+// A peer state file that cannot be read or decoded does not stop New: the
+// Table starts without it, keeps the error for StorageError, and sets a file
+// that does not decode aside as peer-state.json.corrupt; the next write
+// replaces it.
 //
 // # Duplicate identity
 //
@@ -227,8 +249,9 @@ type Table struct {
 	evidence   uint64 // the highest boot sequence number this identity is known to have used; 0 for none
 	counters   Counters
 
-	st      *store.Store
-	flusher *store.Flusher
+	st         *store.Store
+	flusher    *store.Flusher
+	storageErr error // what was wrong with the peer state file at start
 }
 
 // peer is the Table's state for one other member.
@@ -237,17 +260,20 @@ type peer struct {
 	pub ed25519.PublicKey
 
 	// Replay.
-	window  replay.Window
-	floor   uint64  // the highest boot sequence number accepted, or loaded from the store
-	cur     bootRun // the boot the window is in
-	prev    bootRun // the boot before it, as last seen
-	dupSeen bool    // a duplicate was reported
-	dupBoot ids.BootID
+	window   replay.Window
+	floor    uint64  // the highest boot sequence number accepted, or loaded from the store
+	cur      bootRun // the boot the window is in, or the one loaded from the store
+	prev     bootRun // the boot before it, as last seen
+	restored bootRun // the boot loaded from the store: counters up to its highest are refused
+	dupSeen  bool    // a duplicate was reported
+	dupBoot  ids.BootID
 
 	// What its heartbeats said.
-	heardOnce bool          // a heartbeat was accepted since the Table started
+	heardOnce bool          // a heartbeat was received directly since the Table started
 	heard     time.Duration // local Mono of the last one; the start until then
-	vouched   time.Duration // local Mono at which a helper last heard it
+	vouched   time.Duration // local Mono at which a helper received its last relayed heartbeat
+	last      []byte        // its newest heartbeat, direct or relayed, as received
+	lastAt    time.Duration // local Mono at which last was received (by a helper, if relayed)
 	boot      ids.BootID
 	version   string
 	goingDown bool
@@ -287,6 +313,12 @@ const (
 	conflict                // only a second live router can send it
 )
 
+// newer reports whether a packet with these numbers is newer than the newest
+// the Table holds of p.
+func (p *peer) newer(seq, counter uint64) bool {
+	return !p.cur.set || seq > p.cur.seq || (seq == p.cur.seq && counter > p.cur.highest)
+}
+
 // check judges a packet's numbers without recording anything.
 func (p *peer) check(seq uint64, boot ids.BootID, counter uint64) verdict {
 	switch {
@@ -294,6 +326,8 @@ func (p *peer) check(seq uint64, boot ids.BootID, counter uint64) verdict {
 		return conflict
 	case p.prev.set && seq == p.prev.seq && boot == p.prev.boot && counter > p.prev.highest:
 		return conflict
+	case p.restored.set && seq == p.restored.seq && counter <= p.restored.highest:
+		return stale
 	case seq < p.floor || !p.window.Check(seq, boot, counter):
 		return stale
 	}
@@ -310,13 +344,14 @@ type Counters struct {
 	Signature  uint64 // the signature does not verify
 	Self       uint64 // the member's own identity
 	Duplicate  uint64 // proof of two live routers with one identity
+	Relayed    uint64 // heartbeats accepted from a helper's answer
 }
 
 // New returns a Table for cfg, started at now: every other member of the
-// roster is last heard at now. It loads the peers' boot sequence numbers
-// from the store. It returns ErrConfig for a Config it cannot use, an error
-// wrapping ErrBootSeqFile for a stored file that does not decode, and the
-// store's error for one it cannot read; a missing file is a fresh start.
+// roster is last heard at now. It loads the peer state file from the store;
+// one that cannot be read or decoded is handled as the Table's doc
+// describes, and does not make New fail. It returns ErrConfig for a Config
+// it cannot use.
 func New(cfg Config, now clock.Stamp) (*Table, error) {
 	interval, suspect, silent := cfg.Interval, cfg.SuspectMissed, cfg.SilentMissed
 	if interval == 0 {
@@ -346,9 +381,11 @@ func New(cfg Config, now clock.Stamp) (*Table, error) {
 	if err != nil {
 		return nil, err
 	}
-	floors, err := loadFloors(cfg.Store)
-	if err != nil {
-		return nil, err
+	states, raw, storageErr := loadState(cfg.Store)
+	if raw != nil {
+		if err := cfg.Store.WriteFileAtomic(peerStateFile+corruptSuffix, raw); err != nil {
+			storageErr = errors.Join(storageErr, fmt.Errorf("member: setting the corrupt file aside: %w", err))
+		}
 	}
 	t := &Table{
 		self: cfg.Self, boot: cfg.Boot, startSeq: cfg.BootSeq, ownSeq: cfg.BootSeq, selfPub: selfPub,
@@ -359,13 +396,18 @@ func New(cfg Config, now clock.Stamp) (*Table, error) {
 		peers:        map[ids.MemberID]*peer{},
 		offsets:      map[ids.MemberID]time.Duration{},
 		st:           cfg.Store,
+		storageErr:   storageErr,
 	}
 	for _, m := range cfg.Roster.Members {
 		if m.ID != cfg.Self {
-			t.peers[m.ID] = &peer{id: m.ID, pub: bytes.Clone(m.SignPub), floor: floors[m.ID], heard: now.Mono}
+			run := states[m.ID]
+			t.peers[m.ID] = &peer{
+				id: m.ID, pub: bytes.Clone(m.SignPub), heard: now.Mono,
+				floor: run.seq, cur: run, restored: run,
+			}
 		}
 	}
-	t.flusher = cfg.Store.NewFlusher(t.writeFloors)
+	t.flusher = cfg.Store.NewFlusher(t.writeState)
 	return t, nil
 }
 
@@ -418,31 +460,48 @@ func (t *Table) Observe(epoch uint32, b []byte, now clock.Stamp) (Observed, erro
 		t.counters.Unknown++
 		return Observed{}, ErrUnknownMember
 	}
+	h, obs, err := t.admitHeartbeat(p, pk, false, now)
+	if err != nil {
+		return obs, err
+	}
+	t.counters.Accepted++
+	evs := t.heard(p, h, b, now.Mono, true, now)
+	return Observed{Heartbeat: h, Events: evs, RosterMismatch: h.RosterHash != t.rosterHash}, nil
+}
+
+// admitHeartbeat takes the heartbeat pk from p through the replay check, the
+// signature and decodeBody, and records it in p's replay window. A relayed
+// heartbeat must also be newer than the newest held of p. On failure it
+// counts the reason; a duplicate identity comes with its event in Observed.
+func (t *Table) admitHeartbeat(p *peer, pk packet, relayed bool, now clock.Stamp) (Heartbeat, Observed, error) {
 	switch p.check(pk.bootSeq, pk.boot, pk.counter) {
 	case stale:
 		t.counters.Replay++
-		return Observed{}, ErrReplay
+		return Heartbeat{}, Observed{}, ErrReplay
 	case conflict:
-		return t.duplicate(p, pk, now)
+		obs, err := t.duplicate(p, pk, now)
+		return Heartbeat{}, obs, err
+	}
+	if relayed && !p.newer(pk.bootSeq, pk.counter) {
+		t.counters.Replay++
+		return Heartbeat{}, Observed{}, ErrNotFresher
 	}
 	if !sig.Verify(p.pub, kindHeartbeat, pk.body, pk.sig) {
 		t.counters.Signature++
-		return Observed{}, ErrSignature
+		return Heartbeat{}, Observed{}, ErrSignature
 	}
 	h, err := decodeBody(pk.body)
 	if err != nil {
 		t.counters.Malformed++
-		return Observed{}, err
+		return Heartbeat{}, Observed{}, err
 	}
 	if !t.accept(p, pk.bootSeq, pk.boot, pk.counter) {
 		// Cannot happen while t.mu is held from the check to here; kept so
 		// that a window that disagrees never lets a packet through.
 		t.counters.Replay++
-		return Observed{}, ErrReplay
+		return Heartbeat{}, Observed{}, ErrReplay
 	}
-	t.counters.Accepted++
-	evs := t.heard(p, h, now)
-	return Observed{Heartbeat: h, Events: evs, RosterMismatch: h.RosterHash != t.rosterHash}, nil
+	return h, Observed{}, nil
 }
 
 // observeSelf handles a heartbeat that carries the local member's own ID:
@@ -477,7 +536,7 @@ func (t *Table) duplicate(p *peer, pk packet, now clock.Stamp) (Observed, error)
 }
 
 // accept records a packet whose signature verified in p's replay window and
-// boot history, and keeps a higher boot sequence number for the store.
+// boot history, and marks the peer state for the store.
 func (t *Table) accept(p *peer, seq uint64, boot ids.BootID, counter uint64) bool {
 	if !p.window.Accept(seq, boot, counter) {
 		return false
@@ -487,40 +546,46 @@ func (t *Table) accept(p *peer, seq uint64, boot ids.BootID, counter uint64) boo
 	} else {
 		p.cur.highest = max(p.cur.highest, counter)
 	}
-	if seq > p.floor {
-		p.floor = seq
-		t.flusher.Mark()
-	}
+	p.floor = max(p.floor, seq)
+	t.flusher.Mark()
 	return true
 }
 
-// heard updates p after its heartbeat h was accepted at now, and returns the
-// events h shows.
-func (t *Table) heard(p *peer, h Heartbeat, now clock.Stamp) []events.Event {
+// heard updates p after its heartbeat h, received as raw at the local
+// monotonic moment at (directly, or by a helper), was accepted, and returns
+// the events h shows.
+func (t *Table) heard(p *peer, h Heartbeat, raw []byte, at time.Duration, direct bool, now clock.Stamp) []events.Event {
 	var evs []events.Event
 	if !p.silent && now.Mono-p.ref() >= t.silentAfter {
 		evs = append(evs, t.event(events.MemberSilent, p.id, p.ref(), now))
 		p.silent = true
 	}
-	if p.silent || (p.heardOnce && h.Boot != p.boot) {
+	if p.silent || (p.boot != (ids.BootID{}) && h.Boot != p.boot) {
 		typ := events.Classify(
 			events.Before{AnnouncedGoingDown: p.goingDown, BootID: p.boot, Version: p.version},
 			events.Return{BootID: h.Boot, Version: h.Versions[0]},
 		)
-		e := t.event(typ, p.id, now.Mono, now)
+		e := t.event(typ, p.id, at, now)
 		if typ == events.Upgraded {
 			e.Detail = map[string]string{"from": p.version, "to": h.Versions[0]}
 		}
 		evs = append(evs, e)
 	}
-	p.heardOnce, p.heard = true, now.Mono
 	p.boot, p.version, p.goingDown = h.Boot, h.Versions[0], h.GoingDown
-	p.silent, p.reachable = false, true
-	p.endSuspicion()
-	if h.ClockTrusted {
-		t.offsets[p.id] = time.Duration(h.Wall.UnixNano()) - now.Mono
+	p.last, p.lastAt = bytes.Clone(raw), at
+	p.silent = false
+	if direct {
+		p.heardOnce, p.heard, p.reachable = true, at, true
+		if h.ClockTrusted {
+			t.offsets[p.id] = time.Duration(h.Wall.UnixNano()) - at
+		} else {
+			delete(t.offsets, p.id)
+		}
 	} else {
-		delete(t.offsets, p.id)
+		p.vouched = max(p.vouched, at)
+	}
+	if now.Mono-p.ref() < t.suspectAfter {
+		p.endSuspicion()
 	}
 	return evs
 }
@@ -655,16 +720,18 @@ func (t *Table) Admit(from ids.MemberID, bootSeq uint64, boot ids.BootID, counte
 // Report is a member's answer about Target, to an indirect probe or to
 // Target's own question at start (security spec 5.3).
 type Report struct {
-	Target  ids.MemberID
-	Heard   bool          // a heartbeat of Target was accepted since the answering Table started
-	Ago     time.Duration // how long before the answer that was; 0 when Heard is false
-	BootSeq uint64        // the highest boot sequence number known of Target; 0 if none
-	Boot    ids.BootID    // the boot ID that came with BootSeq, if it came in this run
+	Target    ids.MemberID
+	Heartbeat []byte        // Target's newest heartbeat as the answering member received it; nil if none
+	Ago       time.Duration // how long before the answer it was received; 0 without one
+	BootSeq   uint64        // the highest boot sequence number known of Target; 0 if none
+	Boot      ids.BootID    // the boot ID that came with BootSeq; zero if unknown
 }
 
-// Report returns what the local member answers about target at now. For a
-// target outside the roster, the local member among them, only Target is
-// set.
+// Report returns what the local member answers about target at now: its
+// newest heartbeat of target since the Table started, received directly or
+// relayed, and the boot it holds of target, from this run or from the store.
+// For a target outside the roster, the local member among them, only Target
+// is set.
 func (t *Table) Report(target ids.MemberID, now clock.Stamp) Report {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -679,45 +746,60 @@ func (t *Table) Report(target ids.MemberID, now clock.Stamp) Report {
 	if p.cur.set {
 		r.Boot = p.cur.boot
 	}
-	if p.heardOnce {
-		r.Heard, r.Ago = true, max(now.Mono-p.heard, 0)
+	if p.last != nil {
+		r.Heartbeat, r.Ago = bytes.Clone(p.last), max(now.Mono-p.lastAt, 0)
 	}
 	return r
 }
 
-// RecordReport takes the answer r, received at now in the packet a. An
-// answer about the local member is evidence for RestoreBootSeq. Any other is
-// an indirect probe answer, as the Table's doc describes: ErrUnsolicited if
-// its target is not suspect or a.From() was not asked in this suspicion,
-// ErrBadReport for a negative Ago. ErrUnknownMember if a.From() is not, or
-// no longer, in the roster.
-func (t *Table) RecordReport(a Admitted, r Report, now clock.Stamp) error {
+// RecordReport takes the answer r, received at now in the packet a, and
+// returns the events its heartbeat shows. An answer about the local member
+// is evidence for RestoreBootSeq (BootSeq and Boot). Any other is an indirect
+// probe answer, as the Table's doc describes: ErrUnsolicited if its target is
+// not suspect or a.From() was not asked in this suspicion; ErrBadReport for a
+// negative Ago or a heartbeat of another member; then the errors of Observe
+// for its heartbeat, and ErrNotFresher for one not newer than the newest
+// held. An answer without a heartbeat changes nothing. ErrUnknownMember if
+// a.From() is not, or no longer, in the roster.
+func (t *Table) RecordReport(a Admitted, r Report, now clock.Stamp) ([]events.Event, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.peers[a.from] == nil {
-		return ErrUnknownMember
+		return nil, ErrUnknownMember
 	}
 	if r.Target == t.self {
 		t.noteOwnBootSeq(r.BootSeq, r.Boot)
-		return nil
+		return nil, nil
 	}
 	// Helpers are only ever asked while their target is suspect, and the
 	// list is cleared when the suspicion ends (endSuspicion).
 	p := t.peers[r.Target]
 	if p == nil || !slices.Contains(p.asked, a.from) {
-		return ErrUnsolicited
+		return nil, ErrUnsolicited
 	}
 	if r.Ago < 0 {
-		return ErrBadReport
+		return nil, ErrBadReport
 	}
-	if !r.Heard {
-		return nil
+	if r.Heartbeat == nil {
+		return nil, nil
 	}
-	p.vouched = max(p.vouched, now.Mono-r.Ago)
-	if now.Mono-p.ref() < t.suspectAfter {
-		p.endSuspicion()
+	pk, err := split(r.Heartbeat)
+	if err != nil {
+		t.counters.Malformed++
+		return nil, err
 	}
-	return nil
+	if pk.from != p.id {
+		return nil, ErrBadReport
+	}
+	h, obs, err := t.admitHeartbeat(p, pk, true, now)
+	if err != nil {
+		return obs.Events, err
+	}
+	t.counters.Relayed++
+	// Never before the Table's own last direct hearing: a helper's age only
+	// says when, never that the target was alive earlier than known.
+	at := max(now.Mono-r.Ago, p.heard)
+	return t.heard(p, h, r.Heartbeat, at, false, now), nil
 }
 
 // noteOwnBootSeq keeps seq as evidence for RestoreBootSeq if it is above
@@ -826,6 +908,12 @@ func (t *Table) SetRoster(r roster.Roster, hash ids.Hash, now clock.Stamp) error
 	return nil
 }
 
+// StorageError returns what was wrong with the peer state file when the
+// Table started (it could not be read or decoded, and was not used), or nil.
+// It does not change during the Table's life; later write failures are kept
+// by the store (Store.LastError).
+func (t *Table) StorageError() error { return t.storageErr }
+
 // Counters returns what the Table counted so far.
 func (t *Table) Counters() Counters {
 	t.mu.Lock()
@@ -843,67 +931,80 @@ func (t *Table) sortedPeers() []*peer {
 	return ps
 }
 
-// peerBootSeqs is the content of the store file:
+// peerStates is the content of the peer state file:
 //
-//	{"version":1,"peers":[{"id":"<32 hex digits>","boot_seq":N},...]}
+//	{"version":1,"peers":[{"id":"<32 hex digits>","boot_seq":N,
+//	  "boot":"<32 hex digits>","counter":C},...]}
 //
-// with the peers in ascending order of their ID bytes, each once, N at
-// least 1.
-type peerBootSeqs struct {
-	Version int           `json:"version"`
-	Peers   []peerBootSeq `json:"peers"`
+// with the peers in ascending order of their ID bytes, each once, N at least
+// 1, the boot ID not all zero.
+type peerStates struct {
+	Version int         `json:"version"`
+	Peers   []peerState `json:"peers"`
 }
 
-type peerBootSeq struct {
+type peerState struct {
 	ID      ids.MemberID `json:"id"`
 	BootSeq uint64       `json:"boot_seq"`
+	Boot    ids.BootID   `json:"boot"`
+	Counter uint64       `json:"counter"`
 }
 
-// loadFloors reads the peers' boot sequence numbers from st: an empty map if
-// the file does not exist, ErrBootSeqFile if it does not decode, and the
-// store's error if it cannot be read. Entries for members not in the roster
-// are kept and never used.
-func loadFloors(st *store.Store) (map[ids.MemberID]uint64, error) {
-	floors := map[ids.MemberID]uint64{}
-	data, err := st.ReadFile(peerBootSeqFile)
+// loadState reads the peer state file from st. A missing file is no state
+// and no error. A file the store refuses to read gives the store's error; one
+// that does not decode gives an error wrapping ErrStateFile and its content,
+// to be set aside. Entries for members not in the roster are kept and never
+// used.
+func loadState(st *store.Store) (map[ids.MemberID]bootRun, []byte, error) {
+	states := map[ids.MemberID]bootRun{}
+	data, err := st.ReadFile(peerStateFile)
 	if errors.Is(err, fs.ErrNotExist) {
-		return floors, nil
+		return states, nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("member: %w", err)
+		return states, nil, fmt.Errorf("member: %w", err)
 	}
-	if len(data) > maxPeerBootSeqFile {
-		return nil, fmt.Errorf("%w: larger than %d bytes", ErrBootSeqFile, maxPeerBootSeqFile)
+	if err := decodeState(data, states); err != nil {
+		return map[ids.MemberID]bootRun{}, data, err
 	}
-	var f peerBootSeqs
+	return states, nil, nil
+}
+
+// decodeState fills states from data, or returns an error wrapping
+// ErrStateFile.
+func decodeState(data []byte, states map[ids.MemberID]bootRun) error {
+	if len(data) > maxPeerStateFile {
+		return fmt.Errorf("%w: larger than %d bytes", ErrStateFile, maxPeerStateFile)
+	}
+	var f peerStates
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&f); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrBootSeqFile, err)
+		return fmt.Errorf("%w: %v", ErrStateFile, err)
 	}
 	if _, err := dec.Token(); err != io.EOF {
-		return nil, fmt.Errorf("%w: data after the object", ErrBootSeqFile)
+		return fmt.Errorf("%w: data after the object", ErrStateFile)
 	}
-	if f.Version != peerBootSeqVersion {
-		return nil, fmt.Errorf("%w: version %d, want %d", ErrBootSeqFile, f.Version, peerBootSeqVersion)
+	if f.Version != peerStateVersion {
+		return fmt.Errorf("%w: version %d, want %d", ErrStateFile, f.Version, peerStateVersion)
 	}
 	for i, e := range f.Peers {
-		if _, dup := floors[e.ID]; dup || e.ID == (ids.MemberID{}) || e.BootSeq == 0 {
-			return nil, fmt.Errorf("%w: entry %d is a zero or repeated ID, or boot_seq 0", ErrBootSeqFile, i)
+		if _, dup := states[e.ID]; dup || e.ID == (ids.MemberID{}) || e.BootSeq == 0 || e.Boot == (ids.BootID{}) {
+			return fmt.Errorf("%w: entry %d is a zero or repeated ID, boot_seq 0 or a zero boot", ErrStateFile, i)
 		}
-		floors[e.ID] = e.BootSeq
+		states[e.ID] = bootRun{set: true, seq: e.BootSeq, boot: e.Boot, highest: e.Counter}
 	}
-	return floors, nil
+	return nil
 }
 
-// writeFloors stores the boot sequence numbers of the current members. The
-// store's Flusher calls it.
-func (t *Table) writeFloors() error {
+// writeState stores the boot each current member's packets were last
+// accepted from. The store's Flusher calls it.
+func (t *Table) writeState() error {
 	t.mu.Lock()
-	f := peerBootSeqs{Version: peerBootSeqVersion, Peers: []peerBootSeq{}}
+	f := peerStates{Version: peerStateVersion, Peers: []peerState{}}
 	for _, p := range t.sortedPeers() {
-		if p.floor > 0 {
-			f.Peers = append(f.Peers, peerBootSeq{ID: p.id, BootSeq: p.floor})
+		if p.cur.set {
+			f.Peers = append(f.Peers, peerState{ID: p.id, BootSeq: p.cur.seq, Boot: p.cur.boot, Counter: p.cur.highest})
 		}
 	}
 	t.mu.Unlock()
@@ -911,5 +1012,5 @@ func (t *Table) writeFloors() error {
 	if err != nil {
 		return err
 	}
-	return t.st.WriteFileAtomic(peerBootSeqFile, append(data, '\n'))
+	return t.st.WriteFileAtomic(peerStateFile, append(data, '\n'))
 }

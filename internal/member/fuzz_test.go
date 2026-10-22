@@ -2,6 +2,7 @@ package member
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"encoding/binary"
 	"errors"
 	"reflect"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TAIPANBOX/rollcall/internal/clock"
 	"github.com/TAIPANBOX/rollcall/internal/ids"
 )
 
@@ -131,5 +133,60 @@ func FuzzObserveSigned(f *testing.F) {
 			t.Fatalf("accepted a heartbeat from %x signed by r02", h.From)
 		}
 		fx.tab.Tick(at(now))
+	})
+}
+
+// FuzzRelayedReport hands a table arbitrary bytes, signed with the suspect
+// target's key, as the heartbeat in an asked helper's answer: the path a
+// lying or broken helper reaches. RecordReport must never panic, must return
+// only its sentinels, and must count an answer only for a heartbeat that
+// decodes, is the target's, and is newer than the one held.
+func FuzzRelayedReport(f *testing.F) {
+	fuzzSeeds(f)
+	ms := members(3)
+	fx := newFixtureOf(f, ms, start)
+	r02, r03 := ms[1], ms[2]
+	sentinels := []error{ErrMalformed, ErrBadReport, ErrReplay, ErrSignature, ErrNotFresher, ErrDuplicateIdentity, ErrUnsolicited}
+	now := start
+	f.Fuzz(func(t *testing.T, data []byte) {
+		// Move on until r02 is suspect and r03 asked about it. The fixture's
+		// helpers report to the F, so they are not used in here.
+		now += 16 * time.Second
+		// The wall clock stands still, so the store's Flusher writes once
+		// and then waits: the fuzzer spends its time here, not in fsync.
+		st := clock.Stamp{Wall: t0, Mono: now, Trusted: true, Boot: localBoot}
+		if _, err := fx.tab.Observe(testEpoch, enc(t, fx.beat(r03), r03), st); err != nil {
+			t.Fatal(err)
+		}
+		fx.tab.Tick(st)
+		fx.tab.IndirectProbeRequest(r02.id.ID)
+		p := fx.sim(r03)
+		p.counter++
+		a, err := fx.tab.Admit(r03.id.ID, p.seq, bootID(p.boot), p.counter, func(ed25519.PublicKey) bool { return true })
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := fx.tab.Counters().Relayed
+		_, err = fx.tab.RecordReport(a, Report{Target: r02.id.ID, Heartbeat: handSign(data, r02.id.Sign)}, at(now))
+		if err != nil {
+			known := false
+			for _, s := range sentinels {
+				known = known || errors.Is(err, s)
+			}
+			if !known {
+				t.Fatalf("RecordReport returned %v", err)
+			}
+			if fx.tab.Counters().Relayed != before {
+				t.Fatal("a refused answer was counted")
+			}
+			return
+		}
+		if fx.tab.Counters().Relayed != before+1 {
+			return // nothing carried that could count (an empty heartbeat is no answer)
+		}
+		h, derr := decodeBody(data)
+		if derr != nil || h.From != r02.id.ID {
+			t.Fatalf("counted a relayed heartbeat that decodeBody refuses or that is not r02's: %v", derr)
+		}
 	})
 }

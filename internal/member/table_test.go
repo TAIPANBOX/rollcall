@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -313,20 +314,27 @@ func TestFreshTableWaitsFullSilence(t *testing.T) {
 	}
 }
 
-// probeLoop runs a group of 4 for d seconds after h: r03 and r04 beat every
-// 5 s and r02's heartbeats never reach the local member. When answer is
-// set, every helper asked about r02 answers that it last heard r02 ago(now)
-// before. It returns the silent events and the number of probe rounds.
-func probeLoop(t *testing.T, f *fixture, h, d time.Duration, answer bool, ago func(now time.Duration) (time.Duration, bool)) ([]events.Event, int) {
+// probeLoop runs a group of 4 for d seconds after h. r03 and r04 beat every
+// 5 s; r02 beats every 5 s until died, but none of its heartbeats after h
+// reach the local member. When relay is set, every helper asked about r02
+// answers with r02's newest heartbeat, which the helpers received as r02
+// sent it. It returns the silent events, the number of probe rounds and the
+// number of answers that counted.
+func probeLoop(t *testing.T, f *fixture, h, d, died time.Duration, relay bool) ([]events.Event, int, int) {
 	t.Helper()
 	r02, r03, r04 := f.ms[1], f.ms[2], f.ms[3]
 	var silent []events.Event
-	rounds := 0
+	var latest []byte
+	var sentAt time.Duration
+	rounds, counted := 0, 0
 	for step := s; step <= d; step += s {
 		now := h + step
 		if step%(5*s) == 0 {
 			f.mustSend(r03, at(now))
 			f.mustSend(r04, at(now))
+			if now <= died {
+				latest, sentAt = enc(t, f.beat(r02), r02), now
+			}
 		}
 		sus, sil := f.tab.Tick(at(now))
 		silent = append(silent, sil...)
@@ -339,22 +347,24 @@ func probeLoop(t *testing.T, f *fixture, h, d time.Duration, answer bool, ago fu
 			if !slices.Equal(helpers, idsOf(r03, r04)) {
 				t.Fatalf("at +%v helpers %x, want r03 and r04", step, helpers)
 			}
-			if !answer {
+			if !relay {
 				continue
 			}
-			for i, hm := range []tm{r03, r04} {
-				a, heard := ago(now)
-				rep := Report{Target: r02.id.ID, Heard: heard, Ago: a, BootSeq: 1, Boot: bootID(1)}
-				err := f.tab.RecordReport(f.admit(hm), rep, at(now))
-				// The first answer may end the suspicion; the second is then
-				// too late.
-				if err != nil && (i == 0 || !errors.Is(err, ErrUnsolicited)) {
+			for _, hm := range []tm{r03, r04} {
+				_, err := f.relay(hm, r02, latest, now-sentAt, at(now))
+				switch {
+				case err == nil && latest != nil:
+					counted++
+				case err == nil, errors.Is(err, ErrUnsolicited), errors.Is(err, ErrReplay), errors.Is(err, ErrNotFresher):
+					// No heartbeat to carry; the first answer ended the
+					// suspicion; or the heartbeat was relayed before.
+				default:
 					t.Fatalf("at +%v RecordReport from %s: %v", step, hm.name, err)
 				}
 			}
 		}
 	}
-	return silent, rounds
+	return silent, rounds, counted
 }
 
 func TestIndirectProbeAvoidsFalseSilent(t *testing.T) {
@@ -370,49 +380,31 @@ func TestIndirectProbeAvoidsFalseSilent(t *testing.T) {
 
 	// The helpers hear r02 until it dies; the local member never does.
 	f := setup()
-	helpersHeard := func(now time.Duration) (time.Duration, bool) {
-		if now < died {
-			return 2 * s, true
-		}
-		return now - died, true
-	}
-	silent, rounds := probeLoop(t, f, h, 260*s, true, helpersHeard)
-	if rounds < 10 {
-		t.Errorf("only %d probe rounds in 260 s", rounds)
+	silent, rounds, counted := probeLoop(t, f, h, 260*s, died, true)
+	if rounds < 10 || counted < 10 {
+		t.Errorf("only %d probe rounds and %d answers that counted in 260 s", rounds, counted)
 	}
 	if len(silent) != 1 {
 		t.Fatalf("want exactly one silent event, after r02 died; got %s", describe(silent))
 	}
-	// Silent 30 s after the last hearing by anyone, stamped at that hearing.
+	// Silent 30 s after its last heartbeat, stamped when a helper got it.
 	wantEvent(t, silent[0], events.MemberSilent, f.ms[1], f.self, at(died))
-	if sil := f.tab.Counters(); sil.Accepted == 0 {
-		t.Errorf("counters %+v", sil)
-	}
 
 	// The control: nobody answers, and r02 is silent after 30 s.
 	g := setup()
-	silent, _ = probeLoop(t, g, h, 40*s, false, nil)
+	silent, _, _ = probeLoop(t, g, h, 40*s, died, false)
 	if len(silent) != 1 {
 		t.Fatalf("control: want r02 silent once, got %s", describe(silent))
 	}
 	wantEvent(t, silent[0], events.MemberSilent, g.ms[1], g.self, at(h))
 
-	// Helpers that do not hear r02 either change nothing.
+	// Helpers that have no newer heartbeat of r02 change nothing.
 	k := setup()
-	silent, _ = probeLoop(t, k, h, 40*s, true, func(time.Duration) (time.Duration, bool) { return 0, false })
-	if len(silent) != 1 {
-		t.Fatalf("not heard: want r02 silent once, got %s", describe(silent))
+	silent, _, counted = probeLoop(t, k, h, 40*s, h, true)
+	if len(silent) != 1 || counted != 0 {
+		t.Fatalf("nothing to relay: want r02 silent once and no answer counted, got %s, %d", describe(silent), counted)
 	}
 	wantEvent(t, silent[0], events.MemberSilent, k.ms[1], k.self, at(h))
-
-	// Helpers that heard r02 longer ago than the local member did change
-	// nothing either.
-	l := setup()
-	silent, _ = probeLoop(t, l, h, 40*s, true, func(now time.Duration) (time.Duration, bool) { return now - h + s, true })
-	if len(silent) != 1 {
-		t.Fatalf("older hearing: want r02 silent once, got %s", describe(silent))
-	}
-	wantEvent(t, silent[0], events.MemberSilent, l.ms[1], l.self, at(h))
 }
 
 func TestIndirectProbeHelpers(t *testing.T) {
@@ -493,8 +485,7 @@ func TestIndirectProbeHelpers(t *testing.T) {
 		}
 		// r03 is vouched for by r04: no longer suspect, but the local member
 		// still cannot hear it.
-		rep := Report{Target: r03.id.ID, Heard: true, Ago: s}
-		if err := f.tab.RecordReport(f.admit(r04), rep, at(h+15*s)); err != nil {
+		if _, err := f.relay(r04, r03, enc(t, f.beat(r03), r03), s, at(h+15*s)); err != nil {
 			t.Fatal(err)
 		}
 		f.tick(at(h + 16*s))
@@ -519,7 +510,11 @@ func TestProbeAnswerRules(t *testing.T) {
 	ms := members(5)
 	r02, r03, r04, r05 := ms[1], ms[2], ms[3], ms[4]
 	h := start + s
-	heard := Report{Target: r02.id.ID, Heard: true, Ago: s}
+	// heard is an answer that r02 was heard a second ago, with r02's next
+	// heartbeat, which never reached the local member.
+	heard := func(f *fixture) Report {
+		return Report{Target: r02.id.ID, Ago: s, Heartbeat: enc(t, f.beat(r02), r02)}
+	}
 
 	// setup: r02 suspect at +15 s, helpers r03 and r04 asked; r05 not.
 	setup := func(t *testing.T) *fixture {
@@ -548,15 +543,15 @@ func TestProbeAnswerRules(t *testing.T) {
 
 	t.Run("a member not asked", func(t *testing.T) {
 		f := setup(t)
-		if err := f.tab.RecordReport(f.admit(r05), heard, at(h+16*s)); !errors.Is(err, ErrUnsolicited) {
+		if _, err := f.tab.RecordReport(f.admit(r05), heard(f), at(h+16*s)); !errors.Is(err, ErrUnsolicited) {
 			t.Errorf("RecordReport from r05 = %v, want ErrUnsolicited", err)
 		}
 		stillSilentAt(t, f, h+30*s)
 	})
 	t.Run("target not suspect", func(t *testing.T) {
 		f := setup(t)
-		rep := Report{Target: r03.id.ID, Heard: true, Ago: s}
-		if err := f.tab.RecordReport(f.admit(r04), rep, at(h+16*s)); !errors.Is(err, ErrUnsolicited) {
+		rep := Report{Target: r03.id.ID, Ago: s, Heartbeat: enc(t, f.beat(r03), r03)}
+		if _, err := f.tab.RecordReport(f.admit(r04), rep, at(h+16*s)); !errors.Is(err, ErrUnsolicited) {
 			t.Errorf("RecordReport about r03 = %v, want ErrUnsolicited", err)
 		}
 	})
@@ -567,54 +562,54 @@ func TestProbeAnswerRules(t *testing.T) {
 		if got := f.tab.IndirectProbeRequest(r02.id.ID); got != nil {
 			t.Errorf("helpers for a member just heard: %x", got)
 		}
-		if err := f.tab.RecordReport(f.admit(r03), heard, at(h+16*s)); !errors.Is(err, ErrUnsolicited) {
+		if _, err := f.tab.RecordReport(f.admit(r03), heard(f), at(h+16*s)); !errors.Is(err, ErrUnsolicited) {
 			t.Errorf("an answer about a member just heard = %v, want ErrUnsolicited", err)
 		}
 	})
 	t.Run("target unknown", func(t *testing.T) {
 		f := setup(t)
-		rep := Report{Target: stranger().id.ID, Heard: true}
-		if err := f.tab.RecordReport(f.admit(r04), rep, at(h+16*s)); !errors.Is(err, ErrUnsolicited) {
+		rep := Report{Target: stranger().id.ID, Heartbeat: enc(t, fullBeat(stranger()), stranger())}
+		if _, err := f.tab.RecordReport(f.admit(r04), rep, at(h+16*s)); !errors.Is(err, ErrUnsolicited) {
 			t.Errorf("RecordReport about a stranger = %v, want ErrUnsolicited", err)
 		}
 	})
 	t.Run("after silence", func(t *testing.T) {
 		f := setup(t)
 		stillSilentAt(t, f, h+30*s)
-		if err := f.tab.RecordReport(f.admit(r03), heard, at(h+31*s)); !errors.Is(err, ErrUnsolicited) {
+		if _, err := f.tab.RecordReport(f.admit(r03), heard(f), at(h+31*s)); !errors.Is(err, ErrUnsolicited) {
 			t.Errorf("RecordReport after silence = %v, want ErrUnsolicited", err)
 		}
 	})
 	t.Run("asked in an earlier suspicion", func(t *testing.T) {
 		f := setup(t)
-		if err := f.tab.RecordReport(f.admit(r03), heard, at(h+16*s)); err != nil {
+		if _, err := f.tab.RecordReport(f.admit(r03), heard(f), at(h+16*s)); err != nil {
 			t.Fatal(err)
 		}
 		// The recent vouch ends the suspicion at once, before any Tick: the
 		// other helper's answer is late, and there is nobody to ask.
-		if err := f.tab.RecordReport(f.admit(r04), heard, at(h+16*s)); !errors.Is(err, ErrUnsolicited) {
+		if _, err := f.tab.RecordReport(f.admit(r04), heard(f), at(h+16*s)); !errors.Is(err, ErrUnsolicited) {
 			t.Errorf("an answer after a recent vouch = %v, want ErrUnsolicited", err)
 		}
 		if got := f.tab.IndirectProbeRequest(r02.id.ID); got != nil {
 			t.Errorf("helpers after a recent vouch: %x", got)
 		}
 		f.tick(at(h + 17*s))
-		if err := f.tab.RecordReport(f.admit(r04), heard, at(h+18*s)); !errors.Is(err, ErrUnsolicited) {
+		if _, err := f.tab.RecordReport(f.admit(r04), heard(f), at(h+18*s)); !errors.Is(err, ErrUnsolicited) {
 			t.Errorf("an answer after the suspicion ended = %v, want ErrUnsolicited", err)
 		}
 	})
 	t.Run("negative ago", func(t *testing.T) {
 		f := setup(t)
-		rep := heard
+		rep := heard(f)
 		rep.Ago = -s
-		if err := f.tab.RecordReport(f.admit(r03), rep, at(h+16*s)); !errors.Is(err, ErrBadReport) {
+		if _, err := f.tab.RecordReport(f.admit(r03), rep, at(h+16*s)); !errors.Is(err, ErrBadReport) {
 			t.Errorf("RecordReport with a negative ago = %v, want ErrBadReport", err)
 		}
 		stillSilentAt(t, f, h+30*s)
 	})
 	t.Run("not admitted", func(t *testing.T) {
 		f := setup(t)
-		if err := f.tab.RecordReport(Admitted{}, heard, at(h+16*s)); !errors.Is(err, ErrUnknownMember) {
+		if _, err := f.tab.RecordReport(Admitted{}, heard(f), at(h+16*s)); !errors.Is(err, ErrUnknownMember) {
 			t.Errorf("RecordReport without Admit = %v, want ErrUnknownMember", err)
 		}
 		stillSilentAt(t, f, h+30*s)
@@ -625,19 +620,22 @@ func TestProbeAnswerRules(t *testing.T) {
 		if err := f.tab.SetRoster(testRoster([]tm{ms[0], r02, r04, r05}), testRosterHash, at(h+16*s)); err != nil {
 			t.Fatal(err)
 		}
-		if err := f.tab.RecordReport(a, heard, at(h+16*s)); !errors.Is(err, ErrUnknownMember) {
+		if _, err := f.tab.RecordReport(a, heard(f), at(h+16*s)); !errors.Is(err, ErrUnknownMember) {
 			t.Errorf("RecordReport from a removed helper = %v, want ErrUnknownMember", err)
 		}
 	})
 	t.Run("a vouch that is not recent keeps the suspicion", func(t *testing.T) {
 		f := setup(t)
-		rep := heard
+		rep := heard(f)
 		rep.Ago = 15 * s // heard at h+1 s: newer than h, but 15 s ago
-		if err := f.tab.RecordReport(f.admit(r03), rep, at(h+16*s)); err != nil {
+		if _, err := f.tab.RecordReport(f.admit(r03), rep, at(h+16*s)); err != nil {
 			t.Fatal(err)
 		}
-		// Still suspect, so r04's later answer counts: heard at h+2 s.
-		if err := f.tab.RecordReport(f.admit(r04), rep, at(h+17*s)); err != nil {
+		// Still suspect, so r04's later answer, with a newer heartbeat,
+		// counts: heard at h+2 s.
+		rep = heard(f)
+		rep.Ago = 15 * s
+		if _, err := f.tab.RecordReport(f.admit(r04), rep, at(h+17*s)); err != nil {
 			t.Errorf("second answer in the same suspicion = %v", err)
 		}
 		f.tick(at(h + 32*s - 1))
@@ -794,7 +792,7 @@ func TestBootSeqRestoreFromPeers(t *testing.T) {
 		}
 	}
 	rep := hf.tab.Report(r01.id.ID, at(start+3*s))
-	if rep.BootSeq != 9 || rep.Boot != bootID(0x09) || !rep.Heard || rep.Ago != 2*s {
+	if rep.BootSeq != 9 || rep.Boot != bootID(0x09) || !bytes.Equal(rep.Heartbeat, enc(t, past, r01)) || rep.Ago != 2*s {
 		t.Fatalf("r02 reports %+v about r01, want boot 9", rep)
 	}
 
@@ -807,7 +805,7 @@ func TestBootSeqRestoreFromPeers(t *testing.T) {
 	if got, raised, err := rf.tab.RestoreBootSeq(dir); got != 6 || raised || err != nil {
 		t.Fatalf("RestoreBootSeq with no evidence = %d, %v, %v", got, raised, err)
 	}
-	if err := rf.tab.RecordReport(rf.admit(r02), rep, at(start+4*s)); err != nil {
+	if _, err := rf.tab.RecordReport(rf.admit(r02), rep, at(start+4*s)); err != nil {
 		t.Fatalf("RecordReport: %v", err)
 	}
 	got, raised, err := rf.tab.RestoreBootSeq(dir)
@@ -859,7 +857,7 @@ func TestBootSeqEvidenceRules(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			dir, seq := bootSeqDir(t, 5)
 			f := newFixtureWith(t, ms, start, func(cf *Config) { cf.BootSeq = seq })
-			if err := f.tab.RecordReport(f.admit(c.from), c.report, at(start+s)); !errors.Is(err, c.wantErr) {
+			if _, err := f.tab.RecordReport(f.admit(c.from), c.report, at(start+s)); !errors.Is(err, c.wantErr) {
 				t.Fatalf("RecordReport = %v, want %v", err, c.wantErr)
 			}
 			got, raised, err := f.tab.RestoreBootSeq(dir)
@@ -874,7 +872,7 @@ func TestBootSeqEvidenceRules(t *testing.T) {
 	f := newFixtureWith(t, ms, start, func(cf *Config) { cf.BootSeq = seq })
 	for _, n := range []uint64{8, 12, 9} {
 		rep := Report{Target: r01.id.ID, BootSeq: n}
-		if err := f.tab.RecordReport(f.admit(r02), rep, at(start+s)); err != nil {
+		if _, err := f.tab.RecordReport(f.admit(r02), rep, at(start+s)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -889,7 +887,7 @@ func TestBootSeqRaiseBounded(t *testing.T) {
 	dir, seq := bootSeqDir(t, 5)
 	f := newFixtureWith(t, ms, start, func(c *Config) { c.BootSeq = seq })
 	huge := Report{Target: r01.id.ID, BootSeq: seq + MaxBootSeqRaise + 7}
-	if err := f.tab.RecordReport(f.admit(r02), huge, at(start+s)); err != nil {
+	if _, err := f.tab.RecordReport(f.admit(r02), huge, at(start+s)); err != nil {
 		t.Fatal(err)
 	}
 	got, raised, err := f.tab.RestoreBootSeq(dir)
@@ -913,7 +911,7 @@ func TestBootSeqRaiseBounded(t *testing.T) {
 	dir, seq = bootSeqDir(t, math.MaxUint64-4)
 	f = newFixtureWith(t, ms, start, func(c *Config) { c.BootSeq = seq })
 	top := Report{Target: r01.id.ID, BootSeq: math.MaxUint64}
-	if err := f.tab.RecordReport(f.admit(r02), top, at(start+s)); err != nil {
+	if _, err := f.tab.RecordReport(f.admit(r02), top, at(start+s)); err != nil {
 		t.Fatal(err)
 	}
 	got, raised, err = f.tab.RestoreBootSeq(dir)
@@ -1296,16 +1294,16 @@ func TestForgeryDoesNotMoveWindow(t *testing.T) {
 	}
 	// The forged boot 6 did not reach the stored boot numbers either.
 	f.tick(at(h + s))
-	data, err := f.st.ReadFile(peerBootSeqFile)
+	data, err := f.st.ReadFile(peerStateFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := fmt.Sprintf(`{"version":1,"peers":[{"id":"%s","boot_seq":5}]}`+"\n", r02.id.ID); string(data) != want {
+	if want := fmt.Sprintf(`{"version":1,"peers":[{"id":"%s","boot_seq":5,"boot":"%s","counter":13}]}`+"\n", r02.id.ID, bootID(5)); string(data) != want {
 		t.Errorf("stored %s, want %s", data, want)
 	}
 }
 
-func TestPeerBootSeqPersisted(t *testing.T) {
+func TestPeerStatePersisted(t *testing.T) {
 	ms := members(3)
 	r02, r03 := ms[1], ms[2]
 	f := newFixtureOf(t, ms, start)
@@ -1314,83 +1312,93 @@ func TestPeerBootSeqPersisted(t *testing.T) {
 	f.mustSend(r02, at(h))
 	f.mustSend(r03, at(h))
 	f.tick(at(h))
-	data, err := f.st.ReadFile(peerBootSeqFile)
+	data, err := f.st.ReadFile(peerStateFile)
 	if err != nil {
 		t.Fatalf("nothing stored: %v", err)
 	}
-	want := fmt.Sprintf(`{"version":1,"peers":[{"id":"%s","boot_seq":7},{"id":"%s","boot_seq":1}]}`+"\n", r02.id.ID, r03.id.ID)
-	if string(data) != want {
+	stored := func(c2, c3 uint64) string {
+		return fmt.Sprintf(`{"version":1,"peers":[{"id":"%s","boot_seq":%d,"boot":"%s","counter":%d},{"id":"%s","boot_seq":1,"boot":"%s","counter":%d}]}`+"\n",
+			r02.id.ID, f.sim(r02).seq, bootID(f.sim(r02).boot), c2, r03.id.ID, bootID(1), c3)
+	}
+	if want := stored(1, 1); string(data) != want {
 		t.Fatalf("stored\n%s\nwant\n%s", data, want)
 	}
-	if fi, err := os.Stat(filepath.Join(f.dir, peerBootSeqFile)); err != nil || fi.Mode().Perm() != 0o600 {
+	if fi, err := os.Stat(filepath.Join(f.dir, peerStateFile)); err != nil || fi.Mode().Perm() != 0o600 {
 		t.Errorf("file mode %v, %v; want 0600", fi.Mode().Perm(), err)
 	}
 
 	// After a restart, r02's older boot is refused although the replay
-	// window starts empty.
+	// window starts empty, and the stored boot is known.
 	f.restart(start + 100*s)
 	old := f.beat(r02)
 	old.BootSeq, old.Boot = 6, bootID(6)
 	if _, err := f.tab.Observe(testEpoch, enc(t, old, r02), at(start+101*s)); !errors.Is(err, ErrReplay) {
 		t.Errorf("boot 6 after a restart that stored 7: %v, want ErrReplay", err)
 	}
-	if rep := f.tab.Report(r02.id.ID, at(start+101*s)); rep.BootSeq != 7 || rep.Heard || rep.Boot != (ids.BootID{}) {
-		t.Errorf("Report after restart %+v, want boot 7 from the file, not heard, boot ID unknown", rep)
+	if rep := f.tab.Report(r02.id.ID, at(start+101*s)); rep.BootSeq != 7 || rep.Heartbeat != nil || rep.Boot != bootID(7) {
+		t.Errorf("Report after restart %+v, want boot 7 and its ID from the file, no heartbeat", rep)
 	}
-	f.mustSend(r02, at(start+101*s)) // boot 7 itself, in a fresh window
 
-	// Written only when a number goes up.
-	if err := f.st.WriteFileAtomic(peerBootSeqFile, []byte("marker")); err != nil {
+	// Every accepted heartbeat marks the state; it is written at most once
+	// a minute.
+	if err := f.st.WriteFileAtomic(peerStateFile, []byte("marker")); err != nil {
 		t.Fatal(err)
 	}
-	for d := 105 * s; d <= 300*s; d += 5 * s {
+	for d := 105 * s; d <= 160*s; d += 5 * s {
 		f.mustSend(r02, at(start+d))
 		f.mustSend(r03, at(start+d))
 		f.tick(at(start + d))
+		if d == 105*s {
+			if data, _ := f.st.ReadFile(peerStateFile); string(data) != stored(f.sim(r02).counter, f.sim(r03).counter) {
+				t.Fatalf("first Tick after a restart wrote %s", data)
+			}
+			if err := f.st.WriteFileAtomic(peerStateFile, []byte("marker")); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
-	if data, _ := f.st.ReadFile(peerBootSeqFile); string(data) != "marker" {
-		t.Fatalf("rewritten without a new boot: %s", data)
+	if data, _ := f.st.ReadFile(peerStateFile); string(data) != "marker" {
+		t.Fatalf("written again within a minute: %s", data)
 	}
-	f.reboot(r02) // boot 8
-	f.mustSend(r02, at(start+301*s))
-	f.tick(at(start + 302*s))
-	data, _ = f.st.ReadFile(peerBootSeqFile)
-	want = fmt.Sprintf(`{"version":1,"peers":[{"id":"%s","boot_seq":8},{"id":"%s","boot_seq":1}]}`+"\n", r02.id.ID, r03.id.ID)
-	if string(data) != want {
-		t.Errorf("after boot 8 stored\n%s\nwant\n%s", data, want)
+	f.tick(at(start + 165*s))
+	if data, _ := f.st.ReadFile(peerStateFile); string(data) != stored(f.sim(r02).counter, f.sim(r03).counter) {
+		t.Fatalf("a minute later stored %s", data)
 	}
 
-	// Batched: a second rise within a minute of the last write waits.
-	f.reboot(r02) // boot 9
-	f.mustSend(r02, at(start+303*s))
-	f.tab.Tick(at(start + 361*s))
-	if data, _ := f.st.ReadFile(peerBootSeqFile); string(data) != want {
-		t.Errorf("written again within a minute: %s", data)
+	// Nothing accepted, nothing written.
+	if err := f.st.WriteFileAtomic(peerStateFile, []byte("marker")); err != nil {
+		t.Fatal(err)
 	}
-	f.tab.Tick(at(start + 362*s))
-	data, _ = f.st.ReadFile(peerBootSeqFile)
-	want = fmt.Sprintf(`{"version":1,"peers":[{"id":"%s","boot_seq":9},{"id":"%s","boot_seq":1}]}`+"\n", r02.id.ID, r03.id.ID)
-	if string(data) != want {
-		t.Errorf("after boot 9 stored\n%s\nwant\n%s", data, want)
+	for d := 170 * s; d <= 400*s; d += 10 * s {
+		f.tab.Tick(at(start + d))
+	}
+	if data, _ := f.st.ReadFile(peerStateFile); string(data) != "marker" {
+		t.Errorf("written with nothing new: %s", data)
 	}
 }
 
-func TestPeerBootSeqFileRefused(t *testing.T) {
+func TestPeerStateFileRejected(t *testing.T) {
 	ms := members(3)
 	id2 := ms[1].id.ID.String()
+	b1 := bootID(1).String()
+	entry := func(fields string) string { return `{"version":1,"peers":[{` + fields + `}]}` }
 	cases := map[string]string{
 		"not JSON":        "nope",
 		"unknown field":   `{"version":1,"peers":[],"x":1}`,
-		"unknown in peer": `{"version":1,"peers":[{"id":"` + id2 + `","boot_seq":1,"x":1}]}`,
+		"unknown in peer": entry(`"id":"` + id2 + `","boot_seq":1,"boot":"` + b1 + `","counter":1,"x":1`),
 		"version 2":       `{"version":2,"peers":[]}`,
 		"no version":      `{"peers":[]}`,
-		"zero ID":         `{"version":1,"peers":[{"id":"00000000000000000000000000000000","boot_seq":1}]}`,
-		"short ID":        `{"version":1,"peers":[{"id":"0102","boot_seq":1}]}`,
-		"same ID twice":   `{"version":1,"peers":[{"id":"` + id2 + `","boot_seq":1},{"id":"` + id2 + `","boot_seq":2}]}`,
-		"boot seq 0":      `{"version":1,"peers":[{"id":"` + id2 + `","boot_seq":0}]}`,
-		"negative":        `{"version":1,"peers":[{"id":"` + id2 + `","boot_seq":-1}]}`,
-		"data after":      `{"version":1,"peers":[]} {}`,
-		"too large":       `{"version":1,"peers":[]}` + string(bytes.Repeat([]byte(" "), 64<<10)),
+		"zero ID":         entry(`"id":"00000000000000000000000000000000","boot_seq":1,"boot":"` + b1 + `","counter":1`),
+		"short ID":        entry(`"id":"0102","boot_seq":1,"boot":"` + b1 + `","counter":1`),
+		"same ID twice": `{"version":1,"peers":[{"id":"` + id2 + `","boot_seq":1,"boot":"` + b1 + `","counter":1},` +
+			`{"id":"` + id2 + `","boot_seq":2,"boot":"` + b1 + `","counter":1}]}`,
+		"boot seq 0": entry(`"id":"` + id2 + `","boot_seq":0,"boot":"` + b1 + `","counter":1`),
+		"negative":   entry(`"id":"` + id2 + `","boot_seq":-1,"boot":"` + b1 + `","counter":1`),
+		"zero boot":  entry(`"id":"` + id2 + `","boot_seq":1,"boot":"00000000000000000000000000000000","counter":1`),
+		"no boot":    entry(`"id":"` + id2 + `","boot_seq":1,"counter":1`),
+		"short boot": entry(`"id":"` + id2 + `","boot_seq":1,"boot":"01","counter":1`),
+		"data after": `{"version":1,"peers":[]} {}`,
+		"too large":  `{"version":1,"peers":[]}` + string(bytes.Repeat([]byte(" "), 64<<10)),
 	}
 	for name, content := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -1398,47 +1406,43 @@ func TestPeerBootSeqFileRefused(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := st.WriteFileAtomic(peerBootSeqFile, []byte(content)); err != nil {
+			if err := st.WriteFileAtomic(peerStateFile, []byte(content)); err != nil {
 				t.Fatal(err)
 			}
 			cfg := Config{Self: ms[0].id.ID, Boot: localBoot, BootSeq: 6, Roster: testRoster(ms), RosterHash: testRosterHash, Store: st}
-			if tab, err := New(cfg, at(start)); !errors.Is(err, ErrBootSeqFile) || tab != nil {
-				t.Errorf("New = %v, %v; want nil, ErrBootSeqFile", tab, err)
+			tab, err := New(cfg, at(start))
+			if err != nil || !errors.Is(tab.StorageError(), ErrStateFile) {
+				t.Fatalf("New = %v; StorageError %v, want ErrStateFile", err, tab.StorageError())
+			}
+			if data, err := st.ReadFile(peerStateFile + ".corrupt"); err != nil || string(data) != content {
+				t.Errorf("set aside %d bytes, %v; want the %d bytes of the file", len(data), err, len(content))
+			}
+			if rep := tab.Report(ms[1].id.ID, at(start)); rep.BootSeq != 0 {
+				t.Errorf("state used from a corrupt file: %+v", rep)
 			}
 		})
 	}
 
-	// A file group may read is refused too, by the store.
-	dir := filepath.Join(t.TempDir(), "state")
-	st, err := store.Open(dir)
+	// A valid file that names a member no longer in the roster is fine.
+	st, err := store.Open(filepath.Join(t.TempDir(), "state"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.WriteFileAtomic(peerBootSeqFile, []byte(`{"version":1,"peers":[]}`)); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(filepath.Join(dir, peerBootSeqFile), 0o640); err != nil {
+	x := stranger().id.ID.String()
+	valid := `{"version":1,"peers":[{"id":"` + x + `","boot_seq":3,"boot":"` + b1 + `","counter":9},{"id":"` + id2 + `","boot_seq":4,"boot":"` + b1 + `","counter":2}]}`
+	if err := st.WriteFileAtomic(peerStateFile, []byte(valid)); err != nil {
 		t.Fatal(err)
 	}
 	cfg := Config{Self: ms[0].id.ID, Boot: localBoot, BootSeq: 6, Roster: testRoster(ms), RosterHash: testRosterHash, Store: st}
-	if _, err := New(cfg, at(start)); !errors.Is(err, store.ErrPermissions) {
-		t.Errorf("New over a group-readable file: %v, want store.ErrPermissions", err)
-	}
-
-	// A valid file that names a member no longer in the roster is fine.
-	x := stranger().id.ID.String()
-	if err := os.Chmod(filepath.Join(dir, peerBootSeqFile), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.WriteFileAtomic(peerBootSeqFile, []byte(`{"version":1,"peers":[{"id":"`+x+`","boot_seq":3},{"id":"`+id2+`","boot_seq":4}]}`)); err != nil {
-		t.Fatal(err)
-	}
 	tab, err := New(cfg, at(start))
-	if err != nil {
-		t.Fatalf("New with a former member in the file: %v", err)
+	if err != nil || tab.StorageError() != nil {
+		t.Fatalf("New with a former member in the file: %v, %v", err, tab.StorageError())
 	}
-	if rep := tab.Report(ms[1].id.ID, at(start)); rep.BootSeq != 4 {
+	if rep := tab.Report(ms[1].id.ID, at(start)); rep.BootSeq != 4 || rep.Boot != bootID(1) {
 		t.Errorf("Report after load %+v, want boot 4", rep)
+	}
+	if _, err := st.ReadFile(peerStateFile + ".corrupt"); err == nil {
+		t.Error("a valid file was set aside")
 	}
 }
 
@@ -1607,8 +1611,11 @@ func TestReport(t *testing.T) {
 		t.Errorf("unheard: %+v", rep)
 	}
 	f.sims[r02.id.ID] = &sim{seq: 4, boot: 4, version: "24.10.4"}
-	f.mustSend(r02, at(start+2*s))
-	want := Report{Target: r02.id.ID, Heard: true, Ago: 7 * s, BootSeq: 4, Boot: bootID(4)}
+	b := enc(t, f.beat(r02), r02)
+	if _, err := f.tab.Observe(testEpoch, b, at(start+2*s)); err != nil {
+		t.Fatal(err)
+	}
+	want := Report{Target: r02.id.ID, Heartbeat: b, Ago: 7 * s, BootSeq: 4, Boot: bootID(4)}
 	if rep := f.tab.Report(r02.id.ID, at(start+9*s)); !reflect.DeepEqual(rep, want) {
 		t.Errorf("heard: %+v, want %+v", rep, want)
 	}
@@ -1677,7 +1684,7 @@ func TestStoredFileShape(t *testing.T) {
 	f := newFixture(t, 3, start)
 	f.mustSend(f.ms[2], at(start+s))
 	f.tick(at(start + s))
-	data, err := f.st.ReadFile(peerBootSeqFile)
+	data, err := f.st.ReadFile(peerStateFile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1686,6 +1693,8 @@ func TestStoredFileShape(t *testing.T) {
 		Peers   []struct {
 			ID      ids.MemberID `json:"id"`
 			BootSeq uint64       `json:"boot_seq"`
+			Boot    ids.BootID   `json:"boot"`
+			Counter uint64       `json:"counter"`
 		} `json:"peers"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -1693,7 +1702,7 @@ func TestStoredFileShape(t *testing.T) {
 	if err := dec.Decode(&v); err != nil {
 		t.Fatal(err)
 	}
-	if v.Version != 1 || len(v.Peers) != 1 || v.Peers[0].ID != f.ms[2].id.ID || v.Peers[0].BootSeq != 1 {
+	if v.Version != 1 || len(v.Peers) != 1 || v.Peers[0].ID != f.ms[2].id.ID || v.Peers[0].BootSeq != 1 || v.Peers[0].Boot != bootID(1) || v.Peers[0].Counter != 1 {
 		t.Errorf("stored %+v", v)
 	}
 }
@@ -1703,7 +1712,7 @@ func TestRestoreBootSeqStorageError(t *testing.T) {
 	dir, seq := bootSeqDir(t, 5)
 	f := newFixtureWith(t, ms, start, func(c *Config) { c.BootSeq = seq })
 	rep := Report{Target: ms[0].id.ID, BootSeq: 9}
-	if err := f.tab.RecordReport(f.admit(ms[1]), rep, at(start+s)); err != nil {
+	if _, err := f.tab.RecordReport(f.admit(ms[1]), rep, at(start+s)); err != nil {
 		t.Fatal(err)
 	}
 	// The identity directory is open to others: identity refuses it, and
@@ -1721,4 +1730,277 @@ func TestRestoreBootSeqStorageError(t *testing.T) {
 	if got, raised, err := f.tab.RestoreBootSeq(dir); got != 10 || !raised || err != nil {
 		t.Errorf("RestoreBootSeq once the directory is fixed = %d, %v, %v; want 10, true", got, raised, err)
 	}
+}
+
+// relay has helper answer the probe about target with heartbeat, received ago
+// before now.
+func (f *fixture) relay(helper tm, target tm, heartbeat []byte, ago time.Duration, now clock.Stamp) ([]events.Event, error) {
+	rep := Report{Target: target.id.ID, Ago: ago, Heartbeat: heartbeat}
+	return f.tab.RecordReport(f.admit(helper), rep, now)
+}
+
+func TestRestoredCounterRefusesReplay(t *testing.T) {
+	ms := members(2)
+	r02 := ms[1]
+	f := newFixtureOf(t, ms, start)
+	h := start + s
+	var beats [][]byte
+	for c := 1; c <= 20; c++ {
+		beats = append(beats, enc(t, f.beat(r02), r02))
+	}
+	observe := func(c int, now time.Duration) error {
+		_, err := f.tab.Observe(testEpoch, beats[c-1], at(now))
+		return err
+	}
+	for c := 1; c <= 15; c++ {
+		if err := observe(c, h+time.Duration(c)*5*s); err != nil {
+			t.Fatalf("heartbeat %d: %v", c, err)
+		}
+	}
+	f.tab.Tick(at(h + 75*s)) // the store now holds counter 15
+	for c := 16; c <= 20; c++ {
+		if err := observe(c, h+time.Duration(c)*5*s); err != nil {
+			t.Fatalf("heartbeat %d: %v", c, err)
+		}
+	}
+	// No Tick within the minute: the store still says 15. The local member
+	// restarts, and a recorder replays r02's heartbeats.
+	f.restart(h + 110*s)
+	for _, c := range []int{10, 15} {
+		if err := observe(c, h+111*s); !errors.Is(err, ErrReplay) {
+			t.Errorf("replay of %d after a restart that stored 15: %v, want ErrReplay", c, err)
+		}
+	}
+	if err := observe(16, h+111*s); err != nil {
+		t.Errorf("16 after a restart that stored 15: %v", err)
+	}
+	for _, c := range []int{16, 12, 1} {
+		if err := observe(c, h+112*s); !errors.Is(err, ErrReplay) {
+			t.Errorf("replay of %d after 16: %v, want ErrReplay", c, err)
+		}
+	}
+	// The stored boot ID came back too: another boot under the stored
+	// number is a second router, not a fresh start.
+	f.restart(h + 120*s)
+	other := fullBeat(r02)
+	other.BootSeq, other.Boot, other.Counter, other.GoingDown = 1, bootID(9), 30, false
+	obs, err := f.tab.Observe(testEpoch, enc(t, other, r02), at(h+121*s))
+	if !errors.Is(err, ErrDuplicateIdentity) || len(obs.Events) != 1 {
+		t.Errorf("another boot ID under the stored number: %v %s, want ErrDuplicateIdentity", err, describe(obs.Events))
+	}
+}
+
+// liarSetup returns a group of 4 at +15 s: r02 suspect, its heartbeats since
+// h lost on the way to the local member, r03 and r04 asked. beats are r02's
+// heartbeats 1 to 6, sent every 5 s from h; the local member has only 1.
+func liarSetup(t *testing.T) (*fixture, [][]byte, time.Duration) {
+	t.Helper()
+	f := newFixture(t, 4, start)
+	r02, r03, r04 := f.ms[1], f.ms[2], f.ms[3]
+	h := start + s
+	var beats [][]byte
+	for i := 0; i < 6; i++ {
+		beats = append(beats, enc(t, f.beat(r02), r02))
+	}
+	if _, err := f.tab.Observe(testEpoch, beats[0], at(h)); err != nil {
+		t.Fatal(err)
+	}
+	for d := time.Duration(0); d <= 15*s; d += 5 * s {
+		f.mustSend(r03, at(h+d))
+		f.mustSend(r04, at(h+d))
+	}
+	if sus := f.tick(at(h + 15*s)); !slices.Equal(sus, idsOf(r02)) {
+		t.Fatalf("suspects %x", sus)
+	}
+	if got := f.tab.IndirectProbeRequest(r02.id.ID); !slices.Equal(got, idsOf(r03, r04)) {
+		t.Fatalf("helpers %x", got)
+	}
+	return f, beats, h
+}
+
+func TestLyingHelperCannotPreventSilence(t *testing.T) {
+	ms := members(4)
+	r02, r03, r04 := ms[1], ms[2], ms[3]
+	forged := fullBeat(r02)
+	forged.BootSeq, forged.Boot, forged.Counter, forged.GoingDown = 1, bootID(1), 99, false
+	cases := []struct {
+		name    string
+		beat    func(beats [][]byte) []byte
+		wantErr error
+	}{
+		{"the heartbeat the asker holds", func(b [][]byte) []byte { return b[0] }, ErrReplay},
+		{"a forged heartbeat", func([][]byte) []byte { return handSign(handBody(forged), strangerKey) }, ErrSignature},
+		{"a heartbeat of another member", func([][]byte) []byte { return enc(t, fullBeat(r03), r03) }, ErrBadReport},
+		{"garbage", func([][]byte) []byte { return []byte("heard it, honest") }, ErrMalformed},
+		{"no heartbeat", func([][]byte) []byte { return nil }, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f, beats, h := liarSetup(t)
+			if _, err := f.relay(r03, r02, c.beat(beats), 0, at(h+16*s)); !errors.Is(err, c.wantErr) {
+				t.Errorf("RecordReport = %v, want %v", err, c.wantErr)
+			}
+			if _, err := f.relay(r04, r02, c.beat(beats), 0, at(h+20*s)); !errors.Is(err, c.wantErr) {
+				t.Errorf("second RecordReport = %v, want %v", err, c.wantErr)
+			}
+			f.tick(at(h + 30*s - 1))
+			_, sil := f.tab.Tick(at(h + 30*s))
+			if len(sil) != 1 {
+				t.Fatalf("want r02 silent at +30 s, got %s", describe(sil))
+			}
+			wantEvent(t, sil[0], events.MemberSilent, r02, f.self, at(h))
+		})
+	}
+
+	// A heartbeat the local member never got, but older than the one it
+	// holds, proves nothing new either.
+	t.Run("older than the one held", func(t *testing.T) {
+		f, beats, h := liarSetup(t)
+		// r03 relays number 5, received 15 s ago: still suspect.
+		if _, err := f.relay(r03, r02, beats[4], 15*s, at(h+16*s)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.relay(r04, r02, beats[3], 0, at(h+16*s)); !errors.Is(err, ErrNotFresher) {
+			t.Errorf("number 4 after 5: %v, want ErrNotFresher", err)
+		}
+	})
+
+	// The genuine fresher heartbeat does save it.
+	t.Run("genuine and fresher", func(t *testing.T) {
+		f, beats, h := liarSetup(t)
+		// Number 3 was sent at +10 s and reached r03 at once.
+		if evs, err := f.relay(r03, r02, beats[2], 6*s, at(h+16*s)); err != nil || len(evs) != 0 {
+			t.Fatalf("RecordReport = %s, %v", describe(evs), err)
+		}
+		f.tick(at(h + 40*s - 1))
+		_, sil := f.tab.Tick(at(h + 40*s))
+		if len(sil) != 1 {
+			t.Fatalf("want r02 silent 30 s after +10 s, got %s", describe(sil))
+		}
+		wantEvent(t, sil[0], events.MemberSilent, r02, f.self, at(h+10*s))
+		if c := f.tab.Counters(); c.Relayed != 1 {
+			t.Errorf("counters %+v, want 1 relayed", c)
+		}
+	})
+}
+
+func TestRelayedHeartbeat(t *testing.T) {
+	ms := members(4)
+	r02, r03, r04 := ms[1], ms[2], ms[3]
+	f, _, h := liarSetup(t)
+	// r02 rebooted fast, and only r03 hears it.
+	f.reboot(r02)
+	nb := enc(t, f.beat(r02), r02)
+	evs, err := f.relay(r03, r02, nb, 2*s, at(h+16*s))
+	if err != nil || len(evs) != 1 {
+		t.Fatalf("relayed reboot: %s, %v", describe(evs), err)
+	}
+	wantEvent(t, evs[0], events.RebootUnplanned, r02, f.self, at(h+14*s))
+	// The relayed heartbeat is r02's latest for the local member's own
+	// answers, but r02 is still not heard directly, so it is no helper.
+	if rep := f.tab.Report(r02.id.ID, at(h+17*s)); !bytes.Equal(rep.Heartbeat, nb) || rep.Ago != 3*s || rep.BootSeq != 2 {
+		t.Errorf("Report after a relay: %+v", rep)
+	}
+	f.mustSend(r03, at(h+20*s))
+	f.mustSend(r04, at(h+20*s))
+	f.tick(at(h + 20*s))
+	// r04 goes quiet; r02 must not be named as a helper for it.
+	if sus := f.tick(at(h + 35*s)); !slices.Contains(sus, r04.id.ID) && !slices.Contains(sus, r03.id.ID) {
+		t.Fatalf("suspects %x", sus)
+	}
+	if got := f.tab.IndirectProbeRequest(r04.id.ID); slices.Contains(got, r02.id.ID) {
+		t.Errorf("a member heard only through a helper is a helper: %x", got)
+	}
+	// Its direct heartbeats of that boot are no second reboot.
+	if obs := f.mustSend(r02, at(h+36*s)); len(obs.Events) != 0 {
+		t.Errorf("direct heartbeat after the relayed reboot: %s", describe(obs.Events))
+	}
+	// A helper's age cannot put the hearing before the local member's own.
+	g, beats, gh := liarSetup(t)
+	if _, err := g.relay(r03, r02, beats[1], time.Hour, at(gh+16*s)); err != nil {
+		t.Fatal(err)
+	}
+	if rep := g.tab.Report(r02.id.ID, at(gh+16*s)); rep.Ago != 16*s {
+		t.Errorf("Report after a relay claimed an hour old: ago %v, want 16 s (not before the last direct hearing)", rep.Ago)
+	}
+}
+
+func TestCorruptStateFileSetAside(t *testing.T) {
+	ms := members(2)
+	r02 := ms[1]
+	open := func(t *testing.T, content []byte, mode os.FileMode) (*fixture, *Table, error) {
+		t.Helper()
+		f := newFixtureOf(t, ms, start)
+		if err := f.st.WriteFileAtomic(peerStateFile, content); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(filepath.Join(f.dir, peerStateFile), mode); err != nil {
+			t.Fatal(err)
+		}
+		tab, err := New(f.cfg, at(start))
+		return f, tab, err
+	}
+
+	t.Run("does not decode", func(t *testing.T) {
+		f, tab, err := open(t, []byte("nope"), 0o600)
+		if err != nil || tab == nil {
+			t.Fatalf("New over a corrupt file = %v, %v; want a table", tab, err)
+		}
+		if err := tab.StorageError(); !errors.Is(err, ErrStateFile) {
+			t.Errorf("StorageError = %v, want ErrStateFile", err)
+		}
+		if data, err := f.st.ReadFile(peerStateFile + ".corrupt"); err != nil || string(data) != "nope" {
+			t.Errorf("set aside: %q, %v", data, err)
+		}
+		// It starts empty, and the next write replaces the corrupt file.
+		f.tab = tab
+		f.mustSend(r02, at(start+s))
+		f.tick(at(start + s))
+		next, err := New(f.cfg, at(start+2*s))
+		if err != nil || next.StorageError() != nil {
+			t.Errorf("after the next write: %v, %v", err, next.StorageError())
+		}
+	})
+
+	t.Run("open to group", func(t *testing.T) {
+		f, tab, err := open(t, []byte(`{"version":1,"peers":[]}`), 0o640)
+		if err != nil || tab == nil {
+			t.Fatalf("New over a group-readable file = %v, %v; want a table", tab, err)
+		}
+		if err := tab.StorageError(); !errors.Is(err, store.ErrPermissions) {
+			t.Errorf("StorageError = %v, want store.ErrPermissions", err)
+		}
+		f.tab = tab
+		f.mustSend(r02, at(start+s))
+		f.tick(at(start + s))
+		if fi, err := os.Stat(filepath.Join(f.dir, peerStateFile)); err != nil || fi.Mode().Perm() != 0o600 {
+			t.Errorf("after the next write: mode %v, %v; want 0600", fi.Mode().Perm(), err)
+		}
+	})
+
+	t.Run("cannot be set aside", func(t *testing.T) {
+		f := newFixtureOf(t, ms, start)
+		// A directory where the copy would go: the store's rename fails.
+		if err := os.Mkdir(filepath.Join(f.dir, peerStateFile+".corrupt"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.st.WriteFileAtomic(peerStateFile, []byte("nope")); err != nil {
+			t.Fatal(err)
+		}
+		tab, err := New(f.cfg, at(start))
+		if err != nil || tab == nil {
+			t.Fatalf("New = %v, %v; want a table", tab, err)
+		}
+		serr := tab.StorageError()
+		if !errors.Is(serr, ErrStateFile) || serr == nil || !strings.Contains(serr.Error(), "setting the corrupt file aside") {
+			t.Errorf("StorageError = %v, want ErrStateFile and the failed copy", serr)
+		}
+	})
+
+	t.Run("fine", func(t *testing.T) {
+		f := newFixtureOf(t, ms, start)
+		if err := f.tab.StorageError(); err != nil {
+			t.Errorf("StorageError without a file = %v", err)
+		}
+	})
 }
