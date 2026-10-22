@@ -1,0 +1,18 @@
+#!/bin/sh
+# Runs after install and after upgrade. Creates the unprivileged account and the state
+# directory, applies the firewall rule and enables the service. It does not start the
+# daemon: that needs `rollcall init` first, and the daemon fails closed until then.
+[ -n "${IPKG_INSTROOT:-}" ] && exit 0
+. /lib/functions.sh
+
+group_exists rollcall || group_add rollcall 1660
+user_exists rollcall || user_add rollcall 1660 1660 rollcall /var/empty /bin/false
+
+mkdir -p /etc/rollcall
+chown rollcall:rollcall /etc/rollcall
+chmod 0700 /etc/rollcall
+
+/etc/uci-defaults/90-rollcall
+/etc/init.d/firewall reload >/dev/null 2>&1 || true
+/etc/init.d/rollcall enable
+exit 0

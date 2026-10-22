@@ -1,0 +1,11 @@
+#!/bin/sh
+# Runs before removal. Stops and disables the service, then removes the firewall rule
+# this package added. The state in /etc/rollcall is kept by keep.d until the user deletes it.
+[ -n "${IPKG_INSTROOT:-}" ] && exit 0
+
+/etc/init.d/rollcall stop >/dev/null 2>&1 || true
+/etc/init.d/rollcall disable >/dev/null 2>&1 || true
+uci -q delete firewall.rollcall
+uci -q commit firewall
+/etc/init.d/firewall reload >/dev/null 2>&1 || true
+exit 0

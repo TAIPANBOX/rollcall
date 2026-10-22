@@ -1,0 +1,41 @@
+#!/bin/sh /etc/rc.common
+# rollcall: watches the routers of one site and reports incidents to the chat.
+# The daemon runs as its own user, with no_new_privs, a seccomp allow-list and a jail.
+# It never talks to ubus: interface events arrive through hotplug and the CLI.
+
+USE_PROCD=1
+START=95
+STOP=05
+
+DAEMON=/usr/bin/rollcalld
+CLI=/usr/bin/rollcall
+
+start_service() {
+	local icmp
+	config_load rollcall
+	config_get_bool icmp main icmp 0
+
+	procd_open_instance
+	procd_set_param command "$DAEMON" -config /etc/config/rollcall -state /etc/rollcall -run /tmp/rollcall
+	procd_set_param user rollcall
+	procd_set_param group rollcall
+	procd_set_param no_new_privs 1
+	procd_set_param seccomp /etc/seccomp/rollcall.json
+	procd_set_param respawn
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	# CAP_NET_RAW is granted only for ICMP probes. Without the option the daemon holds no capability.
+	if [ "$icmp" = 1 ]; then
+		procd_set_param capabilities /etc/capabilities/rollcall.json
+	fi
+	procd_add_jail rollcall log requirejail
+	procd_add_jail_mount_rw /etc/rollcall /tmp/rollcall
+	procd_add_jail_mount /etc/config/rollcall /etc/config/firewall /etc/config/system /etc/openwrt_release /etc/ssl/certs /usr/share/zoneinfo
+	procd_close_instance
+}
+
+shutdown() {
+	# Tell the peers this router is going down on purpose, before the instance stops.
+	"$CLI" notify going-down || true
+	stop
+}
