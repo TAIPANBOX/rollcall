@@ -11,7 +11,7 @@ import (
 )
 
 // sentinels are every error Append may return, wrapped or not.
-var sentinels = []error{ErrKey, ErrFormat, ErrKind, ErrBody, ErrSignature, ErrPrev, ErrGap, ErrPruned, ErrFork}
+var sentinels = []error{ErrUnknownOrigin, ErrKey, ErrFormat, ErrKind, ErrBody, ErrSignature, ErrPrev, ErrGap, ErrPruned, ErrFork}
 
 // clone returns a copy of l that shares no mutable state with it, so each
 // fuzz input starts from the same log without verifying it again. Stored
@@ -19,7 +19,7 @@ var sentinels = []error{ErrKey, ErrFormat, ErrKind, ErrBody, ErrSignature, ErrPr
 func (l *Log) clone() *Log {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	c := &Log{chains: map[ids.MemberID]*chain{}, forks: map[ids.MemberID]ForkProof{}}
+	c := &Log{keyOf: l.keyOf, max: l.max, chains: map[ids.MemberID]*chain{}, forks: map[ids.MemberID]ForkProof{}}
 	for o, ch := range l.chains {
 		cp := *ch
 		cp.entries = slices.Clone(ch.entries)
@@ -34,10 +34,12 @@ func (l *Log) clone() *Log {
 // FuzzAppend feeds arbitrary bytes to Append three ways: as a JSON-encoded
 // entry, as the fields of an entry with an arbitrary signature, and as the
 // fields of an entry signed with the origin's real key, so that the shape,
-// body and chain checks see hostile input past the signature. The log holds
-// a chain of 3 entries of origin A and nothing of origin B.
+// body and chain checks see hostile input past the signature. The log knows
+// the key of every test member and nothing else, and holds a chain of 3
+// entries of origin A and nothing of origin B.
 //
-// Nothing may panic. An error is always one of the package's sentinels, and
+// Nothing may panic. An origin the log does not know, and only such an
+// origin, gives ErrUnknownOrigin. An error is always one of the package's sentinels, and
 // leaves the log as it was unless it is a fork, which comes with a proof
 // that verifies, whose B is the entry given and whose A is the entry held.
 // An accepted entry verifies, has a body the documented rules allow, and is
@@ -45,8 +47,8 @@ func (l *Log) clone() *Log {
 func FuzzAppend(f *testing.F) {
 	a, b := testMember(1), testMember(2)
 	es := buildChain(f, a, 3)
-	var base Log
-	appendAll(f, &base, a.pub, es, t0)
+	base := testLog()
+	appendAll(f, base, es, t0)
 	h2, h3 := wantHash(es[1]), wantHash(es[2])
 
 	js, err := json.Marshal(es[1])
@@ -74,11 +76,6 @@ func FuzzAppend(f *testing.F) {
 			if json.Unmarshal(raw, &e) != nil {
 				return
 			}
-			if e.Origin == b.id.ID {
-				owner = b
-			} else {
-				owner = a
-			}
 		default:
 			e = Entry{Origin: owner.id.ID, Seq: seq, Kind: Kind(kind), Body: body, Sig: raw}
 			copy(e.Prev[:], prev)
@@ -89,8 +86,12 @@ func FuzzAppend(f *testing.F) {
 		l := base.clone()
 		before := stateOf(l, a.id.ID, b.id.ID)
 		oldHead := before.Heads[e.Origin]
-		err := l.Append(e, owner.pub, t0)
+		err := l.Append(e, t0)
 		after := stateOf(l, a.id.ID, b.id.ID)
+		pub, known := testKeys[e.Origin]
+		if !known != errors.Is(err, ErrUnknownOrigin) {
+			t.Fatalf("origin %s known %v: err = %v", e.Origin, known, err)
+		}
 
 		if err != nil {
 			known := false
@@ -110,7 +111,7 @@ func FuzzAppend(f *testing.F) {
 				}
 				return
 			}
-			if verr := fe.Proof.Verify(owner.pub); verr != nil {
+			if verr := fe.Proof.Verify(pub); verr != nil {
 				t.Fatalf("fork proof does not verify: %v", verr)
 			}
 			if !reflect.DeepEqual(fe.Proof.B, e) {
@@ -126,7 +127,7 @@ func FuzzAppend(f *testing.F) {
 			return
 		}
 
-		if verr := e.Verify(owner.pub); verr != nil {
+		if verr := e.Verify(pub); verr != nil {
 			t.Fatalf("Append accepted an entry that does not verify: %v", verr)
 		}
 		if !canonical(e.Body) {

@@ -46,13 +46,17 @@
 // The next entry carries it in Prev. It covers the signature, so two
 // different signatures over the same content are two different entries.
 // That is still proof against the origin: Go's ed25519.Verify refuses a
-// non-canonical S and sig refuses small-order keys, so only the holder of the
-// origin's key can make a second valid signature.
+// non-canonical S (S + L, the same scalar, does not verify; the tests check
+// this) and sig refuses small-order keys, so only the holder of the origin's
+// key can make a second valid signature.
 //
 // # Chain
 //
-// Log.Append checks an entry cheapest first and the chain last: the key
-// (sig.ValidPublicKey, ErrKey), the shape (a non-zero Origin and a Seq of at
+// Log.Append takes the key of an entry's origin from the resolver the Log was
+// made with (NewLog), keyOf(e.Origin), never from its caller or from the
+// peer that relayed the entry; an origin the resolver does not know is
+// refused with ErrUnknownOrigin. It then checks the entry cheapest first and
+// the chain last: the key (sig.ValidPublicKey, ErrKey), the shape (a non-zero Origin and a Seq of at
 // least 1, ErrFormat; the Seq and Prev rule above, ErrPrev; a known Kind,
 // ErrKind; a 64-byte Sig, ErrSignature; the body rules, ErrBody), the
 // signature (ErrSignature), and only then the origin's chain as the log holds
@@ -76,10 +80,6 @@
 //   - Seq at or below what Prune dropped: ErrPruned. The log can no longer
 //     compare it with what it held.
 //
-// Append checks that the signature is valid under the key it is given; it
-// cannot know whose key that is. The caller passes the key the roster gives
-// the entry's Origin, never the key of the peer that relayed the entry.
-//
 // Nothing changes an entry once it is held: Append stores copies, every
 // method returns copies, a correction is a new entry of KindCorrection, and
 // a second entry at a held position never replaces the first. Prune drops
@@ -100,15 +100,17 @@
 //
 // # Pruning
 //
-// Log.Prune bounds the log per origin. It keeps each origin's head, so every
-// chain stays verifiable from it, and drops the oldest entries beyond the
-// limits. For each origin it records the Seq and Hash of the last entry it
-// dropped (Log.Pruned): the oldest entry kept has that Hash as its Prev,
-// Range reports the dropped entries as not available by leaving them out,
-// and Append refuses an entry at or below that Seq with ErrPruned. The log
-// does not bound itself between two calls of Prune.
+// The log is bounded per origin, twice: Append keeps every origin at most at
+// the maxPerOrigin given to NewLog, at once, and Log.Prune applies the age
+// limit and any tighter count. Both keep each origin's head, so every chain
+// stays verifiable from it, and drop the oldest entries beyond the limits.
+// For each origin they record the Seq and Hash of the last entry dropped
+// (Log.Pruned): the oldest entry kept has that Hash as its Prev, Range
+// reports the dropped entries as not available by leaving them out, and
+// Append refuses an entry at or below that Seq with ErrPruned.
 //
-// A Log is safe for concurrent use. The zero Log is empty and ready to use.
+// A Log is safe for concurrent use. Make one with NewLog; a zero Log knows no
+// origin and refuses every entry.
 package history
 
 import (

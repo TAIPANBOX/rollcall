@@ -15,8 +15,9 @@ import (
 	"github.com/TAIPANBOX/rollcall/internal/ids"
 )
 
-// The bounds the daemon prunes with (security spec 5.7, design 4.3): per
-// origin, at most DefaultMaxEntries entries or DefaultMaxAge of them.
+// The bounds of the history (security spec 5.7, design 4.3), per origin: at
+// most DefaultMaxEntries entries (NewLog's default for maxPerOrigin) and at
+// most DefaultMaxAge of them (for Prune).
 const (
 	DefaultMaxEntries = 500
 	DefaultMaxAge     = 30 * 24 * time.Hour
@@ -26,6 +27,9 @@ const (
 const digestLabel = "rollcall/v1 history-digest\x00"
 
 var (
+	// ErrUnknownOrigin reports an entry whose origin the Log's resolver
+	// gives no key for.
+	ErrUnknownOrigin = errors.New("history: the entry's origin has no known key")
 	// ErrGap reports an entry more than one past the head of its chain.
 	ErrGap = errors.New("history: the entry is not the next in its chain; earlier entries are missing")
 	// ErrPruned reports an entry at or below the last entry Prune dropped
@@ -113,20 +117,45 @@ func (c *chain) head() Head {
 	return Head{Seq: last.e.Seq, Hash: last.hash}
 }
 
-// Log holds the chains of all origins, as the package doc describes. The
-// zero Log is empty and ready to use; a Log must not be copied.
+// dropOldest drops the k oldest entries of c, never the head, and records
+// the last one dropped in c.pruned. Below 1 it does nothing. The dropped
+// slots are cleared so their bodies can be collected.
+func (c *chain) dropOldest(k int) {
+	k = min(k, len(c.entries)-1) // the head stays
+	if k <= 0 {
+		return
+	}
+	last := c.entries[k-1]
+	c.pruned = Head{Seq: last.e.Seq, Hash: last.hash}
+	clear(c.entries[:k])
+	c.entries = c.entries[k:]
+}
+
+// Log holds the chains of all origins, as the package doc describes. Make one
+// with NewLog; a zero Log knows no origin and refuses every entry. A Log must
+// not be copied.
 type Log struct {
+	keyOf  func(ids.MemberID) (ed25519.PublicKey, bool) // set once by NewLog
+	max    int                                          // entries held of one origin at most
 	mu     sync.Mutex
 	chains map[ids.MemberID]*chain
 	forks  map[ids.MemberID]ForkProof // the first proof of each forked origin
 }
 
 // Append adds e to its origin's chain, or reports why not, as the package
-// doc describes. pub is the key the roster gives e.Origin; now is when e was
-// received, from which Prune measures its age. A duplicate of an entry held
-// returns nil and changes nothing, its time included. A fork returns a
-// *ForkError, and so does every later Append for that origin.
-func (l *Log) Append(e Entry, pub ed25519.PublicKey, now time.Time) error {
+// doc describes. The key is keyOf(e.Origin); an origin keyOf does not know
+// gives ErrUnknownOrigin. now is when e was received, from which Prune
+// measures its age. A duplicate of an entry held returns nil and changes
+// nothing, its time included. A fork returns a *ForkError, and so does every
+// later Append for that origin. When an appended entry takes its origin past
+// the Log's maxPerOrigin, the oldest entries of that origin are dropped at
+// once, as Prune drops them: never the head, and the last one dropped is
+// recorded (Pruned).
+func (l *Log) Append(e Entry, now time.Time) error {
+	pub, known := l.key(e.Origin)
+	if !known {
+		return fmt.Errorf("%w: origin %s", ErrUnknownOrigin, e.Origin)
+	}
 	if err := e.Verify(pub); err != nil {
 		return err
 	}
@@ -162,11 +191,33 @@ func (l *Log) Append(e Entry, pub ed25519.PublicKey, now time.Time) error {
 		return fmt.Errorf("%w: origin %s seq %d names prev %s, the head is %s", ErrPrev, e.Origin, e.Seq, e.Prev, head.Hash)
 	}
 	c.entries = append(c.entries, stored{e: e.clone(), hash: h, at: now})
+	c.dropOldest(len(c.entries) - l.max) // bound memory now, not at the next Prune
 	if l.chains == nil {
 		l.chains = map[ids.MemberID]*chain{}
 	}
 	l.chains[e.Origin] = c
 	return nil
+}
+
+// NewLog returns an empty Log. keyOf gives the signing key of an origin, from
+// the roster, and reports false for an origin it does not know; Append takes
+// every entry's key from it and from nowhere else. It is called outside the
+// Log's lock, so it may take a lock of its own, and must be safe for
+// concurrent use. A nil keyOf knows no origin. maxPerOrigin bounds what the
+// Log holds of any one origin (see Append); below 1 it is DefaultMaxEntries.
+func NewLog(keyOf func(origin ids.MemberID) (ed25519.PublicKey, bool), maxPerOrigin int) *Log {
+	if maxPerOrigin < 1 {
+		maxPerOrigin = DefaultMaxEntries
+	}
+	return &Log{keyOf: keyOf, max: maxPerOrigin}
+}
+
+// key returns keyOf(origin), or false if the Log has no resolver.
+func (l *Log) key(origin ids.MemberID) (ed25519.PublicKey, bool) {
+	if l.keyOf == nil {
+		return nil, false
+	}
+	return l.keyOf(origin)
 }
 
 // Head returns the head of origin's chain, or the zero Head if the log holds
@@ -266,7 +317,8 @@ func (l *Log) Forks() []ForkProof {
 // entry after it, stays). A limit of zero or less is no limit. The head
 // always stays, however old and whatever maxEntries is. For every origin it
 // drops entries from, it records the last one dropped (Pruned). Fork proofs
-// are kept.
+// are kept. Append already holds every origin to the Log's maxPerOrigin;
+// Prune applies the age limit and any tighter count.
 //
 // Ages are now.Sub(the time Append was given), which uses the monotonic
 // clock when both times carry its reading. An entry received at a time
@@ -287,12 +339,6 @@ func (l *Log) Prune(maxEntries int, maxAge time.Duration, now time.Time) {
 			}
 			drop = max(drop, old)
 		}
-		drop = min(drop, n-1) // the head stays
-		if drop <= 0 {
-			continue
-		}
-		last := c.entries[drop-1]
-		c.pruned = Head{Seq: last.e.Seq, Hash: last.hash}
-		c.entries = slices.Clone(c.entries[drop:]) // let the dropped entries go
+		c.dropOldest(drop)
 	}
 }

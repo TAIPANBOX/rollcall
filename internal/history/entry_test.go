@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"math/big"
 	"reflect"
 	"slices"
 	"strings"
@@ -46,6 +47,39 @@ func testMember(n byte) member {
 	id[0], id[15] = n, 0xa5
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{n}, ed25519.SeedSize))
 	return member{id: &identity.Identity{ID: id, Sign: key}, key: key, pub: key.Public().(ed25519.PublicKey)}
+}
+
+// testKeys holds the public key of testMember(n) for every n.
+var testKeys = func() map[ids.MemberID]ed25519.PublicKey {
+	keys := map[ids.MemberID]ed25519.PublicKey{}
+	for n := 0; n < 256; n++ {
+		m := testMember(byte(n))
+		keys[m.id.ID] = m.pub
+	}
+	return keys
+}()
+
+// keysOf returns a resolver that knows the given members only.
+func keysOf(ms ...member) func(ids.MemberID) (ed25519.PublicKey, bool) {
+	keys := map[ids.MemberID]ed25519.PublicKey{}
+	for _, m := range ms {
+		keys[m.id.ID] = m.pub
+	}
+	return func(o ids.MemberID) (ed25519.PublicKey, bool) {
+		k, ok := keys[o]
+		return k, ok
+	}
+}
+
+// logOf returns an empty log that knows the given members only.
+func logOf(ms ...member) *Log { return NewLog(keysOf(ms...), 0) }
+
+// testLog returns an empty log that knows every testMember.
+func testLog() *Log {
+	return NewLog(func(o ids.MemberID) (ed25519.PublicKey, bool) {
+		k, ok := testKeys[o]
+		return k, ok
+	}, 0)
 }
 
 // wantMessage is the documented signed message of e, built here on its own:
@@ -336,8 +370,8 @@ func TestEntryVerifyKey(t *testing.T) {
 		if !errors.Is(err, ErrKey) || !errors.Is(err, c.want) {
 			t.Errorf("Verify, %s: err = %v, want %v and %v", c.name, err, ErrKey, c.want)
 		}
-		var l Log
-		err = l.Append(e, c.pub, t0)
+		l := NewLog(func(ids.MemberID) (ed25519.PublicKey, bool) { return c.pub, true }, 0)
+		err = l.Append(e, t0)
 		if !errors.Is(err, ErrKey) || !errors.Is(err, c.want) {
 			t.Errorf("Append, %s: err = %v, want %v and %v", c.name, err, ErrKey, c.want)
 		}
@@ -449,9 +483,9 @@ func TestEntryJSONRoundTrip(t *testing.T) {
 	a := testMember(1)
 	e1 := mustEntry(t, a, Head{}, KindEvent, map[string]string{"note": "<gw> & \u2028 \u00e9 \\ \"x\""})
 	e2 := mustEntry(t, a, headOf(e1), KindCorrection, json.RawMessage(`{"corrects":1,"why":"\u00e9\/"}`))
-	var src Log
+	src := testLog()
 	for _, e := range []Entry{e1, e2} {
-		if err := src.Append(e, a.pub, t0); err != nil {
+		if err := src.Append(e, t0); err != nil {
 			t.Fatalf("Append seq %d: %v", e.Seq, err)
 		}
 	}
@@ -481,9 +515,9 @@ func TestEntryJSONRoundTrip(t *testing.T) {
 	if !reflect.DeepEqual(back, []Entry{e1, e2}) {
 		t.Fatalf("round trip changed the entries:\n got %+v\nwant %+v", back, []Entry{e1, e2})
 	}
-	var dst Log
+	dst := testLog()
 	for _, e := range back {
-		if err := dst.Append(e, a.pub, t0); err != nil {
+		if err := dst.Append(e, t0); err != nil {
 			t.Fatalf("Append the relayed seq %d: %v", e.Seq, err)
 		}
 	}
@@ -504,4 +538,66 @@ func TestEntryJSONRoundTrip(t *testing.T) {
 	if bytes.Equal(after.Body, spaced.Body) {
 		t.Error("the fixture body survived encoding/json; it does not show the hazard")
 	}
+}
+
+// reversed returns b in reverse order, in a new slice.
+func reversed(b []byte) []byte {
+	out := make([]byte, len(b))
+	for i, c := range b {
+		out[len(b)-1-i] = c
+	}
+	return out
+}
+
+// TestSignatureMalleability: S replaced by S + k*L, with L the order of the
+// Ed25519 base point added as little-endian integers, is the same scalar mod
+// L. A lax verifier would accept it as a second valid signature over the same
+// content, with another entry hash, so a relayer could frame the origin with
+// a fork. Go's ed25519.Verify refuses a non-canonical S: none of them
+// verifies, and Append neither stores one nor raises a fork.
+func TestSignatureMalleability(t *testing.T) {
+	a := testMember(1)
+	e := buildChain(t, a, 1)[0]
+	order, _ := new(big.Int).SetString("27742317777372353535851937790883648493", 10)
+	order.Add(order, new(big.Int).Lsh(big.NewInt(1), 252)) // L = 2^252 + 27742317777372353535851937790883648493
+	s := new(big.Int).SetBytes(reversed(e.Sig[32:]))
+	if s.Cmp(order) >= 0 {
+		t.Fatal("the genuine S is not below L")
+	}
+	l := testLog()
+	appendAll(t, l, []Entry{e}, t0)
+	before := stateOf(l, a.id.ID)
+
+	tried := 0
+	for k := int64(1); ; k++ {
+		m := new(big.Int).Add(s, new(big.Int).Mul(big.NewInt(k), order))
+		if m.BitLen() > 256 {
+			break
+		}
+		if new(big.Int).Mod(m, order).Cmp(s) != 0 {
+			t.Fatalf("k=%d: S + kL is not S mod L", k)
+		}
+		mal := e
+		mal.Sig = append(slices.Clone(e.Sig[:32]), reversed(m.FillBytes(make([]byte, 32)))...)
+		if wantHash(mal) == wantHash(e) {
+			t.Fatalf("k=%d: the malleated entry has the genuine hash; the fixture shows nothing", k)
+		}
+		if ed25519.Verify(a.pub, append([]byte(fmtSigPrefix), wantMessage(mal)...), mal.Sig) {
+			t.Fatalf("k=%d: crypto/ed25519 accepts S + kL; a relayer can forge a second signature", k)
+		}
+		if err := mal.Verify(a.pub); !errors.Is(err, ErrSignature) {
+			t.Errorf("k=%d: Verify err = %v, want %v", k, err, ErrSignature)
+		}
+		if err := l.Append(mal, t0); !errors.Is(err, ErrSignature) || errors.Is(err, ErrFork) {
+			t.Errorf("k=%d: Append err = %v, want %v and no fork", k, err, ErrSignature)
+		}
+		tried++
+	}
+	if tried < 2 {
+		t.Fatalf("measured nothing: %d malleated signatures fit in 32 bytes", tried)
+	}
+	if after := stateOf(l, a.id.ID); !reflect.DeepEqual(after, before) {
+		t.Fatal("a malleated signature changed the log")
+	}
+	t.Logf("%d malleated signatures (S + kL, k = 1..%d) refused", tried, tried)
 }
