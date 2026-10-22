@@ -5,8 +5,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -37,7 +39,7 @@ func permOf(t *testing.T, path string) os.FileMode {
 	return fi.Mode().Perm()
 }
 
-// names lists the entries of dir.
+// names lists the entries of dir, sorted by name.
 func names(t *testing.T, dir string) []string {
 	t.Helper()
 	ents, err := os.ReadDir(dir)
@@ -74,6 +76,43 @@ func TestOpenCreatesPrivateDir(t *testing.T) {
 	}
 	if _, err := Open(dir); !errors.Is(err, ErrPermissions) {
 		t.Errorf("Open on a group-writable directory: %v, want ErrPermissions", err)
+	}
+}
+
+// A crash between creating a temporary file and renaming it leaves a file
+// named like one. Open removes those, and nothing else.
+func TestOpenRemovesStaleTempFiles(t *testing.T) {
+	_, dir := newStore(t)
+	for _, n := range []string{".roster.json.12345", ".x.12", "roster.json", ".notes", "x.12"} {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte("partial"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A directory with a temporary-looking name is not a temporary file.
+	if err := os.Mkdir(filepath.Join(dir, ".sub.7"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(dir); err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	want := []string{".notes", ".sub.7", "roster.json", "x.12"}
+	if got := names(t, dir); !slices.Equal(got, want) {
+		t.Errorf("after Open, directory holds %v, want %v", got, want)
+	}
+}
+
+// isTempName must match exactly the names writeFile creates, because Open
+// deletes whatever it matches.
+func TestIsTempName(t *testing.T) {
+	for _, n := range []string{".roster.json.12345", ".x.12", ".a.12", ".a..1", ".a.b.7", "..x.1"} {
+		if !isTempName(n) {
+			t.Errorf("isTempName(%q) = false, want true", n)
+		}
+	}
+	for _, n := range []string{"", ".", "..", ".1", "..5", ".x", ".x.", ".x.y", ".x.1a", ".x.1.", "x.12", ".a.b", ".a..b.1"} {
+		if isTempName(n) {
+			t.Errorf("isTempName(%q) = true, want false", n)
+		}
 	}
 }
 
@@ -152,6 +191,26 @@ func TestReadRefusesFileOpenToGroupOrOthers(t *testing.T) {
 	}
 }
 
+// A symbolic link to a private file outside the store is refused, not
+// followed: the store must never read a file it does not own.
+func TestSymlinkToOutsideFileRefused(t *testing.T) {
+	s, dir := newStore(t)
+	outside := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(outside, []byte("CANARY-123:abc"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ReadFile("link")
+	if !errors.Is(err, ErrNotRegular) {
+		t.Errorf("ReadFile through a symbolic link = %v, want ErrNotRegular", err)
+	}
+	if got != nil {
+		t.Errorf("ReadFile returned %q through a symbolic link", got)
+	}
+}
+
 func TestReadMissingFile(t *testing.T) {
 	s, _ := newStore(t)
 	if _, err := s.ReadFile("absent.json"); !errors.Is(err, fs.ErrNotExist) {
@@ -164,8 +223,9 @@ func TestOpenRefusesFileInPlaceOfDir(t *testing.T) {
 	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Open(path); !errors.Is(err, ErrPermissions) {
-		t.Errorf("Open on a regular file = %v, want ErrPermissions", err)
+	_, err := Open(path)
+	if !errors.Is(err, ErrNotDir) || errors.Is(err, ErrPermissions) {
+		t.Errorf("Open on a regular file = %v, want ErrNotDir and not ErrPermissions", err)
 	}
 }
 
@@ -174,10 +234,8 @@ func TestReadRefusesNonRegularFile(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// The message is checked, so the refusal is the regular-file check and not
-	// a read error that happens to follow from it.
-	if _, err := s.ReadFile("sub"); err == nil || !strings.Contains(err.Error(), "not a regular file") {
-		t.Errorf("ReadFile of a directory = %v, want a not-a-regular-file error", err)
+	if _, err := s.ReadFile("sub"); !errors.Is(err, ErrNotRegular) {
+		t.Errorf("ReadFile of a directory = %v, want ErrNotRegular", err)
 	}
 }
 
@@ -258,8 +316,9 @@ func TestLastErrorReportsLatestWrite(t *testing.T) {
 }
 
 func TestFlushWritesOnlyWhenMarked(t *testing.T) {
+	s, _ := newStore(t)
 	writes := 0
-	f := NewFlusher(func() error { writes++; return nil })
+	f := s.NewFlusher(func() error { writes++; return nil })
 	f.Mark()
 	if err := f.Tick(t0); err != nil {
 		t.Fatalf("marked Tick: %v", err)
@@ -277,8 +336,9 @@ func TestFlushWritesOnlyWhenMarked(t *testing.T) {
 }
 
 func TestFlushAtMostOncePerMinute(t *testing.T) {
+	s, _ := newStore(t)
 	writes := 0
-	f := NewFlusher(func() error { writes++; return nil })
+	f := s.NewFlusher(func() error { writes++; return nil })
 	// Ten marks spread over 59 seconds.
 	for i := 0; i < 10; i++ {
 		f.Mark()
@@ -306,47 +366,87 @@ func TestFlushAtMostOncePerMinute(t *testing.T) {
 	}
 }
 
+// A clock that steps back is not a write. The minute is counted from the new
+// time, so the next write comes at least 60 s after the step.
 func TestFlushBackwardClockDoesNotStall(t *testing.T) {
+	s, _ := newStore(t)
 	writes := 0
-	f := NewFlusher(func() error { writes++; return nil })
+	f := s.NewFlusher(func() error { writes++; return nil })
 	f.Mark()
 	if err := f.Tick(t0); err != nil {
 		t.Fatal(err)
 	}
-	// A router whose clock steps back must still flush: the step counts as a
-	// new window, not as a stall until the old time comes round again.
+	if writes != 1 {
+		t.Fatalf("first Tick: writes = %d, want 1", writes)
+	}
 	f.Mark()
 	if err := f.Tick(t0.Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if writes != 2 {
-		t.Fatalf("Tick after the clock stepped back: writes = %d, want 2", writes)
+	if writes != 1 {
+		t.Errorf("Tick after the clock stepped back an hour: writes = %d, want 1 (a step is not a write)", writes)
 	}
 	f.Mark()
 	if err := f.Tick(t0.Add(-time.Hour + 30*time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if writes != 2 {
-		t.Errorf("Tick 30 s after the step: writes = %d, want 2", writes)
+	if writes != 1 {
+		t.Errorf("Tick 30 s after the step: writes = %d, want 1", writes)
 	}
 	f.Mark()
 	if err := f.Tick(t0.Add(-time.Hour + 60*time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if writes != 3 {
-		t.Errorf("Tick 60 s after the step: writes = %d, want 3", writes)
+	if writes != 2 {
+		t.Errorf("Tick 60 s after the step: writes = %d, want 2", writes)
 	}
 }
 
-// Review Focus 4: a flush into a read-only directory returns an error, keeps
-// the caller's in-memory state and the old file, and retries on the next
-// allowed tick once the directory is writable again.
+// Mark is what a packet handler calls. It must return while a flush is still
+// writing, so a slow fsync cannot stall the daemon.
+func TestMarkDoesNotWaitForWrite(t *testing.T) {
+	s, _ := newStore(t)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	f := s.NewFlusher(func() error {
+		close(started)
+		<-release
+		return nil
+	})
+	f.Mark()
+	tickDone := make(chan error, 1)
+	go func() { tickDone <- f.Tick(t0) }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("the flush did not start")
+	}
+	marked := make(chan struct{})
+	go func() {
+		f.Mark()
+		close(marked)
+	}()
+	select {
+	case <-marked:
+	case <-time.After(time.Second):
+		close(release)
+		t.Fatal("Mark waited for a write in progress")
+	}
+	close(release)
+	if err := <-tickDone; err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+}
+
+// Review Focus 4: a flush into a read-only directory returns an error and keeps
+// the old file, and the next allowed tick retries once the directory is
+// writable again. The retry writes what the caller holds then.
 func TestFlushErrorKeepsData(t *testing.T) {
 	skipIfRoot(t)
 	s, dir := newStore(t)
 	history := []string{"a", "b"}
 	encode := func() []byte { return []byte(strings.Join(history, "\n")) }
-	f := NewFlusher(func() error { return s.WriteFileAtomic("history.txt", encode()) })
+	f := s.NewFlusher(func() error { return s.WriteFileAtomic("history.txt", encode()) })
 
 	f.Mark()
 	if err := f.Tick(t0); err != nil {
@@ -361,14 +461,11 @@ func TestFlushErrorKeepsData(t *testing.T) {
 	// Restore the mode even if the test fails part way, so cleanup works.
 	t.Cleanup(func() { os.Chmod(dir, 0o700) })
 
-	if err := f.Tick(t0.Add(60 * time.Second)); err == nil {
-		t.Fatal("flush into a read-only directory returned nil")
+	if err := f.Tick(t0.Add(60 * time.Second)); !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("flush into a read-only directory = %v, want fs.ErrPermission", err)
 	}
-	if s.LastError() == nil {
-		t.Error("LastError is nil after a failed flush")
-	}
-	if got := strings.Join(history, ","); got != "a,b,c" {
-		t.Errorf("in-memory history = %q, want a,b,c", got)
+	if s.LastError() == nil || f.LastError() == nil {
+		t.Error("status is nil after a failed flush")
 	}
 	// The file from before the failure is still whole.
 	if got, err := s.ReadFile("history.txt"); err != nil || string(got) != "a\nb" {
@@ -378,6 +475,9 @@ func TestFlushErrorKeepsData(t *testing.T) {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// The caller keeps changing its state during the outage.
+	history = append(history, "d")
+	// No Mark here: the mark set before the failure must survive it.
 	// A failed attempt counts toward the minute, so this tick is too early.
 	if err := f.Tick(t0.Add(90 * time.Second)); err != nil {
 		t.Fatalf("tick 30 s after the failed attempt: %v", err)
@@ -385,15 +485,61 @@ func TestFlushErrorKeepsData(t *testing.T) {
 	if got, _ := s.ReadFile("history.txt"); string(got) != "a\nb" {
 		t.Errorf("a tick inside the minute wrote: file = %q", got)
 	}
-	// The mark survived the failure, so the next allowed tick retries.
+	// The mark survived the failure, so the next allowed tick retries and
+	// writes the history as it is now.
 	if err := f.Tick(t0.Add(120 * time.Second)); err != nil {
 		t.Fatalf("retry: %v", err)
 	}
-	if got, err := s.ReadFile("history.txt"); err != nil || string(got) != "a\nb\nc" {
-		t.Errorf("file after retry = %q, %v; want a\\nb\\nc", got, err)
+	if got, err := s.ReadFile("history.txt"); err != nil || string(got) != "a\nb\nc\nd" {
+		t.Errorf("file after retry = %q, %v; want a\\nb\\nc\\nd", got, err)
 	}
 	if err := s.LastError(); err != nil {
 		t.Errorf("LastError after the successful retry = %v, want nil", err)
+	}
+	if err := f.LastError(); err != nil {
+		t.Errorf("Flusher.LastError after the successful retry = %v, want nil", err)
+	}
+}
+
+// A flush that writes two files, where the first fails and the second
+// succeeds, still fails. The status must say so, not report only the last
+// write.
+func TestFlushLastErrorCoversEveryWrite(t *testing.T) {
+	s, dir := newStore(t)
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f := s.NewFlusher(func() error {
+		errA := s.WriteFileAtomic("sub", []byte("first"))     // fails: a directory is in the way
+		errB := s.WriteFileAtomic("b.json", []byte("second")) // succeeds
+		return errors.Join(errA, errB)
+	})
+	f.Mark()
+	if err := f.Tick(t0); err == nil {
+		t.Fatal("Tick returned nil although the first file failed")
+	}
+	if f.LastError() == nil {
+		t.Error("Flusher.LastError is nil after a failed flush")
+	}
+	if s.LastError() == nil {
+		t.Error("Store.LastError is nil after a failed flush: the status would report a healthy store")
+	}
+	if got, err := s.ReadFile("b.json"); err != nil || string(got) != "second" {
+		t.Errorf("second file = %q, %v; want it written", got, err)
+	}
+	// Once both writes succeed, both errors clear.
+	if err := os.Remove(filepath.Join(dir, "sub")); err != nil {
+		t.Fatal(err)
+	}
+	f.Mark()
+	if err := f.Tick(t0.Add(time.Minute)); err != nil {
+		t.Fatalf("flush after the fix: %v", err)
+	}
+	if err := f.LastError(); err != nil {
+		t.Errorf("Flusher.LastError after a good flush = %v, want nil", err)
+	}
+	if err := s.LastError(); err != nil {
+		t.Errorf("Store.LastError after a good flush = %v, want nil", err)
 	}
 }
 
@@ -401,25 +547,37 @@ func TestFlushErrorKeepsData(t *testing.T) {
 // they do in the daemon. Under -race this checks the locking.
 func TestMarkAndTickAreSafeConcurrently(t *testing.T) {
 	s, _ := newStore(t)
-	f := NewFlusher(func() error { return s.WriteFileAtomic("state.txt", []byte("x")) })
+	var writes atomic.Int32
+	f := s.NewFlusher(func() error {
+		writes.Add(1)
+		return s.WriteFileAtomic("state.txt", []byte("x"))
+	})
 	var wg sync.WaitGroup
 	for g := 0; g < 8; g++ {
 		wg.Add(1)
-		go func(g int) {
+		go func() {
 			defer wg.Done()
 			for i := 0; i < 50; i++ {
 				f.Mark()
-				_ = f.Tick(t0.Add(time.Duration(g*50+i) * time.Millisecond))
+				_ = f.Tick(t0)
+				_ = f.LastError()
 				_ = s.LastError()
 			}
-		}(g)
+		}()
 	}
 	wg.Wait()
-	// An attempt an hour after every attempt above is allowed, so a pending
-	// mark is written.
+	// Every concurrent Tick is at t0, so the first one writes and the rest
+	// find the minute still running.
+	if n := writes.Load(); n != 1 {
+		t.Fatalf("concurrent ticks in one minute wrote %d times, want 1", n)
+	}
+	// A mark left pending is written by the next allowed tick.
 	f.Mark()
 	if err := f.Tick(t0.Add(time.Hour)); err != nil {
 		t.Fatalf("final Tick: %v", err)
+	}
+	if n := writes.Load(); n != 2 {
+		t.Errorf("a pending mark an hour later: writes = %d, want 2", n)
 	}
 	if got, err := s.ReadFile("state.txt"); err != nil || string(got) != "x" {
 		t.Errorf("final file = %q, %v; want x", got, err)

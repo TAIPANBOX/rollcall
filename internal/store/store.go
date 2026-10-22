@@ -3,7 +3,7 @@
 //
 // Router flash has a limited number of write cycles. State therefore lives in
 // RAM, and a Flusher writes it to flash at most once a minute, and only when
-// something changed. The caller's write function calls WriteFileAtomic.
+// something changed. The flush's write function calls WriteFileAtomic.
 //
 // WriteFileAtomic writes a temporary file in the same directory, syncs it,
 // renames it over the target and syncs the directory. A reader sees the old
@@ -14,10 +14,12 @@
 //
 // Reading fails closed, as package identity does. A file that group or others
 // can access is refused with ErrPermissions, and so is a directory that group
-// or others can write. A name with a path separator or ".." is refused with
-// ErrName, so nothing outside the directory is reached.
+// or others can write. A symbolic link, a FIFO, a device or a directory is
+// refused with ErrNotRegular and never opened. A name with a path separator or
+// ".." is refused with ErrName, so nothing outside the directory is reached.
 //
-// Nothing here locks the directory across processes: one process owns it.
+// Open removes the temporary files a crash left behind. Nothing here locks the
+// directory across processes: one process owns it.
 package store
 
 import (
@@ -29,6 +31,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -49,6 +52,12 @@ var (
 	ErrName = errors.New("store: invalid file name")
 	// ErrTooLarge reports data, or a stored file, over maxFileSize bytes.
 	ErrTooLarge = errors.New("store: file is larger than the limit")
+	// ErrNotDir reports a path that should be the store directory but is not
+	// a directory.
+	ErrNotDir = errors.New("store: not a directory")
+	// ErrNotRegular reports a stored name that is not a regular file: a
+	// symbolic link, a FIFO, a device, or a directory.
+	ErrNotRegular = errors.New("store: not a regular file")
 )
 
 // Store is a private directory of state files. It is safe for concurrent use.
@@ -56,14 +65,18 @@ type Store struct {
 	dir string
 
 	mu      sync.Mutex
-	lastErr error // the result of the most recent WriteFileAtomic
+	lastErr error // the outcome of the most recent write, see LastError
 }
 
 // Open returns the store in dir. It creates dir with mode 0700 if dir does
 // not exist; its parent must exist. An existing dir that group or others can
-// write is refused with ErrPermissions.
+// write is refused with ErrPermissions, and a path that is not a directory
+// with ErrNotDir. Open then removes the temporary files a crash left in dir.
 func Open(dir string) (*Store, error) {
 	if err := makeDir(dir); err != nil {
+		return nil, err
+	}
+	if err := removeStaleTemps(dir); err != nil {
 		return nil, err
 	}
 	return &Store{dir: dir}, nil
@@ -75,9 +88,7 @@ func Open(dir string) (*Store, error) {
 // nothing is written.
 func (s *Store) WriteFileAtomic(name string, data []byte) error {
 	err := s.write(name, data)
-	s.mu.Lock()
-	s.lastErr = err
-	s.mu.Unlock()
+	s.setLast(err)
 	return err
 }
 
@@ -93,7 +104,8 @@ func (s *Store) write(name string, data []byte) error {
 
 // ReadFile returns the content of name in the store. A missing file is an
 // error wrapping fs.ErrNotExist. A file that group or others can access is
-// refused with ErrPermissions, and one over maxFileSize with ErrTooLarge.
+// refused with ErrPermissions, a symbolic link or other non-regular file with
+// ErrNotRegular, and one over maxFileSize with ErrTooLarge.
 func (s *Store) ReadFile(name string) ([]byte, error) {
 	if err := checkName(name); err != nil {
 		return nil, err
@@ -101,64 +113,111 @@ func (s *Store) ReadFile(name string) ([]byte, error) {
 	return readFile(s.dir, name)
 }
 
-// LastError returns the error of the most recent WriteFileAtomic, or nil if
-// that write succeeded. A daemon reports it in its status.
+// LastError returns the outcome of the most recent write: a WriteFileAtomic
+// call, or a flush made by a Flusher from NewFlusher. A flush's outcome is what
+// its write function returned, so a failure in any file the flush writes shows
+// here, even when a later file in the same flush succeeded. It is nil after a
+// later success. A daemon reports it in its status.
 func (s *Store) LastError() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.lastErr
 }
 
+func (s *Store) setLast(err error) {
+	s.mu.Lock()
+	s.lastErr = err
+	s.mu.Unlock()
+}
+
+// NewFlusher returns a Flusher that flushes by calling write. The outcome of
+// each flush is also reported by the store's LastError.
+func (s *Store) NewFlusher(write func() error) *Flusher {
+	return &Flusher{store: s, write: write}
+}
+
 // Flusher decides when the caller's pending changes are written. Mark records
 // that something changed. Tick calls the write function when something is
-// marked and the last attempt was at least flushInterval ago. It is safe for
-// concurrent use. The write function must not call the Flusher.
+// marked and the last attempt was at least flushInterval ago. Both are safe
+// for concurrent use. The write function must not call the Flusher.
 type Flusher struct {
+	store *Store // where each flush's outcome is also reported; may be nil
 	write func() error
 
-	mu     sync.Mutex
-	marked bool      // something changed and has not been written yet
-	tried  bool      // an attempt has been made
-	last   time.Time // when the last attempt was made
+	// marked is set by Mark without taking mu, so Mark never waits for a
+	// write in progress.
+	marked atomic.Bool
+
+	mu      sync.Mutex
+	writing bool      // a write is in progress
+	tried   bool      // an attempt has been made
+	last    time.Time // when the last attempt was made
+	lastErr error     // what the last write returned
 }
 
-// NewFlusher returns a Flusher that flushes by calling write.
-func NewFlusher(write func() error) *Flusher {
-	return &Flusher{write: write}
-}
-
-// Mark records that there is something to write.
+// Mark records that there is something to write. It returns at once, even
+// while a flush is writing.
 func (f *Flusher) Mark() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.marked = true
+	f.marked.Store(true)
 }
 
-// Tick calls the write function if something is marked and no attempt was
-// made within the last flushInterval before now. A write that succeeds clears
-// the mark. A write that fails keeps it, so the next allowed Tick retries, and
+// Tick calls the write function if something is marked and the last attempt
+// was at least flushInterval before now. A write that succeeds clears the
+// mark. A write that fails keeps it, so the next allowed Tick retries, and
 // Tick returns the error.
 //
 // Every attempt counts toward the interval, failed ones included, so a flash
 // that refuses writes is not hammered. A now earlier than the last attempt,
-// which happens when the router's clock steps back, is allowed, so flushing
-// does not stall until the old time comes round again.
+// which happens when the router's clock steps back, is not a write: the
+// minute is counted from now, so the next write comes at least flushInterval
+// later.
 func (f *Flusher) Tick(now time.Time) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	if !f.marked {
+	if f.writing || !f.marked.Load() {
+		f.mu.Unlock()
 		return nil
 	}
-	if f.tried && !now.Before(f.last) && now.Sub(f.last) < flushInterval {
-		return nil
+	if f.tried {
+		if now.Before(f.last) {
+			f.last = now
+			f.mu.Unlock()
+			return nil
+		}
+		if now.Sub(f.last) < flushInterval {
+			f.mu.Unlock()
+			return nil
+		}
 	}
 	f.tried = true
 	f.last = now
-	if err := f.write(); err != nil {
-		return err
+	f.writing = true
+	// Cleared before the write, so a Mark made during it stays set for the
+	// next Tick.
+	f.marked.Store(false)
+	f.mu.Unlock()
+
+	err := f.write()
+
+	f.mu.Lock()
+	f.writing = false
+	f.lastErr = err
+	if err != nil {
+		f.marked.Store(true)
 	}
-	f.marked = false
-	return nil
+	f.mu.Unlock()
+	if f.store != nil {
+		f.store.setLast(err)
+	}
+	return err
+}
+
+// LastError returns what the most recent write function call returned, or nil
+// after a later success. It covers every file the flush writes, not only the
+// last one.
+func (f *Flusher) LastError() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastErr
 }
 
 // checkName refuses a name that is empty, "." or "..", that contains "..", or
@@ -170,15 +229,15 @@ func checkName(name string) error {
 	return nil
 }
 
-// checkDir returns ErrPermissions unless dir is a directory that group and
-// others cannot write. It follows a symbolic link.
+// checkDir returns ErrNotDir if dir is not a directory, and ErrPermissions if
+// group and others can write it. It follows a symbolic link.
 func checkDir(dir string) error {
 	fi, err := os.Stat(dir)
 	if err != nil {
 		return fmt.Errorf("store: %w", err)
 	}
 	if !fi.IsDir() {
-		return fmt.Errorf("%w: %s is not a directory", ErrPermissions, dir)
+		return fmt.Errorf("%w: %s", ErrNotDir, dir)
 	}
 	if perm := fi.Mode().Perm(); perm&0o022 != 0 {
 		return fmt.Errorf("%w: directory %s has mode %04o; group and others must not write it", ErrPermissions, dir, perm)
@@ -186,15 +245,24 @@ func checkDir(dir string) error {
 	return nil
 }
 
-// readFile returns the content of dir/name after checking dir with checkDir,
-// and that the file it opened is a regular file that group and others cannot
-// access.
+// readFile returns the content of dir/name after checking dir with checkDir.
+// The file is checked with Lstat before anything is opened, so a symbolic
+// link, a FIFO or a device is refused without a read that could block on it.
+// The opened file must then be the one that was checked, and it must have no
+// access for group or others.
 func readFile(dir, name string) ([]byte, error) {
 	if err := checkDir(dir); err != nil {
 		return nil, err
 	}
 	path := filepath.Join(dir, name)
-	f, err := os.Open(path)
+	li, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("store: %w", err)
+	}
+	if !li.Mode().IsRegular() {
+		return nil, fmt.Errorf("%w: %s", ErrNotRegular, path)
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|readOpenFlags, 0)
 	if err != nil {
 		return nil, fmt.Errorf("store: %w", err)
 	}
@@ -203,8 +271,8 @@ func readFile(dir, name string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("store: %w", err)
 	}
-	if !fi.Mode().IsRegular() {
-		return nil, fmt.Errorf("store: %s is not a regular file", path)
+	if !fi.Mode().IsRegular() || !os.SameFile(li, fi) {
+		return nil, fmt.Errorf("%w: %s was replaced while it was being opened", ErrNotRegular, path)
 	}
 	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
 		return nil, fmt.Errorf("%w: %s has mode %04o; group and others must have no access", ErrPermissions, path, perm)
@@ -234,6 +302,44 @@ func makeDir(dir string) error {
 		return fmt.Errorf("store: %w", err)
 	}
 	return nil
+}
+
+// removeStaleTemps removes the temporary files a crash left in dir. Removal is
+// best effort: a file that cannot be removed is only wasted space, so the
+// error from Remove is not reported. Only a failure to read dir is.
+func removeStaleTemps(dir string) error {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("store: %w", err)
+	}
+	for _, e := range ents {
+		if e.Type().IsRegular() && isTempName(e.Name()) {
+			os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
+	return nil
+}
+
+// isTempName reports whether n has the form "." + name + "." + digits, which
+// is how writeFile names its temporary file, and name is a valid store name.
+func isTempName(n string) bool {
+	if len(n) < 3 || n[0] != '.' {
+		return false
+	}
+	dot := strings.LastIndexByte(n, '.')
+	if dot < 2 {
+		return false
+	}
+	digits := n[dot+1:]
+	if digits == "" {
+		return false
+	}
+	for i := 0; i < len(digits); i++ {
+		if digits[i] < '0' || digits[i] > '9' {
+			return false
+		}
+	}
+	return checkName(n[1:dot]) == nil
 }
 
 // writeFile replaces dir/name with data, mode 0600: it writes a temporary file
