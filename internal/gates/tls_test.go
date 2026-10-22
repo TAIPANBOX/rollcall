@@ -9,9 +9,18 @@ import (
 	"testing"
 )
 
-// TestNoInsecureSkipVerify fails on any InsecureSkipVerify identifier in
-// non-test Go source. TLS verification is never disabled, anywhere in the
-// repository. Test files are excluded so test code may build broken fixtures.
+// tlsVerificationIdents are the identifiers that disable or replace TLS
+// certificate verification. None of them may appear in non-test Go source.
+var tlsVerificationIdents = map[string]bool{
+	"InsecureSkipVerify":    true,
+	"VerifyPeerCertificate": true,
+	"VerifyConnection":      true,
+}
+
+// TestNoInsecureSkipVerify fails on any identifier in tlsVerificationIdents in
+// non-test Go source. TLS verification is never disabled or replaced, anywhere
+// in the repository. Test files are excluded so test code may build broken
+// fixtures.
 func TestNoInsecureSkipVerify(t *testing.T) {
 	root := requireRoot(t)
 	fset := token.NewFileSet()
@@ -28,9 +37,9 @@ func TestNoInsecureSkipVerify(t *testing.T) {
 			return fmt.Errorf("parse %s: %w", relPath(root, path), err)
 		}
 		ast.Inspect(file, func(n ast.Node) bool {
-			if id, ok := n.(*ast.Ident); ok && id.Name == "InsecureSkipVerify" {
+			if id, ok := n.(*ast.Ident); ok && tlsVerificationIdents[id.Name] {
 				pos := fset.Position(id.Pos())
-				offenders = append(offenders, fmt.Sprintf("%s:%d", relPath(root, pos.Filename), pos.Line))
+				offenders = append(offenders, fmt.Sprintf("%s:%d (%s)", relPath(root, pos.Filename), pos.Line, id.Name))
 			}
 			return true
 		})
@@ -43,6 +52,7 @@ func TestNoInsecureSkipVerify(t *testing.T) {
 		t.Fatalf("measured nothing: no non-test .go files under %s", root)
 	}
 	if len(offenders) > 0 {
-		t.Errorf("InsecureSkipVerify is never allowed; found at: %s", strings.Join(offenders, ", "))
+		t.Errorf("TLS certificate verification may never be disabled or replaced; found at: %s",
+			strings.Join(offenders, ", "))
 	}
 }

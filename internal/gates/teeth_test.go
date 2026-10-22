@@ -3,10 +3,14 @@ package gates
 import (
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -17,7 +21,7 @@ type outcome int
 const (
 	wantFail outcome = iota // a planted fault or a missing subject: the gate must fail
 	wantPass                // a clean copy: the gate must pass
-	wantSkip                // a pending marker: the gate must skip, and only that
+	wantSkip                // every feature file pending: the gate must skip, and only that
 )
 
 // toothCase is one run of one gate against one copy of the repository.
@@ -67,9 +71,32 @@ var toothCases = []toothCase{
 	{
 		name: "dependency_fake_require", gate: "TestDependencyAllowlist",
 		plant: func(t *testing.T, dst string) {
-			appendFile(t, filepath.Join(dst, "go.mod"), "\nrequire example.com/planted v1.0.0\n")
+			appendFile(t, filepath.Join(dst, "go.mod"), "\nrequire github.com/example/evil v1.0.0\n")
 		},
-		outcome: wantFail, expect: "example.com/planted",
+		outcome: wantFail, expect: "github.com/example/evil",
+	},
+	{
+		name: "dependency_allowed_modules", gate: "TestDependencyAllowlist",
+		plant: func(t *testing.T, dst string) {
+			appendFile(t, filepath.Join(dst, "go.mod"),
+				"\nrequire (\n\tgolang.org/x/crypto v0.58.0\n\tgolang.org/x/sys v0.49.0 // indirect\n)\n")
+		},
+		outcome: wantPass,
+	},
+	{
+		name: "dependency_fake_replace", gate: "TestDependencyAllowlist",
+		plant: func(t *testing.T, dst string) {
+			appendFile(t, filepath.Join(dst, "go.mod"),
+				"\nreplace golang.org/x/crypto => example.com/evilfork v1.0.0\n")
+		},
+		outcome: wantFail, expect: "example.com/evilfork",
+	},
+	{
+		name: "dependency_local_replace", gate: "TestDependencyAllowlist",
+		plant: func(t *testing.T, dst string) {
+			appendFile(t, filepath.Join(dst, "go.mod"), "\nreplace golang.org/x/crypto => ../crypto-fork\n")
+		},
+		outcome: wantPass,
 	},
 	{name: "dependency_clean", gate: "TestDependencyAllowlist", outcome: wantPass},
 	{
@@ -107,6 +134,22 @@ var toothCases = []toothCase{
 		},
 		outcome: wantFail, expect: "planted_tls.go",
 	},
+	{
+		name: "tls_verify_peer_certificate", gate: "TestNoInsecureSkipVerify",
+		plant: func(t *testing.T, dst string) {
+			writeFile(t, filepath.Join(dst, "cmd", "rollcalld", "planted_verify_peer.go"),
+				"package main\n\nimport \"crypto/tls\"\n\nvar planted = &tls.Config{VerifyPeerCertificate: nil}\n")
+		},
+		outcome: wantFail, expect: "VerifyPeerCertificate",
+	},
+	{
+		name: "tls_verify_connection", gate: "TestNoInsecureSkipVerify",
+		plant: func(t *testing.T, dst string) {
+			writeFile(t, filepath.Join(dst, "cmd", "rollcalld", "planted_verify_conn.go"),
+				"package main\n\nimport \"crypto/tls\"\n\nvar planted = &tls.Config{VerifyConnection: nil}\n")
+		},
+		outcome: wantFail, expect: "VerifyConnection",
+	},
 	{name: "tls_clean", gate: "TestNoInsecureSkipVerify", outcome: wantPass},
 	{
 		name: "tls_no_sources", gate: "TestNoInsecureSkipVerify",
@@ -119,28 +162,48 @@ var toothCases = []toothCase{
 	{
 		name: "features_untagged_scenario", gate: "TestFeatureBindings",
 		plant: func(t *testing.T, dst string) {
-			plantBindingFixture(t, dst, fixtureUntagged)
+			plantFeatures(t, dst, map[string]string{"group.feature": fixtureUntagged})
 		},
 		outcome: wantFail, expect: "untagged scenario",
 	},
 	{
 		name: "features_tag_names_no_test", gate: "TestFeatureBindings",
 		plant: func(t *testing.T, dst string) {
-			plantBindingFixture(t, dst, fixtureMissingTest)
+			plantFeatures(t, dst, map[string]string{"group.feature": fixtureMissingTest})
 		},
 		outcome: wantFail, expect: "TestNoSuchTest",
 	},
 	{
+		name: "features_marked_file_does_not_excuse_others", gate: "TestFeatureBindings",
+		plant: func(t *testing.T, dst string) {
+			plantFeatures(t, dst, map[string]string{
+				"a.feature": "# bindings-pending\n" + fixtureBound,
+				"b.feature": fixtureUntagged,
+			})
+		},
+		outcome: wantFail, expect: "features/b.feature:",
+	},
+	{
+		name: "features_marked_file_excuses_only_itself", gate: "TestFeatureBindings",
+		plant: func(t *testing.T, dst string) {
+			plantFeatures(t, dst, map[string]string{
+				"a.feature": "# bindings-pending\n" + fixtureUntagged,
+				"b.feature": fixtureBound,
+			})
+		},
+		outcome: wantPass,
+	},
+	{
 		name: "features_pending_marker_skips", gate: "TestFeatureBindings",
 		plant: func(t *testing.T, dst string) {
-			plantBindingFixture(t, dst, "# bindings-pending\n"+fixtureUntagged)
+			plantFeatures(t, dst, map[string]string{"group.feature": "# bindings-pending\n" + fixtureUntagged})
 		},
 		outcome: wantSkip, expect: "bindings pending",
 	},
 	{
 		name: "features_clean", gate: "TestFeatureBindings",
 		plant: func(t *testing.T, dst string) {
-			plantBindingFixture(t, dst, fixtureBound)
+			plantFeatures(t, dst, map[string]string{"group.feature": fixtureBound})
 		},
 		outcome: wantPass,
 	},
@@ -185,6 +248,8 @@ var toothCases = []toothCase{
 // checkout is never written to: every case works in its own temporary copy.
 func TestGatesHaveTeeth(t *testing.T) {
 	src := requireRoot(t)
+	checkEveryGateHasTeeth(t, src)
+
 	bin := filepath.Join(t.TempDir(), "gates.test")
 	build := exec.Command("go", "test", "-c", "-o", bin, "./internal/gates")
 	build.Dir = src
@@ -202,6 +267,64 @@ func TestGatesHaveTeeth(t *testing.T) {
 			out, code := runGate(t, bin, dst, c)
 			checkTooth(t, c, out, code)
 		})
+	}
+}
+
+// checkEveryGateHasTeeth fails for each Test function in internal/gates, other
+// than TestGatesHaveTeeth, that no teeth case runs. A gate added without a
+// planted fault is red here. It also fails for a teeth case that names no gate.
+func checkEveryGateHasTeeth(t *testing.T, src string) {
+	t.Helper()
+	dir := filepath.Join(src, "internal", "gates")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("measured nothing: read %s: %v", dir, err)
+	}
+	fset := token.NewFileSet()
+	gates := map[string]bool{}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if ok && fn.Recv == nil && isTestName(fn.Name.Name) && fn.Name.Name != "TestGatesHaveTeeth" {
+				gates[fn.Name.Name] = true
+			}
+		}
+	}
+	if len(gates) == 0 {
+		t.Fatalf("measured nothing: no gate tests in %s", dir)
+	}
+
+	covered := map[string]bool{}
+	for _, c := range toothCases {
+		covered[c.gate] = true
+	}
+	var unpunished, unknown []string
+	for name := range gates {
+		if !covered[name] {
+			unpunished = append(unpunished, name)
+		}
+	}
+	for name := range covered {
+		if !gates[name] {
+			unknown = append(unknown, name)
+		}
+	}
+	sort.Strings(unpunished)
+	sort.Strings(unknown)
+	if len(unpunished) > 0 {
+		t.Errorf("gate(s) with no teeth case: %s; add a planted fault for each to toothCases",
+			strings.Join(unpunished, ", "))
+	}
+	if len(unknown) > 0 {
+		t.Errorf("teeth case(s) name no gate in internal/gates: %s", strings.Join(unknown, ", "))
 	}
 }
 
@@ -304,12 +427,17 @@ func checkTooth(t *testing.T, c toothCase, out string, code int) {
 	}
 }
 
-// plantBindingFixture gives the copy a bound test and a features file with
-// the given content.
-func plantBindingFixture(t *testing.T, dst, features string) {
+// plantFeatures gives the copy a bound test and replaces its features
+// directory with the given files, keyed by file name.
+func plantFeatures(t *testing.T, dst string, files map[string]string) {
 	t.Helper()
 	writeFile(t, filepath.Join(dst, "internal", "gates", "bindfixture_test.go"), bindingFixture)
-	writeFile(t, filepath.Join(dst, "features", "group.feature"), features)
+	if err := os.RemoveAll(filepath.Join(dst, "features")); err != nil {
+		t.Fatal(err)
+	}
+	for name, text := range files {
+		writeFile(t, filepath.Join(dst, "features", name), text)
+	}
 }
 
 // removeGoSources deletes every non-test Go file in the copy.

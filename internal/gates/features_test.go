@@ -21,8 +21,9 @@ const (
 // directions: every scenario carries an @test:TestName tag directly above it,
 // and every @test: tag names a test function that exists in the repository.
 //
-// The gate skips only while a file carries the line "# bindings-pending",
-// which Task 22 removes once its tests exist.
+// A file that carries the line "# bindings-pending" is excused from its own
+// binding problems until Task 22 binds it. Every other file is enforced. The
+// gate skips only when every feature file is pending.
 func TestFeatureBindings(t *testing.T) {
 	root := requireRoot(t)
 	files, err := filepath.Glob(filepath.Join(root, "features", "*.feature"))
@@ -48,17 +49,21 @@ func TestFeatureBindings(t *testing.T) {
 		rel := relPath(root, file)
 		n, off, isPending := scanFeature(rel, string(data), tests)
 		scenarios += n
-		offenders = append(offenders, off...)
 		if isPending {
 			pending = append(pending, rel)
+			continue // excused: its own problems are not counted
 		}
+		offenders = append(offenders, off...)
 	}
 	if scenarios == 0 {
 		t.Fatalf("measured nothing: no Scenario: lines in %s", strings.Join(relPaths(root, files), ", "))
 	}
+	if len(pending) == len(files) {
+		t.Skipf("bindings pending: every feature file carries %s until Task 22 binds it to its tests",
+			pendingMarker)
+	}
 	if len(pending) > 0 {
-		t.Skipf("bindings pending: %s carries %s until Task 22 binds it to its tests",
-			strings.Join(pending, ", "), pendingMarker)
+		t.Logf("bindings pending, excused from this run: %s", strings.Join(pending, ", "))
 	}
 	if len(offenders) > 0 {
 		t.Errorf("%d feature binding problem(s):\n  %s", len(offenders), strings.Join(offenders, "\n  "))
