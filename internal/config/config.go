@@ -16,11 +16,12 @@
 //		option ntfy_url 'https://ntfy.sh/topic'
 //		option allow_insecure_lan '0'       # plain http to a private IP literal
 //
-// peer_zone, peer and probe_target may also be written as one option whose
-// value lists several words separated by spaces, as OpenWrt allows; list
-// entries come first, then the words of the option. Any other option or
-// section is refused, so a typing mistake never passes unnoticed, and
-// secrets never belong in this file.
+// peer_zone, peer and probe_target are lists and only lists: the package's
+// firewall rule is built from the list entries (config_list_foreach), so an
+// option holding several words would make rollcall listen in a zone the
+// firewall never opened. Any other option or section is refused, so a
+// typing mistake never passes unnoticed, and secrets never belong in this
+// file.
 package config
 
 import (
@@ -167,7 +168,10 @@ func fromSections(secs []Section) (Config, error) {
 		return fmt.Errorf("line %d: %s", main.Line, fmt.Sprintf(format, args...))
 	}
 	for k := range main.Options {
-		if !scalarKeys[k] && !listKeys[k] {
+		if listKeys[k] {
+			return Config{}, at("%q must be a list (list %s '...'), not an option", k, k)
+		}
+		if !scalarKeys[k] {
 			return Config{}, at("unknown option %q", k)
 		}
 	}
@@ -179,14 +183,7 @@ func fromSections(secs []Section) (Config, error) {
 			return Config{}, at("unknown option %q", k)
 		}
 	}
-	words := func(k string) []string {
-		out := slices.Clone(main.Lists[k])
-		out = append(out, strings.Fields(main.Options[k])...)
-		if len(out) == 0 {
-			return nil
-		}
-		return out
-	}
+	words := func(k string) []string { return slices.Clone(main.Lists[k]) }
 
 	cfg := Config{
 		Site:         main.Options["site"],

@@ -433,7 +433,8 @@ const fixtureRollcall = `config rollcall 'main'
 	option site 'Home'
 	list peer_zone 'lan'
 	list peer_zone 'vpn'
-	option peer_zone 'legacy wan'
+	list peer_zone 'legacy'
+	list peer_zone 'wan'
 	list peer '192.0.2.10'
 	list peer '[2001:db8::7]:7500'
 	option port '7440'
@@ -568,6 +569,9 @@ func TestLoadRefuses(t *testing.T) {
 		{"unknown option", "config rollcall\n\toption token 'CANARY-123:abc'\n", `unknown option "token"`},
 		{"unknown list", "config rollcall\n\tlist peers '192.0.2.1'\n", `unknown option "peers"`},
 		{"scalar as a list", "config rollcall\n\tlist port '7432'\n", `"port" must be an option`},
+		{"zones as an option", "config rollcall\n\toption peer_zone 'lan'\n", `"peer_zone" must be a list`},
+		{"peers as an option", "config rollcall\n\tlist peer_zone 'wan'\n\toption peer '192.0.2.1'\n", `"peer" must be a list`},
+		{"probes as an option", "config rollcall\n\toption probe_target '1.1.1.1 9.9.9.9'\n", `"probe_target" must be a list`},
 		{"port not a number", "config rollcall\n\toption port 'abc'\n", "port"},
 		{"port too low", "config rollcall\n\toption port '80'\n", "port"},
 		{"heartbeat as a duration", "config rollcall\n\toption heartbeat '5s'\n", "heartbeat"},
