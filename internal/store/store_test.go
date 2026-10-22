@@ -104,15 +104,62 @@ func TestOpenRemovesStaleTempFiles(t *testing.T) {
 // isTempName must match exactly the names writeFile creates, because Open
 // deletes whatever it matches.
 func TestIsTempName(t *testing.T) {
-	for _, n := range []string{".roster.json.12345", ".x.12", ".a.12", ".a..1", ".a.b.7", "..x.1"} {
+	for _, n := range []string{".roster.json.12345", ".x.12", ".a.12", ".a..1", ".a.b.7", ".x.1"} {
 		if !isTempName(n) {
 			t.Errorf("isTempName(%q) = false, want true", n)
 		}
 	}
-	for _, n := range []string{"", ".", "..", ".1", "..5", ".x", ".x.", ".x.y", ".x.1a", ".x.1.", "x.12", ".a.b", ".a..b.1"} {
+	// "..x.1" is the temporary name for ".x", which no store name can be now.
+	for _, n := range []string{"", ".", "..", ".1", "..5", ".x", ".x.", ".x.y", ".x.1a", ".x.1.", "x.12", ".a.b", ".a..b.1", "..x.1"} {
 		if isTempName(n) {
 			t.Errorf("isTempName(%q) = true, want false", n)
 		}
+	}
+}
+
+// A name with a leading dot is refused, so no stored file has the shape of a
+// temporary file. Open deletes files of that shape, so a file stored under
+// such a name would be lost on the next start.
+func TestDottedNamesAreRefused(t *testing.T) {
+	s, dir := newStore(t)
+	for _, name := range []string{".x.1", ".hidden", ".roster.json.12345"} {
+		if err := checkName(name); !errors.Is(err, ErrName) {
+			t.Errorf("checkName(%q) = %v, want ErrName", name, err)
+		}
+		if err := s.WriteFileAtomic(name, []byte("x")); !errors.Is(err, ErrName) {
+			t.Errorf("WriteFileAtomic(%q) = %v, want ErrName", name, err)
+		}
+		if _, err := s.ReadFile(name); !errors.Is(err, ErrName) {
+			t.Errorf("ReadFile(%q) = %v, want ErrName", name, err)
+		}
+	}
+	if l := names(t, dir); len(l) != 0 {
+		t.Errorf("refused writes left %v behind", l)
+	}
+}
+
+// Open keeps every file the store wrote and removes only a crash's leftover.
+// ".x.1" is the case the review found: it has the shape of a temporary file
+// for "x", so it can no longer be stored.
+func TestOpenKeepsEveryStoredName(t *testing.T) {
+	s, dir := newStore(t)
+	for _, name := range []string{"roster.json", "x.1", "notes"} {
+		if err := s.WriteFileAtomic(name, []byte("kept")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.WriteFileAtomic(".x.1", []byte("refused")); !errors.Is(err, ErrName) {
+		t.Errorf("WriteFileAtomic(.x.1) = %v, want ErrName", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".roster.json.12345"), []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(dir); err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	want := []string{"notes", "roster.json", "x.1"}
+	if got := names(t, dir); !slices.Equal(got, want) {
+		t.Errorf("after Open, directory holds %v, want %v", got, want)
 	}
 }
 
@@ -540,6 +587,42 @@ func TestFlushLastErrorCoversEveryWrite(t *testing.T) {
 	}
 	if err := s.LastError(); err != nil {
 		t.Errorf("Store.LastError after a good flush = %v, want nil", err)
+	}
+}
+
+// A write function that panics must not stop flushing for the life of the
+// process. The panic propagates, the flush counts as failed, and the pending
+// change is written by the next allowed Tick.
+func TestPanickingWriteDoesNotStopFlushing(t *testing.T) {
+	s, _ := newStore(t)
+	calls := 0
+	f := s.NewFlusher(func() error {
+		calls++
+		if calls == 1 {
+			panic("write failed badly")
+		}
+		return nil
+	})
+	f.Mark()
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("the panic did not propagate out of Tick")
+			}
+		}()
+		f.Tick(t0)
+	}()
+	if f.LastError() == nil {
+		t.Error("Flusher.LastError is nil after a panicking flush")
+	}
+	if err := f.Tick(t0.Add(time.Minute)); err != nil {
+		t.Fatalf("Tick after the panic: %v", err)
+	}
+	if calls != 2 {
+		t.Errorf("write calls = %d after the retry, want 2", calls)
+	}
+	if err := f.LastError(); err != nil {
+		t.Errorf("Flusher.LastError after the retry = %v, want nil", err)
 	}
 }
 

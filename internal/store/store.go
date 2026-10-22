@@ -171,6 +171,9 @@ func (f *Flusher) Mark() {
 // which happens when the router's clock steps back, is not a write: the
 // minute is counted from now, so the next write comes at least flushInterval
 // later.
+//
+// If the write function panics, the flush counts as failed, the mark stays set,
+// and the panic propagates to the caller.
 func (f *Flusher) Tick(now time.Time) error {
 	f.mu.Lock()
 	if f.writing || !f.marked.Load() {
@@ -196,19 +199,35 @@ func (f *Flusher) Tick(now time.Time) error {
 	f.marked.Store(false)
 	f.mu.Unlock()
 
-	err := f.write()
+	return f.flush()
+}
 
+// errFlushPanicked is the outcome recorded when the write function panics.
+var errFlushPanicked = errors.New("store: flush write function panicked")
+
+// flush calls the write function and records its outcome. If the write
+// function panics, the outcome is a failed flush, and the panic propagates to
+// the caller. The flusher is left ready for the next allowed Tick.
+func (f *Flusher) flush() (err error) {
+	err = errFlushPanicked
+	defer func() { f.record(err) }()
+	return f.write()
+}
+
+// record stores the outcome of a flush: it clears writing, keeps the mark on
+// failure, and reports the outcome to the store. It holds f.mu while it
+// reports, so an older outcome cannot overwrite a newer one in the store.
+func (f *Flusher) record(err error) {
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.writing = false
 	f.lastErr = err
 	if err != nil {
 		f.marked.Store(true)
 	}
-	f.mu.Unlock()
 	if f.store != nil {
 		f.store.setLast(err)
 	}
-	return err
 }
 
 // LastError returns what the most recent write function call returned, or nil
@@ -220,10 +239,12 @@ func (f *Flusher) LastError() error {
 	return f.lastErr
 }
 
-// checkName refuses a name that is empty, "." or "..", that contains "..", or
-// that contains a path separator (either / or \).
+// checkName refuses a name that is empty, that starts with a dot, that contains
+// "..", or that contains a path separator (either / or \). The leading-dot rule
+// means no stored name has the shape of a temporary file (see isTempName), so
+// Open can never delete a stored file.
 func checkName(name string) error {
-	if name == "" || name == "." || strings.Contains(name, "..") || strings.ContainsAny(name, `/\`) {
+	if name == "" || name[0] == '.' || strings.Contains(name, "..") || strings.ContainsAny(name, `/\`) {
 		return fmt.Errorf("%w: %q", ErrName, name)
 	}
 	return nil
