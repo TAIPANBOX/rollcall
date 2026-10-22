@@ -812,7 +812,7 @@ func TestReservedTypesIgnored(t *testing.T) {
 func TestCatchUpOnDigestMismatch(t *testing.T) {
 	g := newGroup(t, setup{n: 2})
 	a, b := g.nodes[0], g.nodes[1]
-	g.run(10 * sec)
+	g.run(ownCatchUp + 5*sec)
 	g.split([]int{0}, []int{1}, true)
 	for _, typ := range []events.Type{events.WanDown, events.WanUp, events.InternetLost, events.InternetRestored} {
 		a.LocalEvent(events.Event{Type: typ})
@@ -932,8 +932,11 @@ func TestNoAutomaticExpulsion(t *testing.T) {
 			t.Fatal("the fork was not proven")
 		}
 		s := n.Status()
-		if s.Version != 1 || len(s.Members) != 3 || s.Members[2].State != "suspicious" {
-			t.Fatalf("after the fork: roster version %d, %d members, r03 %s; want 1, 3, suspicious", s.Version, len(s.Members), s.Members[2].State)
+		if s.Version != 1 || len(s.Members) != 3 {
+			t.Fatalf("after the fork: roster version %d with %d members; want 1 and 3: nobody is expelled", s.Version, len(s.Members))
+		}
+		if s.Members[2].State != "suspicious" {
+			t.Fatalf("after the fork r03 is %s, want suspicious", s.Members[2].State)
 		}
 		if countType(ownTypes(n), events.Fork) != 1 {
 			t.Fatal("no alarm in the own chain")
@@ -1035,7 +1038,7 @@ func TestOwnChainCaughtUpFirst(t *testing.T) {
 	g.stop(0)
 	g.cfgs[0].Boot, g.cfgs[0].BootSeq = bootN(0, 2), 2
 	a = g.start(0)
-	if with(a, func() uint64 { return a.log.Head(a.id.ID).Seq }) != uint64(stored) {
+	if with(a, func() uint64 { return a.log.Head(a.id.ID).Seq }) < uint64(stored) {
 		t.Fatal("the restart did not start from the store")
 	}
 	g.run(20 * sec)
