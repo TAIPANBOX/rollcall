@@ -63,8 +63,9 @@
 //
 // The roster in a response may be of any version, since the new router has
 // none to compare it with. It is accepted on the authority of the code
-// alone: signed by the key whose fingerprint the code carries, that key an
-// admin's in that very roster, and the roster passing Check.
+// alone (roster.Signed.VerifyAnchored): signed by the key whose fingerprint
+// the code carries, that key an admin's in that very roster, and the roster
+// passing Check.
 //
 // Every error is a sentinel, or wraps sentinels, and never carries a secret,
 // a token, key bytes or the text of a code.

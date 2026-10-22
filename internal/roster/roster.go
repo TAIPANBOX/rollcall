@@ -121,6 +121,14 @@
 // hears the primary; that is AcceptTakeover, which the caller applies after
 // Verify.
 //
+// # Anchored verification
+//
+// VerifyAnchored accepts a roster of any version without a previous one, on
+// the authority of a key the caller trusts by other means (at pairing, the
+// key whose fingerprint the join code carries): signed by that key, not
+// with the recovery key, as an admin of that very roster, in canonical form,
+// passing Check. Its errors wrap ErrAnchor.
+//
 // Every error is a sentinel, or wraps sentinels, and carries no text from
 // the roster.
 package roster

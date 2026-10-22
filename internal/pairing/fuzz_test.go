@@ -131,13 +131,10 @@ func FuzzOpenJoinResponse(f *testing.F) {
 		if !bytes.Equal(handPayload(binding, ek, sec, s), payload) {
 			t.Fatalf("accepted a payload that is not the encoding of what it returned")
 		}
-		r, err := s.Verify(&fx.s1)
+		// Any version is accepted at join; only the anchor is checked.
+		r, err := s.VerifyAnchored(pubOf(fx.admin))
 		if err != nil {
-			// Any version is accepted at join; only the anchor is checked.
-			r, err = rosterOf(s)
-			if err != nil {
-				t.Fatalf("accepted roster does not decode: %v", err)
-			}
+			t.Fatalf("accepted roster is not anchored to the admin: %v", err)
 		}
 		for _, m := range r.Members {
 			if m.ID == fx.joiner.ID && sec != nil && !hasRole(m.Roles, roster.RoleSender) {
@@ -155,6 +152,3 @@ func hasRole(roles []roster.Role, want roster.Role) bool {
 	}
 	return false
 }
-
-// rosterOf decodes a body that the package already accepted.
-func rosterOf(s roster.Signed) (roster.Roster, error) { return decodeRoster(s.Body) }

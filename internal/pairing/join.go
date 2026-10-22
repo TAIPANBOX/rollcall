@@ -12,7 +12,6 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -57,7 +56,6 @@ const (
 	respVersion  = 1
 	respKind     = "join-response"
 	respInfo     = "rollcall/v1 join-response"
-	rosterKind   = "roster"
 	encSize      = mlkem.CiphertextSize768 + 32 // X-Wing: ML-KEM-768 ciphertext and an X25519 point
 	respHeader   = 1 + ed25519.PublicKeySize
 	respOverhead = respHeader + encSize + tagSize + ed25519.SignatureSize
@@ -135,8 +133,8 @@ var (
 	// ErrBinding reports a response made for another join code.
 	ErrBinding = errors.New("pairing: the join response was made for another join code")
 	// ErrRosterAnchor reports a roster that is not a valid roster signed by
-	// the admin the code names, as an admin of that roster. It may wrap the
-	// roster package's error.
+	// the admin the code names, as an admin of that roster. It wraps the
+	// error of roster.Signed.VerifyAnchored, which decides it.
 	ErrRosterAnchor = errors.New("pairing: the roster is not a valid roster signed by the admin the join code names")
 	// ErrNotInRoster reports a roster that does not hold the joining router
 	// under its member ID with its own keys.
@@ -370,9 +368,9 @@ func NewJoinResponse(req JoinRequest, r roster.Signed, ek epoch.Key, token *Secr
 	if r.SignerID != admin.ID {
 		return nil, ErrRosterAnchor
 	}
-	rr, err := verifyAnchored(r, adminPub)
+	rr, err := r.VerifyAnchored(adminPub)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", ErrRosterAnchor, err)
 	}
 	m := findMember(&rr, req.ID)
 	if m == nil || !bytes.Equal(m.SignPub, req.SignPub) || !bytes.Equal(m.RecvPub, req.RecvPub) {
@@ -511,9 +509,9 @@ func decodePayload(p []byte) (payload, error) {
 // only then opens the HPKE ciphertext with self's receive key and member ID
 // (ErrDecrypt) and decodes the payload (ErrResponseFormat, ErrEpochKey,
 // ErrToken); the binding to c (ErrBinding); the roster (ErrRosterAnchor),
-// which is accepted whatever its version, but only if it is signed by that
-// same key, the key belongs to an admin of that roster, and the roster
-// passes Check; that the roster holds self with its own keys
+// which roster.Signed.VerifyAnchored accepts whatever its version, but only
+// if it is signed by that same key, the key belongs to an admin of that
+// roster, and the roster passes Check; that the roster holds self with its own keys
 // (ErrNotInRoster); and that secrets come only to a sender
 // (ErrSecretsNotSender). On error every value returned is zero.
 func OpenJoinResponse(c Code, blob []byte, self *identity.Identity) (roster.Signed, epoch.Key, *Secrets, error) {
@@ -548,9 +546,9 @@ func OpenJoinResponse(c Code, blob []byte, self *identity.Identity) (roster.Sign
 	if err != nil || subtle.ConstantTimeCompare(p.binding, want[:]) != 1 {
 		return roster.Signed{}, epoch.Key{}, nil, ErrBinding
 	}
-	r, err := verifyAnchored(p.roster, bytes.Clone(adminPub))
+	r, err := p.roster.VerifyAnchored(bytes.Clone(adminPub))
 	if err != nil {
-		return roster.Signed{}, epoch.Key{}, nil, err
+		return roster.Signed{}, epoch.Key{}, nil, fmt.Errorf("%w: %w", ErrRosterAnchor, err)
 	}
 	m := findMember(&r, self.ID)
 	if m == nil || !bytes.Equal(m.SignPub, selfPub) || !bytes.Equal(m.RecvPub, self.Recv.PublicKey().Bytes()) {
@@ -560,63 +558,6 @@ func OpenJoinResponse(c Code, blob []byte, self *identity.Identity) (roster.Sign
 		return roster.Signed{}, epoch.Key{}, nil, ErrSecretsNotSender
 	}
 	return p.roster, p.key, p.secrets, nil
-}
-
-// verifyAnchored accepts a roster of any version on the authority of key
-// alone, which the caller has tied to a join code's fingerprint: the roster
-// must be signed, not with the recovery key, by key as the member it names
-// as signer; decode in the roster package's one canonical form; pass Check;
-// and list that signer among its admins with key as its signing key. The
-// signature is checked before the body is decoded. It does not judge the
-// chain: there is no previous roster to judge it against. Every error is
-// ErrRosterAnchor, wrapping the roster package's error where there is one.
-func verifyAnchored(s roster.Signed, key ed25519.PublicKey) (roster.Roster, error) {
-	// A zero signer ID or an empty body cannot pass the checks below: Check
-	// keeps zero IDs out of Admins, and an empty body does not decode. A
-	// body over roster.MaxBodySize does not fit a response.
-	if s.Recovery {
-		return roster.Roster{}, ErrRosterAnchor
-	}
-	// The roster package signs signer ID (16) | recovery (1) | body.
-	m := make([]byte, 0, memberIDSize+1+len(s.Body))
-	m = append(m, s.SignerID[:]...)
-	m = append(m, 0)
-	m = append(m, s.Body...)
-	if !sig.Verify(key, rosterKind, m, s.Sig) {
-		return roster.Roster{}, ErrRosterAnchor
-	}
-	r, err := decodeRoster(s.Body)
-	if err != nil {
-		return roster.Roster{}, ErrRosterAnchor
-	}
-	if err := r.Check(); err != nil {
-		return roster.Roster{}, fmt.Errorf("%w: %w", ErrRosterAnchor, err)
-	}
-	if !slices.Contains(r.Admins, s.SignerID) {
-		return roster.Roster{}, ErrRosterAnchor
-	}
-	if signer := findMember(&r, s.SignerID); signer == nil || !bytes.Equal(signer.SignPub, key) {
-		return roster.Roster{}, ErrRosterAnchor
-	}
-	return r, nil
-}
-
-// decodeRoster decodes a roster body that must be in the roster package's
-// canonical form: one JSON object of the Roster fields alone, nothing after
-// it, which encoding again gives back byte for byte.
-func decodeRoster(body []byte) (roster.Roster, error) {
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.DisallowUnknownFields()
-	var r roster.Roster
-	if err := dec.Decode(&r); err != nil {
-		return roster.Roster{}, ErrRosterAnchor
-	}
-	// Data after the object makes the body longer than its encoding, so the
-	// comparison refuses it too.
-	if again, err := json.Marshal(r); err != nil || !bytes.Equal(again, body) {
-		return roster.Roster{}, ErrRosterAnchor
-	}
-	return r, nil
 }
 
 // findMember returns r's member with id, or nil.

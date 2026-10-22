@@ -197,7 +197,7 @@ var allErrors = []error{
 	ErrFormat, ErrTooLarge, ErrSigner, ErrNotAdmin, ErrSignature, ErrDecode,
 	ErrNotCanonical, ErrNoPrev, ErrVersion, ErrPrevHash, ErrPrev,
 	ErrRecoveryChanged, ErrKey, ErrReplaced, ErrTakeoverFlag,
-	ErrTakeoverReplaced, ErrAdminKeys,
+	ErrTakeoverReplaced, ErrAdminKeys, ErrAnchor,
 }
 
 // checkErr fails unless err is want and no other sentinel of the package
