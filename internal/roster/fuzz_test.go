@@ -10,13 +10,14 @@ import (
 	"github.com/TAIPANBOX/rollcall/internal/ids"
 )
 
-// FuzzVerify feeds arbitrary bytes to Verify twice: as a genesis roster with
-// an arbitrary signature, where the body is decoded before the signature is
-// checked, and as the body of version 2 signed by the real primary of
-// version 1, so that decoding, the canonical check, Check and the chain
-// rules all see hostile input. Nothing may panic, an error always comes with
-// a zero roster and a sentinel of the package, and a success must be a
-// roster that the rules allow.
+// FuzzVerify feeds arbitrary bytes to Verify three times: as a genesis
+// roster with an arbitrary signature, where the body is decoded before the
+// signature is checked, and as the body of version 2 signed by the real
+// primary and by the real backup of version 1, so that decoding, the
+// canonical check, Check, the chain rules and the takeover rules all see
+// hostile input. Nothing may panic, an error always comes with a zero roster
+// and a sentinel of the package, and a success must be a roster that the
+// rules allow.
 func FuzzVerify(f *testing.F) {
 	ps := testParties()
 	r1 := base(3)
@@ -31,6 +32,11 @@ func FuzzVerify(f *testing.F) {
 		f.Fatal(err)
 	}
 	f.Add(s2.Body, s2.Sig, byte(0))
+	t2, err := SignRoster(takeoverOf(r1, s1, ps[1].ID), ps[1].ID, ps[1].Sign, false)
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Add(t2.Body, t2.Sig, byte(0)) // the backup's takeover
 	f.Add(s1.Body, s1.Sig, byte(2)) // a valid genesis by the primary
 	f.Add(s1.Body, s1.Sig, byte(1))
 	f.Add([]byte(`{}`), []byte{}, byte(3))
@@ -51,6 +57,9 @@ func FuzzVerify(f *testing.F) {
 			if enc, _ := json.Marshal(got); !bytes.Equal(enc, body) {
 				t.Fatal("genesis accepted for a body that is not its canonical encoding")
 			}
+			if !s.Recovery && got.Takeover {
+				t.Fatal("genesis signed by an admin accepted as a takeover")
+			}
 		}
 
 		s = handSign(ps[0].Sign, ps[0].ID, false, body)
@@ -62,6 +71,22 @@ func FuzzVerify(f *testing.F) {
 			}
 			if enc, _ := json.Marshal(got); !bytes.Equal(enc, body) {
 				t.Fatal("version 2 accepted for a body that is not its canonical encoding")
+			}
+			if got.Takeover {
+				t.Fatal("version 2 signed by the primary accepted with the takeover flag")
+			}
+		}
+
+		s = handSign(ps[1].Sign, ps[1].ID, false, body)
+		got, err = s.Verify(&s1)
+		fuzzResult(t, got, err)
+		if err == nil {
+			if got.Version != 2 || got.Prev != s1.Hash() || got.Check() != nil {
+				t.Fatalf("version 2 by the backup accepted with version %d, prev %v, Check %v", got.Version, got.Prev, got.Check())
+			}
+			moved := got.Admins[0] != r1.Admins[0]
+			if moved != got.Takeover || (moved && got.Replaced != r1.Admins[0]) {
+				t.Fatalf("version 2 by the backup accepted with primary moved %v, takeover %v, replaced %v", moved, got.Takeover, got.Replaced)
 			}
 		}
 	})

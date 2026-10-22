@@ -196,7 +196,8 @@ var allErrors = []error{
 	ErrAdminNotMember, ErrDuplicateAdmin, ErrRoleMismatch, ErrOwnerConfirmed,
 	ErrFormat, ErrTooLarge, ErrSigner, ErrNotAdmin, ErrSignature, ErrDecode,
 	ErrNotCanonical, ErrNoPrev, ErrVersion, ErrPrevHash, ErrPrev,
-	ErrRecoveryChanged, ErrKey,
+	ErrRecoveryChanged, ErrKey, ErrReplaced, ErrTakeoverFlag,
+	ErrTakeoverReplaced, ErrAdminKeys,
 }
 
 // checkErr fails unless err is want and no other sentinel of the package
@@ -295,8 +296,22 @@ func TestRosterShape(t *testing.T) {
 			r.Members[0], r.Members[1] = r.Members[1], r.Members[0]
 			return r
 		}()},
-		{"takeover", func() Roster { r := base(3); r.Takeover = true; return r }()},
-		{"takeover confirmed", func() Roster { r := base(3); r.Takeover = true; r.OwnerConfirmed = true; return r }()},
+		{"takeover, the replaced primary a backup", func() Roster { r := base(3); r.Takeover, r.Replaced = true, r.Admins[1]; return r }()},
+		{"takeover confirmed", func() Roster {
+			r := base(3)
+			r.Takeover, r.OwnerConfirmed, r.Replaced = true, true, r.Admins[1]
+			return r
+		}()},
+		{"takeover confirmed, the replaced primary an ordinary member", func() Roster {
+			r := base(3)
+			r.Takeover, r.OwnerConfirmed, r.Replaced = true, true, r.Members[2].ID
+			return r
+		}()},
+		{"takeover confirmed, the replaced primary gone", func() Roster {
+			r := base(3)
+			r.Takeover, r.OwnerConfirmed, r.Replaced = true, true, ps[39].ID
+			return r
+		}()},
 		{"largest version", func() Roster { r := base(3); r.Version = math.MaxUint64; return r }()},
 		{"names of 32 characters", func() Roster {
 			r := base(2)
@@ -394,6 +409,20 @@ func TestRosterShape(t *testing.T) {
 		{"primary also has the backup role", func(r *Roster) { r.Members[0].Roles = []Role{RolePrimary, RoleBackup} }, ErrRoleMismatch, nil},
 		{"backup role without a backup admin", func(r *Roster) { r.Admins = r.Admins[:1] }, ErrRoleMismatch, nil},
 		{"owner confirmed without takeover", func(r *Roster) { r.OwnerConfirmed = true }, ErrOwnerConfirmed, nil},
+		{"takeover without replaced", func(r *Roster) { r.Takeover = true }, ErrReplaced, nil},
+		{"takeover confirmed without replaced", func(r *Roster) { r.Takeover, r.OwnerConfirmed = true, true }, ErrReplaced, nil},
+		{"replaced without takeover", func(r *Roster) { r.Replaced = r.Admins[1] }, ErrReplaced, nil},
+		{"replaced is the primary", func(r *Roster) { r.Takeover, r.Replaced = true, r.Admins[0] }, ErrReplaced, nil},
+		{"replaced is the primary, confirmed", func(r *Roster) {
+			r.Takeover, r.OwnerConfirmed, r.Replaced = true, true, r.Admins[0]
+		}, ErrReplaced, nil},
+		{"unconfirmed takeover, replaced an ordinary member", func(r *Roster) { r.Takeover, r.Replaced = true, r.Members[2].ID }, ErrReplaced, nil},
+		{"unconfirmed takeover, replaced not a member", func(r *Roster) { r.Takeover, r.Replaced = true, ps[39].ID }, ErrReplaced, nil},
+		{"unconfirmed takeover, no backup at all", func(r *Roster) {
+			r.Admins = r.Admins[:1]
+			r.Members[1].Roles = nil
+			r.Takeover, r.Replaced = true, r.Members[1].ID
+		}, ErrReplaced, nil},
 	}
 	for _, c := range invalid {
 		r := base(3)
@@ -556,17 +585,17 @@ func TestVerifyChain(t *testing.T) {
 
 // TestVerifyLeavesForksToPrefer pins that Verify judges one link: two
 // different version-2 rosters, each signed by an admin of version 1, both
-// verify; choosing between them is Task 8's Prefer.
+// verify, even when one is the backup's takeover; choosing between them is
+// Prefer's.
 func TestVerifyLeavesForksToPrefer(t *testing.T) {
 	ps := testParties()
 	r1 := base(3)
 	s1 := mustSign(t, r1, ps[0])
 	a := next(r1, s1)
 	a.Members[2].Roles = nil
-	b := next(r1, s1)
-	b.Takeover = true
+	b := takeoverOf(r1, s1, ps[1].ID)
 	verifyOK(t, "fork a by the primary", mustSign(t, a, ps[0]), &s1, a)
-	verifyOK(t, "fork b by the backup", mustSign(t, b, ps[1]), &s1, b)
+	verifyOK(t, "fork b, the backup's takeover", mustSign(t, b, ps[1]), &s1, b)
 }
 
 // TestVerifyAuthority is the brief's authority test plus the rulings: the
@@ -769,6 +798,8 @@ func TestVerifyStrictBody(t *testing.T) {
 		{"newline inside base64", canon[:key4] + `\n` + canon[key4:], ErrNotCanonical},
 		{"null", `null`, ErrNotCanonical},
 		{"empty object", `{}`, ErrNotCanonical},
+		{"replaced left out", strings.Replace(canon, `"replaced":"`+strings.Repeat("0", 32)+`",`, ``, 1), ErrNotCanonical},
+		{"replaced in capitals", strings.Replace(canon, `"replaced":"`+strings.Repeat("0", 32)+`"`, `"replaced":"`+strings.Repeat("0", 31)+`A"`, 1), ErrNotCanonical},
 	}
 	for _, c := range cases {
 		if c.body == canon {
@@ -796,6 +827,7 @@ func TestVerifyChecksShape(t *testing.T) {
 			r.Members[2].Roles = []Role{RoleBackup}
 		}, ErrTooManyAdmins},
 		{"owner confirmed without takeover", func(r *Roster) { r.OwnerConfirmed = true }, ErrOwnerConfirmed},
+		{"takeover without replaced", func(r *Roster) { r.Takeover = true }, ErrReplaced},
 		{"recovery key of small order", func(r *Roster) { r.RecoveryPub = bytes.Clone(smallOrder) }, ErrRecoveryKey},
 		{"two primaries", func(r *Roster) { r.Members[1].Roles = []Role{RolePrimary} }, ErrTwoPrimaries},
 		{"unknown role", func(r *Roster) { r.Members[2].Roles = []Role{"root"} }, ErrRole},
@@ -898,7 +930,7 @@ func TestWireFormat(t *testing.T) {
 	r.Prev = ids.Hash{0xab, 0xcd}
 	r.Members[1].Roles = append(r.Members[1].Roles, RoleSender)
 	r.Members = append(r.Members, base(4).Members[3]) // no roles
-	r.Takeover = true
+	r.Takeover, r.Replaced = true, ps[1].ID
 
 	b64 := base64.StdEncoding.EncodeToString
 	member := func(p party, roles string) string {
@@ -914,7 +946,8 @@ func TestWireFormat(t *testing.T) {
 		member(ps[1], `["backup","sender"]`) + "," +
 		member(ps[3], "") +
 		`],"admins":["` + hex.EncodeToString(ps[0].ID[:]) + `","` + hex.EncodeToString(ps[1].ID[:]) +
-		`"],"recovery_pub":"` + b64(pub(recoveryKey)) + `","takeover":true,"owner_confirmed":false}`
+		`"],"recovery_pub":"` + b64(pub(recoveryKey)) + `","takeover":true,"replaced":"` + hex.EncodeToString(ps[1].ID[:]) +
+		`","owner_confirmed":false}`
 
 	s := mustSign(t, r, ps[1])
 	if string(s.Body) != want {
@@ -938,6 +971,11 @@ func TestWireFormat(t *testing.T) {
 	}
 	if got, want := rec.Hash(), handHash(rec); got != want {
 		t.Errorf("recovery Hash = %v, want %v", got, want)
+	}
+	// Without a takeover, Replaced is written out as the zero ID.
+	plain := mustSign(t, base(2), ps[0])
+	if tail := `"takeover":false,"replaced":"` + strings.Repeat("0", 32) + `","owner_confirmed":false}`; !strings.HasSuffix(string(plain.Body), tail) {
+		t.Errorf("Body without a takeover ends\n%s\nwant\n%s", plain.Body[len(plain.Body)-len(tail):], tail)
 	}
 }
 
@@ -986,7 +1024,9 @@ func TestSignedHash(t *testing.T) {
 }
 
 // TestLargestRosterFits signs and verifies the largest roster Check allows
-// and reports its size against MaxBodySize and the 64 KiB TCP frame.
+// and reports its size against MaxBodySize and the 64 KiB TCP frame. Both
+// flags are false: "false" is longer than "true", and Replaced is written
+// out at its full length either way.
 func TestLargestRosterFits(t *testing.T) {
 	ps := testParties()
 	r := base(MaxMembers)
@@ -998,7 +1038,6 @@ func TestLargestRosterFits(t *testing.T) {
 		}
 	}
 	r.Version = math.MaxUint64
-	r.Takeover, r.OwnerConfirmed = true, true
 	for i := range r.Prev {
 		r.Prev[i] = 0xff
 	}

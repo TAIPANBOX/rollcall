@@ -14,7 +14,11 @@
 // members, Admins[0] the primary and the rest backups; the roles agree with
 // Admins: Admins[0], and nobody else, has RolePrimary, the other admins, and
 // nobody else, have RoleBackup; RoleSender may be on anyone; a member lists
-// only known roles, each once; and OwnerConfirmed is set only with Takeover.
+// only known roles, each once; OwnerConfirmed is set only with Takeover; and
+// Replaced, the primary a takeover replaced, is set exactly when Takeover
+// is, is never Admins[0], and is one of the backups, Admins[1:], while the
+// takeover is unconfirmed (OwnerConfirmed clear), so that the replaced
+// primary can always sign its restore.
 //
 // # Body
 //
@@ -25,9 +29,10 @@
 //	 "members":[{"id":"<32 hex digits>","name":"<name>","sign_pub":"<base64>",
 //	   "recv_pub":"<base64>","roles":["primary","sender"]},...],
 //	 "admins":["<32 hex digits>",...],"recovery_pub":"<base64>",
-//	 "takeover":false,"owner_confirmed":false}
+//	 "takeover":false,"replaced":"<32 hex digits>","owner_confirmed":false}
 //
-// "roles" is left out for a member without roles. Hex is lower case, base64
+// "roles" is left out for a member without roles; "replaced" is always
+// written, as 32 zeros when there is no takeover. Hex is lower case, base64
 // is the standard alphabet with padding. That exact encoding is the only one
 // accepted: Verify decodes the body (unknown fields refused, nothing after
 // the object) and requires that encoding the result again gives the same
@@ -74,12 +79,47 @@
 //     prev.Hash(), signed by an admin listed in prev with that admin's key
 //     in prev, or by prev's recovery key. Only a roster signed by the
 //     recovery key may change RecoveryPub, so a compromised admin cannot
-//     lock the owner's recovery code out.
+//     lock the owner's recovery code out. An admin of prev keeps its
+//     signing and receive keys unless the roster is signed by that admin
+//     itself or by the recovery key (ErrAdminKeys); otherwise the backup
+//     could give the primary's entry a key of its own, in a roster that
+//     changes nothing else, and then sign as the primary.
 //
 // prev is the Signed this member accepted last. Verify trusts it as it is:
 // it decodes it and runs Check, but cannot check how it was accepted.
 // Verify judges one link of the chain; it does not choose between two
-// different rosters of the same version.
+// different rosters of the same version (Prefer does).
+//
+// # Takeover
+//
+// Spec 6.1: if the primary is gone, the backup takes over; the takeover is
+// provisional, and the primary it replaced restores itself when it comes
+// back, unless the owner has confirmed the takeover or used the recovery
+// key. Verify holds the roster's side of this for a roster signed by an
+// admin; one signed by the recovery key overrides both admins and is held
+// to Check alone. With p the previous roster and r the new one:
+//
+//   - A roster signed by a backup of p that names a primary other than
+//     p.Admins[0] is a takeover: it sets Takeover, with Replaced
+//     p.Admins[0] (ErrTakeoverFlag, ErrTakeoverReplaced). The one exception
+//     is the restore: while p's takeover is unconfirmed, the primary it
+//     replaced may sign a roster that names itself primary with Takeover
+//     clear.
+//   - Nothing else raises Takeover: not the primary, not a backup that
+//     keeps the primary, not a version 1 roster signed by an admin
+//     (ErrTakeoverFlag). So the backup cannot name itself the replaced
+//     primary and then restore itself past the ten-minute rule.
+//   - Once raised, the takeover carries forward: Replaced stays
+//     (ErrTakeoverReplaced), a confirmation is not withdrawn, and Takeover
+//     is cleared only once the takeover is confirmed or when the replaced
+//     primary is primary again (ErrTakeoverFlag).
+//   - While the takeover is unconfirmed, Check keeps the replaced primary
+//     among the backups, and so its keys stay as they were (ErrAdminKeys,
+//     above): its restore can always be signed and verified.
+//
+// Whether a member accepts a takeover at all depends on whether it still
+// hears the primary; that is AcceptTakeover, which the caller applies after
+// Verify.
 //
 // Every error is a sentinel, or wraps sentinels, and carries no text from
 // the roster.
@@ -146,6 +186,7 @@ type Roster struct {
 	Admins         []ids.MemberID `json:"admins"` // Admins[0] is the primary
 	RecoveryPub    []byte         `json:"recovery_pub"`
 	Takeover       bool           `json:"takeover"`
+	Replaced       ids.MemberID   `json:"replaced"` // the primary a takeover replaced; zero without one
 	OwnerConfirmed bool           `json:"owner_confirmed"`
 }
 
@@ -178,6 +219,7 @@ var (
 	ErrTwoPrimaries   = errors.New("roster: more than one member has the primary role")
 	ErrRoleMismatch   = errors.New("roster: member roles disagree with the admin list")
 	ErrOwnerConfirmed = errors.New("roster: owner_confirmed without takeover")
+	ErrReplaced       = errors.New("roster: replaced disagrees with takeover or the admin list")
 )
 
 // Errors of SignRoster and Verify.
@@ -195,6 +237,14 @@ var (
 	ErrPrevHash        = errors.New("roster: prev is not the hash of the previous roster")
 	ErrPrev            = errors.New("roster: previous roster is unusable")
 	ErrRecoveryChanged = errors.New("roster: only the recovery key may replace the recovery key")
+)
+
+// Errors of the admin rules in Verify (package comment, Chain and authority,
+// and Takeover).
+var (
+	ErrTakeoverFlag     = errors.New("roster: takeover flag or confirmation breaks the takeover rules")
+	ErrTakeoverReplaced = errors.New("roster: replaced is not the primary the takeover replaced")
+	ErrAdminKeys        = errors.New("roster: an admin's keys changed in a roster that admin did not sign")
 )
 
 // Check returns nil if r has the shape described in the package comment,
@@ -289,6 +339,15 @@ func (r Roster) Check() error {
 	}
 	if r.OwnerConfirmed && !r.Takeover {
 		return ErrOwnerConfirmed
+	}
+	if r.Takeover != (r.Replaced != ids.MemberID{}) {
+		return fmt.Errorf("%w: set without takeover, or missing with it", ErrReplaced)
+	}
+	if r.Takeover && r.Replaced == r.Admins[0] {
+		return fmt.Errorf("%w: it is the primary", ErrReplaced)
+	}
+	if r.Takeover && !r.OwnerConfirmed && !slices.Contains(r.Admins[1:], r.Replaced) {
+		return fmt.Errorf("%w: not a backup while the takeover is unconfirmed", ErrReplaced)
 	}
 	return nil
 }
@@ -396,6 +455,9 @@ func (s Signed) Verify(prev *Signed) (Roster, error) {
 		if r.Prev != (ids.Hash{}) {
 			return Roster{}, ErrPrevHash
 		}
+		if r.Takeover && !s.Recovery {
+			return Roster{}, ErrTakeoverFlag // version 1 has nothing to take over
+		}
 		return r, nil
 	}
 	if r.Version != p.Version+1 {
@@ -406,6 +468,9 @@ func (s Signed) Verify(prev *Signed) (Roster, error) {
 	}
 	if !s.Recovery && !bytes.Equal(r.RecoveryPub, p.RecoveryPub) {
 		return Roster{}, ErrRecoveryChanged
+	}
+	if err := checkTakeover(&p, &r, s); err != nil {
+		return Roster{}, err
 	}
 	return r, nil
 }
