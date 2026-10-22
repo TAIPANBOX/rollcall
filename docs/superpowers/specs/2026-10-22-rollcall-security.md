@@ -13,6 +13,9 @@ marks a fact read from the named primary source on 2026-10-22; everything else i
   should not.
 - `@decided 2026-10-22`: one primary admin router and one optional backup admin
   router, chosen by the owner; the admin list is extensible later (section 6.1).
+- `@decided 2026-10-22`: when a split leaves two diverging rosters, the branch started
+  with the higher authority wins (recovery key, then primary, then backup), and the
+  changes of the losing branch are announced in the chat as undone (section 6.1).
 - `@decided 2026-10-22`: history is a chain, not a list ordered by time, so that no
   router can overwrite another's data; routers that were down add their own part and
   check what was recorded without them (sections 5.7 to 5.9). v1 carries the
@@ -329,8 +332,10 @@ boot sequences raise a `duplicate_identity` alert.
   key, then primary, then backup, judged against the last roster both sides shared.
   At equal authority the higher version wins, then the lower hash. Authority comes
   first so that a compromised backup cannot win by making many changes during the
-  split. (Refined during implementation on 2026-10-22; the first draft ranked the
-  version first.)
+  split. Changes from the branch that lost are not dropped silently: the chat gets one
+  message listing what was undone and which router made it, so a person can repeat
+  what was wanted. (Refined during implementation on 2026-10-22; the first draft ranked
+  the version first.)
 - **Visibility.** Every roster change, role change and takeover is announced in the
   chat with the name of the router that signed it ("ap-office removed by admin
   gateway"). If an admin router is taken over by an attacker, its changes are seen at
