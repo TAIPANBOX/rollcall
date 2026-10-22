@@ -202,7 +202,12 @@ jobs:
       - name: The checksums match the files
         run: (cd release && shasum -a 256 -c SHA256SUMS)
 
-      - name: Attest every file
+      - name: SHA256SUMS is present, so it is one of the attested subjects
+        run: test -s release/SHA256SUMS
+
+      # One attestation over every file in release/, the packages, the binaries, the SBOMs and
+      # SHA256SUMS itself, so the checksum file is covered by the same signed statement.
+      - name: Attest every file, SHA256SUMS included
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: 'release/*'

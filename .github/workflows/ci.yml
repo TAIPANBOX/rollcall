@@ -3,6 +3,7 @@ name: ci
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
   gates:
@@ -103,8 +104,10 @@ jobs:
   # The mutation score is recorded, not gated: --threshold-efficacy 0 never fails a package,
   # and the job is continue-on-error until a threshold is agreed. The 80 percent target in the
   # plan is not enforced here. gremlins is pinned to an exact release and run only in CI.
+  # The job runs on a manual dispatch and on a tag push, not on every push or pull request.
   mutation:
     name: mutation score (reported, not gating)
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
     runs-on: ubuntu-latest
     continue-on-error: true
     timeout-minutes: 90
