@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"testing"
 )
@@ -275,6 +277,171 @@ func TestInvalidKind(t *testing.T) {
 	for _, kind := range []string{"", "\x00", "a\x00b", "entry\x00"} {
 		if !panics(func() { Sign(priv, kind, []byte("msg")) }) {
 			t.Errorf("Sign with kind %q did not panic", kind)
+		}
+	}
+}
+
+// smallOrderHex is the small-order blocklist as the review ruling gives it,
+// kept apart from the package's copy so that a typo in either one shows.
+// Values are y-coordinate encodings with bit 255 (the sign of x) cleared.
+var smallOrderHex = []struct {
+	name      string
+	hex       string
+	canonical bool
+}{
+	{"y=0, order 4", "0000000000000000000000000000000000000000000000000000000000000000", true},
+	{"y=1, identity", "0100000000000000000000000000000000000000000000000000000000000000", true},
+	{"order 8 (a)", "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05", true},
+	{"order 8 (b)", "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a", true},
+	{"y=p-1, order 2", "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", true},
+	{"y=p, non-canonical 0", "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", false},
+	{"y=p+1, non-canonical 1", "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", false},
+}
+
+// decodeKey decodes a 32-byte hex public key.
+func decodeKey(t *testing.T, h string) []byte {
+	t.Helper()
+	b, err := hex.DecodeString(h)
+	if err != nil || len(b) != ed25519.PublicKeySize {
+		t.Fatalf("bad test key %q: %d bytes, %v", h, len(b), err)
+	}
+	return b
+}
+
+// withSignBit returns a copy of pub with bit 255 set.
+func withSignBit(pub []byte) []byte {
+	c := bytes.Clone(pub)
+	c[31] |= 0x80
+	return c
+}
+
+// probeSig returns R || S with R the encoding of the base point B and S = 1.
+// Under a key A whose order divides 8, the check [S]B = R + [k]A reduces to
+// [k]A = identity, which holds for at least one message in eight.
+func probeSig() []byte {
+	sig := make([]byte, ed25519.SignatureSize)
+	copy(sig, []byte{0x58})
+	for i := 1; i < 32; i++ {
+		sig[i] = 0x66
+	}
+	sig[32] = 1
+	return sig
+}
+
+// forgery returns the first of 256 fixed messages m for which plain
+// ed25519.Verify accepts the probe signature over prefix + m.
+func forgery(pub []byte, prefix string) ([]byte, bool) {
+	sig := probeSig()
+	for i := 0; i < 256; i++ {
+		m := []byte(fmt.Sprintf("small-order probe %d", i))
+		if ed25519.Verify(pub, append([]byte(prefix), m...), sig) {
+			return m, true
+		}
+	}
+	return nil, false
+}
+
+// forgeable reports whether a signature nobody made verifies under pub.
+func forgeable(pub []byte) bool {
+	_, ok := forgery(pub, "")
+	return ok
+}
+
+// TestSmallOrderBlocklistIsReal checks the constants themselves: the
+// package's list is exactly the ruling's seven values, and every canonical
+// one is a key under which a forged signature verifies.
+func TestSmallOrderBlocklistIsReal(t *testing.T) {
+	if hex.EncodeToString(probeSig()[:32]) != "5866666666666666666666666666666666666666666666666666666666666666" {
+		t.Fatalf("probe R is not the base point encoding: %x", probeSig()[:32])
+	}
+	ordinary, _ := testKey(t, 9)
+	if forgeable(ordinary) {
+		t.Fatal("the probe forges under an ordinary key: the oracle is broken")
+	}
+
+	if len(smallOrderY) != len(smallOrderHex) {
+		t.Errorf("package blocklist has %d values, the ruling has %d", len(smallOrderY), len(smallOrderHex))
+	}
+	for i, c := range smallOrderHex {
+		if i < len(smallOrderY) && smallOrderY[i] != c.hex {
+			t.Errorf("package blocklist value %d is %s, want %s (%s)", i, smallOrderY[i], c.hex, c.name)
+		}
+	}
+
+	for _, c := range smallOrderHex {
+		pub := decodeKey(t, c.hex)
+		plain, signed := forgeable(pub), forgeable(withSignBit(pub))
+		t.Logf("%-24s forgeable: %v; with bit 255 set: %v", c.name, plain, signed)
+		if c.canonical && !plain && !signed {
+			t.Errorf("%s: no forgery under either sign, so the constant %s is not a small-order point", c.name, c.hex)
+		}
+	}
+}
+
+func TestValidPublicKeyRejectsSmallOrder(t *testing.T) {
+	for _, c := range smallOrderHex {
+		base := decodeKey(t, c.hex)
+		for _, pub := range [][]byte{base, withSignBit(base)} {
+			before := bytes.Clone(pub)
+			if err := ValidPublicKey(pub); !errors.Is(err, ErrSmallOrderKey) {
+				t.Errorf("%s, key %x: got %v, want ErrSmallOrderKey", c.name, pub, err)
+			}
+			if !bytes.Equal(pub, before) {
+				t.Errorf("%s: ValidPublicKey changed the key from %x to %x", c.name, before, pub)
+			}
+		}
+	}
+
+	for _, n := range []int{0, 1, 31, 33, 64} {
+		if err := ValidPublicKey(make([]byte, n)); !errors.Is(err, ErrKeyLength) {
+			t.Errorf("%d-byte key: got %v, want ErrKeyLength", n, err)
+		}
+	}
+	if err := ValidPublicKey(nil); !errors.Is(err, ErrKeyLength) {
+		t.Errorf("nil key: got %v, want ErrKeyLength", err)
+	}
+
+	for i := 0; i < 100; i++ {
+		pub, _, err := ed25519.GenerateKey(nil)
+		if err != nil {
+			t.Fatalf("GenerateKey: %v", err)
+		}
+		if err := ValidPublicKey(pub); err != nil {
+			t.Errorf("generated key %x: %v", pub, err)
+		}
+		if forgeable(pub) {
+			t.Errorf("generated key %x is forgeable", pub)
+		}
+	}
+}
+
+// TestVerifyRejectsSmallOrderKeys finds, for each blocklisted key, a message
+// whose forged signature plain Ed25519 accepts over the exact bytes Verify
+// checks, and requires Verify to refuse it.
+func TestVerifyRejectsSmallOrderKeys(t *testing.T) {
+	const kind = "roster"
+	prefix := "rollcall/v1/" + kind + "\x00"
+	sig := probeSig()
+	forgedNames := map[string]bool{}
+	forged := 0
+	for _, c := range smallOrderHex {
+		base := decodeKey(t, c.hex)
+		for _, pub := range [][]byte{base, withSignBit(base)} {
+			m, ok := forgery(pub, prefix)
+			if !ok {
+				continue
+			}
+			forged++
+			forgedNames[c.name] = true
+			if verifyNoPanic(t, pub, kind, m, sig) {
+				t.Errorf("%s, key %x: Verify accepted a forged signature for message %q", c.name, pub, m)
+			}
+		}
+	}
+	t.Logf("forged signatures found for %d of %d blocklisted encodings", forged, 2*len(smallOrderHex))
+	for _, c := range smallOrderHex {
+		if c.canonical && !forgedNames[c.name] {
+			t.Errorf("measured nothing for %s: no forgery found, so Verify was not exercised on it", c.name)
 		}
 	}
 }
