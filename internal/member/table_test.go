@@ -1411,8 +1411,11 @@ func TestPeerStateFileRejected(t *testing.T) {
 			}
 			cfg := Config{Self: ms[0].id.ID, Boot: localBoot, BootSeq: 6, Roster: testRoster(ms), RosterHash: testRosterHash, Store: st}
 			tab, err := New(cfg, at(start))
-			if err != nil || !errors.Is(tab.StorageError(), ErrStateFile) {
-				t.Fatalf("New = %v; StorageError %v, want ErrStateFile", err, tab.StorageError())
+			if err != nil {
+				t.Fatalf("New over a corrupt file: %v, want a table", err)
+			}
+			if !errors.Is(tab.StorageError(), ErrStateFile) {
+				t.Fatalf("StorageError %v, want ErrStateFile", tab.StorageError())
 			}
 			if data, err := st.ReadFile(peerStateFile + ".corrupt"); err != nil || string(data) != content {
 				t.Errorf("set aside %d bytes, %v; want the %d bytes of the file", len(data), err, len(content))
@@ -2041,6 +2044,19 @@ func TestRelayedHeartbeatCounted(t *testing.T) {
 		if got, _ := f.tab.Offset(); got != want {
 			t.Errorf("Offset after a relayed heartbeat %v, want %v", got, want)
 		}
+	})
+
+	// A helper that relays a heartbeat of a second router with r02's
+	// identity relays proof of a duplicate.
+	t.Run("duplicate", func(t *testing.T) {
+		f, _, h := liarSetup(t)
+		clone := fullBeat(r02)
+		clone.BootSeq, clone.Boot, clone.Counter, clone.GoingDown = 1, bootID(9), 5, false
+		evs, err := f.relay(r03, r02, enc(t, clone, r02), 0, at(h+16*s))
+		if !errors.Is(err, ErrDuplicateIdentity) || len(evs) != 1 {
+			t.Fatalf("relayed clone: %s, %v; want one event and ErrDuplicateIdentity", describe(evs), err)
+		}
+		wantEvent(t, evs[0], events.DuplicateIdentity, r02, f.self, at(h+16*s))
 	})
 
 	// Garbage in an answer is counted like garbage in a packet.
