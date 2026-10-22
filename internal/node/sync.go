@@ -618,10 +618,7 @@ func (n *Node) resolveLocked(base int, theirs []roster.Signed, now clock.Stamp) 
 	if err != nil {
 		return
 	}
-	common := n.rosters[base]
-	rOurs := n.rosters[base+1:]
-	win := preferBranch(theirs, ours, rTheirs, rOurs, common)
-	if win.Hash() == ours[0].Hash() {
+	if !preferTheirs(theirs, ours, rTheirs, n.rosters[base+1:], n.rosters[base]) {
 		// Ours stays. The peer adopts it when it fetches from us; the
 		// undone changes are announced from the history it then records.
 		return
@@ -629,11 +626,13 @@ func (n *Node) resolveLocked(base int, theirs []roster.Signed, now clock.Stamp) 
 	n.extendLocked(base, theirs, ours, now)
 }
 
-// preferBranch decides between two branches that leave common: by the
-// FIRST roster of each, as the branch belongs to whoever started it. It
-// returns the first roster of the winning branch.
-func preferBranch(a, b []roster.Signed, ra, rb []roster.Roster, common roster.Roster) roster.Signed {
-	return roster.Prefer(a[0], b[0], ra[0], rb[0], common)
+// preferTheirs decides between two branches that leave common, theirs
+// and ours, each with its verified rosters: by the FIRST roster of each,
+// since a branch belongs to whoever started it. Judged by the tips, a
+// branch the primary started would rank lowest once its tip is signed by
+// a member it made backup after the split.
+func preferTheirs(theirs, ours []roster.Signed, rTheirs, rOurs []roster.Roster, common roster.Roster) bool {
+	return roster.Prefer(theirs[0], ours[0], rTheirs[0], rOurs[0], common).Hash() == theirs[0].Hash()
 }
 
 // # Removal of self
