@@ -224,7 +224,7 @@ type Table struct {
 	rosterHash ids.Hash
 	peers      map[ids.MemberID]*peer
 	offsets    map[ids.MemberID]time.Duration
-	evidence   bootRun // the highest boot sequence number this identity is known to have used
+	evidence   uint64 // the highest boot sequence number this identity is known to have used; 0 for none
 	counters   Counters
 
 	st      *store.Store
@@ -257,7 +257,7 @@ type peer struct {
 	silent    bool
 	reachable bool           // heard directly within the suspect deadline
 	probed    time.Duration  // local Mono of the last probe round Tick returned
-	asked     []ids.MemberID // helpers named in this suspicion
+	asked     []ids.MemberID // helpers named in this suspicion; empty whenever suspect is false
 }
 
 // bootRun is one boot of a member as the Table saw it.
@@ -271,7 +271,8 @@ type bootRun struct {
 // ref returns when p was last heard, by the Table or a helper.
 func (p *peer) ref() time.Duration { return max(p.heard, p.vouched) }
 
-// endSuspicion clears p's suspicion and the helpers asked in it.
+// endSuspicion clears p's suspicion and the helpers asked in it. It is the
+// only way suspect goes back to false, so asked is empty outside a suspicion.
 func (p *peer) endSuspicion() {
 	p.suspect = false
 	p.asked = nil
@@ -672,8 +673,10 @@ func (t *Table) Report(target ids.MemberID, now clock.Stamp) Report {
 	if p == nil {
 		return r
 	}
+	// Once a packet is accepted, cur.seq is the floor: accept raises the
+	// floor to it, and check refuses anything below the floor.
 	r.BootSeq = p.floor
-	if p.cur.set && p.cur.seq == p.floor {
+	if p.cur.set {
 		r.Boot = p.cur.boot
 	}
 	if p.heardOnce {
@@ -698,8 +701,10 @@ func (t *Table) RecordReport(a Admitted, r Report, now clock.Stamp) error {
 		t.noteOwnBootSeq(r.BootSeq, r.Boot)
 		return nil
 	}
+	// Helpers are only ever asked while their target is suspect, and the
+	// list is cleared when the suspicion ends (endSuspicion).
 	p := t.peers[r.Target]
-	if p == nil || !p.suspect || !slices.Contains(p.asked, a.from) {
+	if p == nil || !slices.Contains(p.asked, a.from) {
 		return ErrUnsolicited
 	}
 	if r.Ago < 0 {
@@ -715,16 +720,14 @@ func (t *Table) RecordReport(a Admitted, r Report, now clock.Stamp) error {
 	return nil
 }
 
-// noteOwnBootSeq keeps seq, with boot, as evidence for RestoreBootSeq if it
-// is above this run's boot sequence number, or equal to it in another boot,
-// and above the evidence so far.
+// noteOwnBootSeq keeps seq as evidence for RestoreBootSeq if it is above
+// this run's boot sequence number, or equal to it in another boot, and above
+// the evidence so far.
 func (t *Table) noteOwnBootSeq(seq uint64, boot ids.BootID) {
 	if seq < t.ownSeq || (seq == t.ownSeq && boot == t.boot) {
 		return
 	}
-	if !t.evidence.set || seq > t.evidence.seq {
-		t.evidence = bootRun{set: true, seq: seq, boot: boot}
-	}
+	t.evidence = max(t.evidence, seq)
 }
 
 // RestoreBootSeq raises the boot sequence number stored in dir, the local
@@ -738,15 +741,14 @@ func (t *Table) noteOwnBootSeq(seq uint64, boot ids.BootID) {
 func (t *Table) RestoreBootSeq(dir string) (uint64, bool, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	e := t.evidence
-	if !e.set || e.seq < t.ownSeq || (e.seq == t.ownSeq && e.boot == t.boot) {
-		return t.ownSeq, false, nil
-	}
 	limit := t.startSeq + MaxBootSeqRaise
 	if limit < t.startSeq {
 		limit = math.MaxUint64
 	}
-	v := min(e.seq, limit)
+	// No evidence is 0, below every boot sequence number. Evidence equal to
+	// the current number came from another boot (noteOwnBootSeq), so the
+	// current number has to go too.
+	v := min(t.evidence, limit)
 	if v < t.ownSeq {
 		return t.ownSeq, false, nil
 	}

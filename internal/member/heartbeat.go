@@ -332,11 +332,9 @@ func decodeBody(body []byte) (Heartbeat, error) {
 	copy(h.Digest[:], body[offDigest:])
 	copy(h.RosterHash[:], body[offRosterHash:])
 
+	// A negative reading is a time before 1970, which check refuses.
 	wall := int64(binary.BigEndian.Uint64(body[offWall:]))
 	telegram := int64(binary.BigEndian.Uint64(body[offTelegramOK:]))
-	if wall < 0 || telegram < 0 {
-		return Heartbeat{}, ErrMalformed
-	}
 	h.Wall = time.Unix(0, wall).UTC()
 	if telegram != 0 {
 		h.TelegramOK = time.Unix(0, telegram).UTC()

@@ -248,7 +248,13 @@ func TestHeartbeatLayout(t *testing.T) {
 		Epoch: 1, From: m.id.ID, BootSeq: 1, Boot: bootID(1), Name: "a",
 		Wall: time.Unix(0, 0).UTC(),
 	}
-	for name, h := range map[string]Heartbeat{"full": full, "sparse": sparse} {
+	// Every flag set alone, so that no two flags can trade places unseen.
+	wan, internet, trusted, down := sparse, sparse, sparse, sparse
+	wan.WanUp, internet.InternetOK, trusted.ClockTrusted, down.GoingDown = true, true, true, true
+	for name, h := range map[string]Heartbeat{
+		"full": full, "sparse": sparse,
+		"wan only": wan, "internet only": internet, "trusted only": trusted, "going down only": down,
+	} {
 		got := enc(t, h, m)
 		want := handSign(handBody(h), m.id.Sign)
 		if !bytes.Equal(got, want) {
@@ -471,7 +477,7 @@ func TestSplitHeartbeat(t *testing.T) {
 	for name, bad := range map[string][]byte{
 		"empty":            nil,
 		"one short":        smallest[:len(smallest)-1],
-		"one long":         append(make([]byte, MaxEncodedLen), 1),
+		"one long":         append([]byte{FormatVersion}, make([]byte, MaxEncodedLen)...),
 		"format version 0": append([]byte{0}, b[1:]...),
 		"format version 2": append([]byte{2}, b[1:]...),
 	} {

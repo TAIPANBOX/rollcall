@@ -481,25 +481,25 @@ func TestIndirectProbeHelpers(t *testing.T) {
 		if err := f.tab.SetRoster(testRoster(ms[:6]), testRosterHash, at(h+10*s)); err != nil {
 			t.Fatal(err)
 		}
-		f.mustSend(r05, at(h+10*s))
-		// r02 and r03 stop; r04 and r05 go on.
+		// r02, r03 and r05 stop; r04 goes on.
 		f.mustSend(r04, at(h+10*s))
 		sus := f.tick(at(h + 15*s))
-		if !slices.Equal(sus, idsOf(r02, r03)) {
-			t.Fatalf("suspects %x, want r02 and r03", sus)
+		if !slices.Equal(sus, idsOf(r02, r03, r05)) {
+			t.Fatalf("suspects %x, want r02, r03 and r05", sus)
 		}
-		// r03 is vouched for by r04 and r05: no longer suspect, but the
-		// local member still cannot hear it.
-		if got := f.tab.IndirectProbeRequest(r03.id.ID); !slices.Equal(got, idsOf(r04, r05)) {
-			t.Fatalf("helpers for r03 %x, want r04 and r05", got)
+		// r04 is the only member heard directly.
+		if got := f.tab.IndirectProbeRequest(r03.id.ID); !slices.Equal(got, idsOf(r04)) {
+			t.Fatalf("helpers for r03 %x, want r04 alone (r06 never heard)", got)
 		}
+		// r03 is vouched for by r04: no longer suspect, but the local member
+		// still cannot hear it.
 		rep := Report{Target: r03.id.ID, Heard: true, Ago: s}
 		if err := f.tab.RecordReport(f.admit(r04), rep, at(h+15*s)); err != nil {
 			t.Fatal(err)
 		}
 		f.tick(at(h + 16*s))
-		if got := f.tab.IndirectProbeRequest(r02.id.ID); !slices.Equal(got, idsOf(r04, r05)) {
-			t.Errorf("helpers for r02 %x, want r04 and r05 (r03 heard only through helpers, r06 never heard)", got)
+		if got := f.tab.IndirectProbeRequest(r02.id.ID); !slices.Equal(got, idsOf(r04)) {
+			t.Errorf("helpers for r02 %x, want r04 alone (r03 heard only through r04, r05 suspect, r06 never heard)", got)
 		}
 	})
 
@@ -560,6 +560,17 @@ func TestProbeAnswerRules(t *testing.T) {
 			t.Errorf("RecordReport about r03 = %v, want ErrUnsolicited", err)
 		}
 	})
+	t.Run("target heard again", func(t *testing.T) {
+		f := setup(t)
+		f.mustSend(r02, at(h+16*s))
+		// Heard directly: no longer suspect, before any Tick.
+		if got := f.tab.IndirectProbeRequest(r02.id.ID); got != nil {
+			t.Errorf("helpers for a member just heard: %x", got)
+		}
+		if err := f.tab.RecordReport(f.admit(r03), heard, at(h+16*s)); !errors.Is(err, ErrUnsolicited) {
+			t.Errorf("an answer about a member just heard = %v, want ErrUnsolicited", err)
+		}
+	})
 	t.Run("target unknown", func(t *testing.T) {
 		f := setup(t)
 		rep := Report{Target: stranger().id.ID, Heard: true}
@@ -579,7 +590,15 @@ func TestProbeAnswerRules(t *testing.T) {
 		if err := f.tab.RecordReport(f.admit(r03), heard, at(h+16*s)); err != nil {
 			t.Fatal(err)
 		}
-		f.tick(at(h + 17*s)) // the vouch ended the suspicion
+		// The recent vouch ends the suspicion at once, before any Tick: the
+		// other helper's answer is late, and there is nobody to ask.
+		if err := f.tab.RecordReport(f.admit(r04), heard, at(h+16*s)); !errors.Is(err, ErrUnsolicited) {
+			t.Errorf("an answer after a recent vouch = %v, want ErrUnsolicited", err)
+		}
+		if got := f.tab.IndirectProbeRequest(r02.id.ID); got != nil {
+			t.Errorf("helpers after a recent vouch: %x", got)
+		}
+		f.tick(at(h + 17*s))
 		if err := f.tab.RecordReport(f.admit(r04), heard, at(h+18*s)); !errors.Is(err, ErrUnsolicited) {
 			t.Errorf("an answer after the suspicion ended = %v, want ErrUnsolicited", err)
 		}
@@ -915,9 +934,13 @@ func TestBootSeqEvidenceFromOwnHeartbeat(t *testing.T) {
 		_, err := f.tab.Observe(testEpoch, handSign(body, key), at(start+s))
 		return err
 	}
-	// Its own echo, this boot: nothing to learn.
+	// Its own echo, this boot: nothing to learn, and no signature is
+	// checked for it, valid or not.
 	if err := own(seq, localBoot, r01.id.Sign); !errors.Is(err, ErrSelf) {
 		t.Errorf("own echo: %v, want ErrSelf", err)
+	}
+	if err := own(seq+3, localBoot, strangerKey); !errors.Is(err, ErrSelf) {
+		t.Errorf("own echo with another signature: %v, want ErrSelf", err)
 	}
 	// A heartbeat of its own key from a boot it no longer remembers, forged:
 	// refused.
@@ -935,8 +958,8 @@ func TestBootSeqEvidenceFromOwnHeartbeat(t *testing.T) {
 		t.Errorf("RestoreBootSeq = %d, %v, %v; want 10, true", got, raised, err)
 	}
 	c := f.tab.Counters()
-	if c.Self != 2 || c.Signature != 1 || c.Accepted != 0 {
-		t.Errorf("counters %+v; want 2 own, 1 bad signature, none accepted", c)
+	if c.Self != 3 || c.Signature != 1 || c.Accepted != 0 {
+		t.Errorf("counters %+v; want 3 own, 1 bad signature, none accepted", c)
 	}
 }
 
