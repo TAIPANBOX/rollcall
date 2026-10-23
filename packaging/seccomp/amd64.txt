@@ -1,4 +1,6 @@
 # x86_64 only. Go's static runtime sets the TLS base with arch_prctl at start, so it is needed here.
-# newfstatat is the 64-bit stat call; arm uses fstatat64 instead.
+# newfstatat is the 64-bit stat call (os.Stat, os.Lstat); arm uses fstatat64 instead. mmap is the
+# runtime's (runtime/sys_linux_amd64.s); arm has only mmap2.
 arch_prctl
+mmap
 newfstatat

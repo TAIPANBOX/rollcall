@@ -196,3 +196,54 @@ jobs:
           docker run --rm -v "$PWD:/work" -w /work \
             alpine@sha256:020dfcbaaf4cc1078bf2d9c7ba31a8466e334061dcd2f248001d68f79e52c000 \
             apk adbdump "$apk" | grep -q 'name: etc/seccomp' || { echo "apk lacks the seccomp profile"; exit 1; }
+
+  # Each shipped seccomp profile installed as a real kernel filter (kill the process on any call
+  # it does not list) by tools/seccomp-run, with rollcalld run under it: the profile without each
+  # call the gate names as made at start must kill the daemon by SIGSYS, and the whole profile
+  # must let it start, serve the control socket, bind UDP and TCP 7432, start a node after
+  # rollcall init, route a heartbeat to a static peer and stop cleanly (tools/seccomp-run/prove.sh).
+  # Both runner types are free for a public repository. linux/arm runs on the arm64 runner only
+  # where its CPU and kernel execute AArch32; the job reports NOT RUN where they do not. mips has
+  # no runner and is proven from the sources only.
+  seccomp:
+    name: seccomp profile runs the daemon (${{ matrix.openwrt }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - openwrt: x86_64
+            goarch: amd64
+            runner: ubuntu-latest
+            optional: ""
+          - openwrt: aarch64_cortex-a53
+            goarch: arm64
+            runner: ubuntu-24.04-arm
+            optional: ""
+          - openwrt: arm_cortex-a7
+            goarch: arm
+            runner: ubuntu-24.04-arm
+            optional: optional
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Loader tests on this runner's architecture
+        run: go test ./tools/seccomp-run -count=1 -v
+
+      - name: Run rollcalld under the profile
+        env:
+          OPENWRT_ARCH: ${{ matrix.openwrt }}
+          RUN_GOARCH: ${{ matrix.goarch }}
+          OPTIONAL: ${{ matrix.optional }}
+        run: tools/seccomp-run/prove.sh "$OPENWRT_ARCH" "$RUN_GOARCH" "$OPTIONAL"

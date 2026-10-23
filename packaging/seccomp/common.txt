@@ -1,7 +1,13 @@
 # System calls every rollcall profile allows, on every family (aarch64, amd64, arm, mips).
-# One name per line; a name must exist on all four families or it belongs in a family list.
-# Proven only in the lab (Task 27, aarch64). Extend a list there if the daemon is killed,
-# and record which call was missing.
+# One name per line; a name must exist on all four families (TestSeccompNamesExistPerArch checks it
+# against golang.org/x/sys), or it belongs in a family list. TestSeccompRuntimeSetPerArch names the
+# calls the Go 1.27 runtime, the standard library and the daemon make on every run, each with the
+# source that makes it; among them prctl (runtime/set_vma_name_linux.go, PR_SET_VMA on every new
+# mapping) and eventfd2 (runtime/netpoll_epoll.go), whose absence killed the daemon at start.
+# restart_syscall: the kernel resumes an interrupted sleep through it. execve: procd's in-process
+# path installs the filter before it execs the daemon (procd jail/jail.c on master); the 24.10 and
+# 25.12 path is not established, so it is allowed. The CI seccomp job runs the daemon under the
+# amd64 and aarch64 profiles; arm and mips are proven only from the sources.
 accept4
 bind
 clock_gettime
@@ -14,6 +20,8 @@ dup3
 epoll_create1
 epoll_ctl
 epoll_pwait
+eventfd2
+execve
 exit
 exit_group
 faccessat
@@ -41,12 +49,12 @@ listen
 lseek
 madvise
 mkdirat
-mmap
 mprotect
 munmap
 nanosleep
 openat
 pipe2
+prctl
 pread64
 prlimit64
 pwrite64
@@ -56,6 +64,7 @@ recvfrom
 recvmsg
 renameat
 renameat2
+restart_syscall
 rt_sigaction
 rt_sigprocmask
 rt_sigreturn

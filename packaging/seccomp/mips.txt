@@ -1,7 +1,17 @@
-# MIPS (o32) only: the 32-bit legacy names. Written from the o32 syscall table, not yet proven on
-# MIPS hardware. The 32-bit uid calls are left out because o32 does not list them.
+# MIPS (o32) only, big and little endian: the 32-bit runtime's own calls, brk (runtime/malloc.go
+# sbrk0 at start), open (runtime·open for getHugePageSize at start), mmap (runtime·mmap uses it on
+# mipsx), futex_time64 (runtime/os_linux32.go, every futex on kernels from 5.1), and the o32 stat
+# calls the syscall package uses: stat64 (os.Stat), lstat64 (os.Lstat), fstat64 (os.File.Stat),
+# fstatat64 (internal/syscall/unix.Fstatat). o32 has no newfstatat and no 32-bit uid calls.
+# Written from the Go sources and the x/sys tables; proven on MIPS hardware only by the lab run.
 _llseek
+brk
 fcntl64
 fstat64
+fstatat64
+futex_time64
+lstat64
+mmap
 mmap2
-newfstatat
+open
+stat64

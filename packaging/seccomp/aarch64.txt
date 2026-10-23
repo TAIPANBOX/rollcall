@@ -1,3 +1,5 @@
 # aarch64 only. There are no 32-bit legacy names here, and no arch_prctl: Go sets the TLS base
-# through a register on aarch64, not a system call.
+# through a register on aarch64, not a system call. newfstatat is number 79, which Go's syscall
+# package calls fstatat (os.Stat, os.Lstat). mmap is the runtime's (runtime/sys_linux_arm64.s).
+mmap
 newfstatat
