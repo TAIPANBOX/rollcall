@@ -95,9 +95,13 @@ func run(ctx context.Context, f flags) error {
 	}
 	devices := peerDevices(zones)
 
-	sb, known := daemon.ReadSandbox("/")
-	if runtime.GOOS == "linux" && known && sb.State == "off" {
-		return errors.New("no sandbox: no_new_privs, seccomp and the jail are all missing; start rollcalld through /etc/init.d/rollcall")
+	// rollcalld ships for Linux only; elsewhere there is no seccomp or
+	// no_new_privs to check, and the binary is a developer build. Nothing in
+	// UCI or on the command line turns the check off.
+	if runtime.GOOS == "linux" {
+		if err := sandboxGate("/"); err != nil {
+			return fmt.Errorf("%w; start rollcalld through /etc/init.d/rollcall", err)
+		}
 	}
 	if err := os.MkdirAll(f.run, 0o700); err != nil {
 		return err
@@ -177,6 +181,39 @@ loop:
 		return failed
 	}
 	log.Printf("rollcalld: stopped")
+	return nil
+}
+
+// sandboxGate decides whether the daemon may listen (security spec 1.5,
+// 4.10, 14.2): the kernel must report, in root's proc/self/status ("/" on a
+// router), no_new_privs set (NoNewPrivs: 1) and seccomp in filter mode
+// (Seccomp: 2). Anything else refuses, an unreadable status included: a
+// daemon that cannot show its sandbox does not run in a weaker mode. The jail
+// is reported in status but not decided here: it has no kernel flag to read.
+func sandboxGate(root string) error {
+	b, err := os.ReadFile(filepath.Join(root, "proc", "self", "status"))
+	if err != nil {
+		return fmt.Errorf("refusing to listen: the sandbox cannot be checked: %w", err)
+	}
+	var noNewPrivs, seccomp string
+	for line := range strings.Lines(string(b)) {
+		k, v, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		switch k {
+		case "NoNewPrivs":
+			noNewPrivs = strings.TrimSpace(v)
+		case "Seccomp":
+			seccomp = strings.TrimSpace(v)
+		}
+	}
+	switch {
+	case noNewPrivs != "1":
+		return fmt.Errorf("refusing to listen: no_new_privs is not set (NoNewPrivs: %q)", noNewPrivs)
+	case seccomp != "2":
+		return fmt.Errorf("refusing to listen: seccomp is not in filter mode (Seccomp: %q)", seccomp)
+	}
 	return nil
 }
 
