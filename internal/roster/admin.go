@@ -103,10 +103,46 @@ func authority(s Signed, common Roster) int {
 // naming a new Admins[0], with Takeover set. lastHeardPrimary is when the
 // member last heard that previous Admins[0].
 func AcceptTakeover(lastHeardPrimary, now time.Time) bool {
-	if lastHeardPrimary.IsZero() {
+	return silentFor(lastHeardPrimary, now, TakeoverAfter)
+}
+
+// ConfirmAfter is how long a member must have heard nothing from the
+// primary a takeover replaced before it accepts a confirmation of that
+// takeover signed by an admin (spec 6.1): a day. A confirmation signed
+// with the recovery key takes effect at once.
+const ConfirmAfter = 24 * time.Hour
+
+// AcceptConfirmation reports whether a member that last heard the primary
+// a takeover replaced at lastHeardReplaced accepts, at now, a confirmation
+// of that takeover signed by an admin (ConfirmedByAdmin): only once it has
+// heard nothing from that primary for at least ConfirmAfter. The times are
+// read as AcceptTakeover reads them: a zero lastHeardReplaced counts as
+// silent, one after now does not, and times taken from time.Now in this
+// process measure on the monotonic clock.
+//
+// So a backup cannot keep the role by cutting the primary off for ten
+// minutes and confirming its own takeover: a primary any member heard
+// within the day still restores itself there.
+func AcceptConfirmation(lastHeardReplaced, now time.Time) bool {
+	return silentFor(lastHeardReplaced, now, ConfirmAfter)
+}
+
+// ConfirmedByAdmin reports whether r, signed as s after prev, confirms a
+// takeover on an admin's signature: it sets OwnerConfirmed, which prev
+// does not, and s is not signed with the recovery key. A takeover and its
+// confirmation in one roster is one too. r.Replaced is the primary it
+// replaced, whose silence AcceptConfirmation weighs.
+func ConfirmedByAdmin(prev Roster, s Signed, r Roster) bool {
+	return !s.Recovery && r.OwnerConfirmed && !prev.OwnerConfirmed
+}
+
+// silentFor reports whether last, a zero time for never, is at least d
+// before now; a last after now is not.
+func silentFor(last, now time.Time, d time.Duration) bool {
+	if last.IsZero() {
 		return true
 	}
-	return now.Sub(lastHeardPrimary) >= TakeoverAfter
+	return now.Sub(last) >= d
 }
 
 // ShouldRestore reports whether self, holding cur as its current roster,

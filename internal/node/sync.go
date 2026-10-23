@@ -582,7 +582,13 @@ func (n *Node) planProbe(helper, target ids.MemberID) {
 //
 // A takeover (a backup naming itself primary) is adopted only if the node
 // has heard nothing from the primary for roster.TakeoverAfter
-// (roster.AcceptTakeover), counted from the node's start at the latest.
+// (roster.AcceptTakeover), counted from the node's start at the latest. A
+// confirmation of a takeover signed by an admin, a takeover and its
+// confirmation in one roster as well, is adopted only if the node has
+// heard nothing from the primary it replaced for roster.ConfirmAfter, a
+// day (roster.AcceptConfirmation), counted the same way; one signed with
+// the recovery key at once. The replaced primary itself takes both, as it
+// takes the takeover to restore itself.
 
 // rosterFetch is one roster synchronisation with a peer.
 type rosterFetch struct {
@@ -700,13 +706,29 @@ func (n *Node) verifyLinks(base int, links []roster.Signed) ([]roster.Roster, er
 		if isTakeover(prevR, s, r) && prevR.Admins[0] != n.id.ID && !roster.AcceptTakeover(n.lastHeardPrimary, n.clk.Now()) {
 			return nil, errTakeover
 		}
+		if roster.ConfirmedByAdmin(prevR, s, r) && r.Replaced != n.id.ID && !roster.AcceptConfirmation(n.lastHeard(r.Replaced), n.clk.Now()) {
+			return nil, errConfirmation
+		}
 		out = append(out, r)
 		prev, prevR = s, r
 	}
 	return out, nil
 }
 
-var errTakeover = errors.New("node: a takeover while the primary is still heard")
+var (
+	errTakeover     = errors.New("node: a takeover while the primary is still heard")
+	errConfirmation = errors.New("node: a confirmation of a takeover while its replaced primary was heard within a day")
+)
+
+// lastHeard returns when the node last heard member id directly: its last
+// heartbeat in this run, or the node's own start at the latest.
+func (n *Node) lastHeard(id ids.MemberID) time.Time {
+	t := n.started
+	if p := n.peers[id]; p != nil && p.heard && p.heardWall.After(t) {
+		t = p.heardWall
+	}
+	return t
+}
 
 // isTakeover reports whether r, signed as s after prev, is a takeover by a
 // backup: signed by an admin other than prev's primary, naming another
@@ -851,6 +873,21 @@ func (n *Node) publishLocked(edit func(r *roster.Roster) error, recovery []byte,
 		return err
 	}
 	r.Version, r.Prev = prev.Version+1, n.curHash
+	held := false
+	if recovery == nil && r.OwnerConfirmed && !prev.OwnerConfirmed && !roster.AcceptConfirmation(n.lastHeard(r.Replaced), n.clk.Now()) {
+		// The owner confirmed the takeover here before a day of silence
+		// from the primary it replaced: held, and published by
+		// confirmLocked once the day has passed. A takeover confirmed in
+		// the same roster goes out now, unconfirmed.
+		if !slices.Contains(prev.Admins, n.id.ID) {
+			return ErrNotAdmin
+		}
+		n.holdConfirmationLocked(r.Replaced)
+		if prev.Takeover {
+			return ErrConfirmationHeld
+		}
+		r.OwnerConfirmed, held = false, true
+	}
 	var (
 		s   roster.Signed
 		err error
@@ -880,7 +917,12 @@ func (n *Node) publishLocked(edit func(r *roster.Roster) error, recovery []byte,
 	// heartbeat, among them the removed ones, which may fetch it.
 	n.beatLocked(now)
 	if removedAny(prev, n.cur()) {
-		return n.rotateLocked(now)
+		if err := n.rotateLocked(now); err != nil {
+			return err
+		}
+	}
+	if held {
+		return ErrConfirmationHeld
 	}
 	return nil
 }
@@ -948,6 +990,125 @@ func (n *Node) restoreLocked(now clock.Stamp) {
 		}
 		return nil
 	}, nil, now)
+}
+
+// # A confirmation held for a day (security spec 6.1)
+//
+// The owner confirms a takeover on the backup that took over, with rollcall
+// admin confirm. Made before this router has heard nothing from the primary
+// it replaced for roster.ConfirmAfter, the confirmation is held: Publish
+// returns ErrConfirmationHeld, and confirmLocked publishes it once the day
+// has passed, counted from this router's start at the latest. Hearing that
+// primary before, or a roster that no longer holds this router's
+// unconfirmed takeover of it (the primary restored itself, or the recovery
+// key decided), drops it: it lapses, and HeldConfirmation says so; the chat
+// is not told. The held confirmation is kept on flash (fileConfirm), so a
+// restart keeps it, and starts its day again.
+
+// ErrConfirmationHeld reports a confirmation of a takeover that this
+// router holds until it has heard nothing from the replaced primary for a
+// day; it lapses if that primary is heard before.
+var ErrConfirmationHeld = errors.New("node: the confirmation is held until the replaced primary has been silent for a day; it lapses if that primary is heard before")
+
+// fileConfirm keeps the confirmation this router holds.
+const fileConfirm = "confirm.json"
+
+// confirmFile is fileConfirm.
+type confirmFile struct {
+	Replaced ids.MemberID `json:"replaced"` // the replaced primary; zero when none is held
+	Lapsed   bool         `json:"lapsed"`   // the last one held lapsed
+}
+
+// heldConfirmation is the confirmation this router holds.
+type heldConfirmation struct {
+	set      bool
+	replaced ids.MemberID
+	lapsed   bool
+}
+
+// Confirmation is the state of a confirmation of a takeover this router
+// holds, for the status and the CLI.
+type Confirmation struct {
+	Held   bool      // a confirmation waits for a day of silence from Of
+	Of     string    // the name of the replaced primary
+	From   time.Time // when it takes effect at the earliest, while Held
+	Lapsed bool      // the last one held lapsed: its replaced primary was heard, or restored itself
+}
+
+// HeldConfirmation returns the state of the confirmation this router holds.
+func (n *Node) HeldConfirmation() Confirmation {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	c := Confirmation{Lapsed: n.confirm.lapsed}
+	if n.confirm.set && len(n.rosters) > 0 {
+		m, _ := memberOf(n.cur(), n.confirm.replaced)
+		c.Held, c.Of, c.From = true, m.Name, n.lastHeard(n.confirm.replaced).Add(roster.ConfirmAfter)
+	}
+	return c
+}
+
+// holdConfirmationLocked holds a confirmation of the takeover of replaced.
+func (n *Node) holdConfirmationLocked(replaced ids.MemberID) {
+	n.confirm = heldConfirmation{set: true, replaced: replaced}
+	n.writeConfirmLocked()
+}
+
+// lapseConfirmationLocked drops the confirmation held, as lapsed or not.
+func (n *Node) lapseConfirmationLocked(lapsed bool) {
+	n.confirm = heldConfirmation{lapsed: lapsed}
+	n.writeConfirmLocked()
+}
+
+func (n *Node) writeConfirmLocked() {
+	b, err := json.Marshal(confirmFile{Replaced: n.confirm.replaced, Lapsed: n.confirm.lapsed})
+	if err == nil {
+		_ = n.st.WriteFileAtomic(fileConfirm, b)
+	}
+}
+
+// loadConfirmLocked reads the confirmation held before this start.
+func (n *Node) loadConfirmLocked() {
+	b, err := n.st.ReadFile(fileConfirm)
+	if err != nil {
+		return
+	}
+	var f confirmFile
+	if decodeJSON(b, &f, 4096) != nil {
+		return
+	}
+	n.confirm = heldConfirmation{set: f.Replaced != (ids.MemberID{}), replaced: f.Replaced, lapsed: f.Lapsed}
+}
+
+// heardReplacedLocked notes a heartbeat of from: a confirmation held of
+// the takeover of from lapses.
+func (n *Node) heardReplacedLocked(from ids.MemberID) {
+	if n.confirm.set && n.confirm.replaced == from {
+		n.lapseConfirmationLocked(true)
+	}
+}
+
+// confirmLocked publishes the confirmation held once its day of silence
+// has passed, and drops it when the roster no longer holds this router's
+// unconfirmed takeover of the replaced primary.
+func (n *Node) confirmLocked(now clock.Stamp) {
+	if !n.confirm.set {
+		return
+	}
+	cur := n.cur()
+	if !cur.Takeover || cur.OwnerConfirmed || cur.Replaced != n.confirm.replaced || cur.Admins[0] != n.id.ID {
+		n.lapseConfirmationLocked(!cur.OwnerConfirmed)
+		return
+	}
+	if !roster.AcceptConfirmation(n.lastHeard(n.confirm.replaced), n.clk.Now()) {
+		return
+	}
+	err := n.publishLocked(func(r *roster.Roster) error {
+		r.OwnerConfirmed = true
+		return nil
+	}, nil, now)
+	if err == nil {
+		n.lapseConfirmationLocked(false)
+	}
 }
 
 // restoredLocked raises the stored boot sequence number past what a peer

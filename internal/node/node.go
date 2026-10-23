@@ -225,6 +225,8 @@ type Node struct {
 	turn senderTurn
 	// otherAck is when the last acknowledgement of another member arrived.
 	otherAck time.Duration
+	// confirm is a confirmation of a takeover held for a day (sync.go).
+	confirm heldConfirmation
 }
 
 // peer is what the node knows of another member.
@@ -398,6 +400,7 @@ func (n *Node) start() error {
 	n.queue = deliver.NewQueue()
 	n.loadAlive()
 	n.loadHistory(now)
+	n.loadConfirmLocked()
 
 	n.catchUpBy = now.Mono + ownCatchUp
 	n.caughtUp = len(cur.Members) == 1
@@ -762,6 +765,7 @@ func (n *Node) heartbeatIn(from netip.AddrPort, epochID uint32, b []byte, now cl
 	if cur := n.cur(); len(cur.Admins) > 0 && cur.Admins[0] == h.From {
 		n.lastHeardPrimary = n.clk.Now()
 	}
+	n.heardReplacedLocked(h.From)
 	for _, e := range obs.Events {
 		if restored {
 			if e.Type == events.MemberSilent && n.openAbsenceLocked(e.Subject) {
@@ -1175,6 +1179,7 @@ func (n *Node) tickLocked(now clock.Stamp) {
 		return
 	}
 	n.restoreLocked(now)
+	n.confirmLocked(now)
 	n.retryWritesLocked(now)
 	if now.Mono >= n.nextBeat {
 		n.nextBeat = now.Mono + n.cfg.Heartbeat

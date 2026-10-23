@@ -553,6 +553,65 @@ func TestTakeoverNeedsTenMinutes(t *testing.T) {
 	}
 }
 
+// TestConfirmationNeedsADay (A4): a confirmation signed by an admin is
+// accepted only after a day without hearing the primary it replaced.
+func TestConfirmationNeedsADay(t *testing.T) {
+	if ConfirmAfter != 24*time.Hour {
+		t.Fatalf("ConfirmAfter = %v, want 24h", ConfirmAfter)
+	}
+	now := time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name string
+		last time.Time
+		want bool
+	}{
+		{"heard 23h59m ago", now.Add(-(23*time.Hour + 59*time.Minute)), false},
+		{"heard 24h less 1ns ago", now.Add(-24*time.Hour + 1), false},
+		{"heard 24h ago", now.Add(-24 * time.Hour), true},
+		{"heard two days ago", now.Add(-48 * time.Hour), true},
+		{"heard 11m ago, past the takeover window", now.Add(-11 * time.Minute), false},
+		{"never heard", time.Time{}, true},
+		{"clock skew: heard a day in the future", now.Add(24 * time.Hour), false},
+	}
+	for _, c := range cases {
+		if got := AcceptConfirmation(c.last, now); got != c.want {
+			t.Errorf("%s: AcceptConfirmation = %v, want %v", c.name, got, c.want)
+		}
+	}
+	start := time.Now()
+	if AcceptConfirmation(start, start.Add(24*time.Hour-time.Nanosecond)) {
+		t.Error("monotonic: 24h less 1ns accepted")
+	}
+	if !AcceptConfirmation(start, start.Add(24*time.Hour)) {
+		t.Error("monotonic: 24h refused")
+	}
+}
+
+// TestConfirmedByAdmin (A4): which links are a confirmation an admin
+// signed, which the day of silence holds back.
+func TestConfirmedByAdmin(t *testing.T) {
+	c := newTakeoverChain(t)
+	r3, s3 := c.confirmed(t)
+	if !ConfirmedByAdmin(c.t2, s3, r3) {
+		t.Error("the backup's confirmation of its takeover is not one")
+	}
+	if ConfirmedByAdmin(c.t2, c.st2, c.t2) {
+		t.Error("an unconfirmed takeover counts as a confirmation")
+	}
+	r4 := after(r3, s3, func(r *Roster) { addMember(r) })
+	if ConfirmedByAdmin(r3, mustSign(t, r4, c.B), r4) {
+		t.Error("a roster that carries a confirmation forward counts as a new one")
+	}
+	if ConfirmedByAdmin(c.t2, mustSignRecovery(t, r3, recoveryKey), r3) {
+		t.Error("a confirmation signed with the recovery key counts as an admin's")
+	}
+	both := takeoverOf(c.r1, c.s1, c.B.ID)
+	both.OwnerConfirmed = true
+	if !ConfirmedByAdmin(c.r1, mustSign(t, both, c.B), both) {
+		t.Error("a takeover and its confirmation in one roster is not one")
+	}
+}
+
 // TestActingAdminOrder is the brief's test: the first live admin in the
 // admin list acts, ordinary members never do.
 func TestActingAdminOrder(t *testing.T) {

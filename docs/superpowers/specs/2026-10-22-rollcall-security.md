@@ -333,6 +333,12 @@ boot sequences raise a `duplicate_identity` alert.
   silence has passed. A backup therefore cannot keep the role by cutting the primary
   off for ten minutes: it would have to cut it off from every member for a whole day
   while the takeover stands announced in the chat. The recovery code confirms at once.
+  A takeover and its confirmation signed together in one roster version wait for the
+  same day. A member counts the day from its own start at the latest, so a restart
+  starts it again; the backup keeps a held confirmation on flash, and the CLI says it
+  is held. A lapse is never told in the chat. The replaced
+  primary itself takes the confirmation of its replacement when it comes back, as it
+  takes the takeover.
   @decided 2026-10-23: a confirmation by root on the backup waits for a day of silence
   from the replaced primary; a confirmation that needs the recovery code was weighed and
   not chosen, because it adds an owner step and puts the recovery code to routine use.
