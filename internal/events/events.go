@@ -44,12 +44,33 @@ const (
 	RosterChangesDropped Type = "roster_changes_dropped" // a losing roster branch, announced as undone
 )
 
+// Own reports whether e is a member's own account of its return: a return
+// (RebootPlanned, RebootUnplanned, Upgraded, LinkLost or MemberBack) whose
+// witness is its subject. A member knows whether it rebooted, as planned or
+// not, and into which version; what the others say about the same absence
+// is their guess from outside.
+func Own(e Event) bool {
+	switch e.Type {
+	case RebootPlanned, RebootUnplanned, Upgraded, LinkLost, MemberBack:
+		return e.Subject != (ids.MemberID{}) && e.Witness == e.Subject
+	}
+	return false
+}
+
 // Event is one thing one member saw.
+//
+// Since is set on a member's own account of its return (Own): the last
+// moment the member knows it was up before the absence, on the clocks of
+// the boot it left, or of the member that last heard it with a zero Boot.
+// Its Trusted is false when that moment is only a bound (the member's last
+// state on flash, written at most once a minute) or its wall clock was not
+// trusted. Zero when unknown; on any other event it is ignored.
 type Event struct {
 	Type    Type
 	Subject ids.MemberID      // the member it is about; zero when it is about no single member
 	Witness ids.MemberID      // the member that saw it and stamped it
 	At      clock.Stamp       // when, on the witness's clocks
+	Since   clock.Stamp       // on a member's own account of its return: when its absence began (see Own)
 	Ref     ids.Hash          // the hash of the history entry that records it
 	Detail  map[string]string // what the rendering needs (versions, probe target); not interpreted here
 }

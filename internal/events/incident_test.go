@@ -1080,6 +1080,14 @@ func TestCoalesceSweep(t *testing.T) {
 
 			members, witnesses, typeSet := map[string]bool{}, map[string]bool{}, map[Type]bool{}
 			anyUntrusted, flood, hasLink := false, false, false
+			// A member's own account of its return makes the others'
+			// returns about it guesses, whose types are not told.
+			ownAccount := map[ids.MemberID]bool{}
+			for _, e := range mine {
+				if absence[e.Type] && e.Type != MemberSilent && e.Subject != (ids.MemberID{}) && e.Witness == e.Subject {
+					ownAccount[e.Subject] = true
+				}
+			}
 			absent := map[ids.MemberID]bool{}
 			absentTypes := map[Type]bool{}
 			facts := map[string]bool{}
@@ -1090,7 +1098,9 @@ func TestCoalesceSweep(t *testing.T) {
 				if e.Witness != (ids.MemberID{}) {
 					witnesses[e.Witness.String()] = true
 				}
-				typeSet[e.Type] = true
+				if !(absence[e.Type] && e.Type != MemberSilent && e.Witness != e.Subject && ownAccount[e.Subject]) {
+					typeSet[e.Type] = true
+				}
 				anyUntrusted = anyUntrusted || !e.At.Trusted
 				switch {
 				case absence[e.Type] && e.Subject != (ids.MemberID{}):
