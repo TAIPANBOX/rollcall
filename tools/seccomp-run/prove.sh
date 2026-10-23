@@ -97,8 +97,10 @@ if ! out=$("$BIN/seccomp-run" -arch 2>&1); then
 fi
 echo "architecture: $out; kernel $(uname -r) on $(uname -m)"
 
-# The number of calls the daemon's filter allows: its list, numbered for this architecture.
-ALLOWED=$("$BIN/seccomp-run" -allowed | head -n 1)
+# The number of calls the daemon's filter allows: its list, numbered for this architecture. The
+# first line of the whole output, not a pipe into head, which pipefail would fail on SIGPIPE.
+ALLOWED=$("$BIN/seccomp-run" -allowed)
+ALLOWED=${ALLOWED%%$'\n'*}
 case $ALLOWED in
 '' | *[!0-9]*) fail "seccomp-run -allowed printed '$ALLOWED', not a number" ;;
 esac
@@ -366,7 +368,7 @@ for drop in $drops; do
 	reap "$TPID"
 	TPID=
 	got=$GOT
-	count=$(sed -n 's/.*seccomp filter installed on every thread: \([0-9]*\) system calls.*/\1/p' "$log" | head -n 1)
+	count=$(sed -n 's/.*seccomp filter installed on every thread: \([0-9]*\) system calls.*/\1/p;T;q' "$log")
 	if [ "$count" != $((ALLOWED - 1)) ]; then
 		cat "$log"
 		fail "teeth: the daemon built without $drop installed '${count:-no}' allowed calls, not $((ALLOWED - 1)): the copy's list did not reach it"
