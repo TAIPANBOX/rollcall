@@ -41,7 +41,9 @@ func TestTwoSendersRegainTelegramOnce(t *testing.T) {
 // return apart: the merged incident tells nothing the chat did not get.
 // While the silence is untold, it is still sent.
 func TestMergedIncidentHonoursReturnAck(t *testing.T) {
-	g := newGroup(t, setup{n: 2, senders: map[int]int{0: 1}})
+	// r02 holds the sender role too, below r01: only a sender's
+	// acknowledgement counts (B3).
+	g := newGroup(t, setup{n: 2, senders: map[int]int{0: 2, 1: 1}})
 	g.run(10 * sec)
 	g.chat.setDown(true)
 	a := g.nodes[0]
@@ -133,7 +135,8 @@ func TestSenderWaitsForPeerHeardAgain(t *testing.T) {
 // absence (the merged incident acknowledged), the silence that began it
 // counts as told: the sender holds nothing of it.
 func TestMergedAckCoversItsStart(t *testing.T) {
-	g := newGroup(t, setup{n: 2, senders: map[int]int{0: 1}})
+	// r02 holds the sender role too, below r01 (B3).
+	g := newGroup(t, setup{n: 2, senders: map[int]int{0: 2, 1: 1}})
 	g.run(10 * sec)
 	g.chat.setDown(true)
 	a := g.nodes[0]

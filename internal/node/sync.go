@@ -216,6 +216,14 @@ func (n *Node) entryIn(e history.Entry, now clock.Stamp) {
 		return
 	}
 	if id, by, ok := deliver.AckOf(e); ok {
+		// Only a member that may send to the chat can say an incident
+		// was delivered: an acknowledgement by anyone else would silence
+		// the incident, and pause this router's sending for the grace,
+		// without any message having gone out (B3). It stays in the
+		// history, unused.
+		if m, member := memberOf(n.cur(), by); !member || !hasRole(m, roster.RoleSender) {
+			return
+		}
 		n.ackedLocked(id, by)
 		if by != n.id.ID && !n.inc.loading {
 			n.otherAck = now.Mono // another member delivers (incidents.go)
