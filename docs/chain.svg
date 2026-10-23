@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="510" viewBox="0 0 960 510" role="img" aria-label="History as chains. Every router signs its own entries, each carrying the hash of the one before, and every router holds copies of the others' chains. A router that shows two different entries with one number to two peers is caught: the two signed entries are the proof, the chat gets an alarm and the router is marked suspicious.">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0a0e16"/><stop offset="1" stop-color="#0d1117"/></linearGradient>
+  <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#4493f8"/></linearGradient>
+  <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#161b22" stroke-width="1"/></pattern>
+  <filter id="soft" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#000000" flood-opacity="0.45"/></filter>
+  <marker id="ar-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2dd4bf"/></marker>
+  <marker id="ar-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4493f8"/></marker>
+  <marker id="ar-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ff6b63"/></marker>
+  <marker id="ar-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e3b341"/></marker>
+  <marker id="ar-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#3fb950"/></marker>
+  <marker id="ar-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#69788b"/></marker>
+  <marker id="ar-light" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#9aa7b8"/></marker>
+  <marker id="ar-text" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e6edf3"/></marker>
+  <marker id="ar-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#a371f7"/></marker>
+  <marker id="ar-line" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#283341"/></marker>
+</defs>
+<style>
+  .flow{stroke-dasharray:6 6;animation:flow 1.2s linear infinite}
+  @keyframes flow{to{stroke-dashoffset:-24}}
+  @media (prefers-reduced-motion:reduce){.flow{animation:none}}
+</style>
+<rect width="960" height="510" fill="url(#bg)"/><rect width="960" height="510" fill="url(#grid)" opacity="0.5"/><rect width="960" height="4" fill="url(#accent)"/>
+<text x="32" y="48" font-family="ui-sans-serif,system-ui,sans-serif" font-size="24" font-weight="600" fill="#e6edf3">A signed chain per router</text>
+<text x="32" y="74" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#69788b">Nobody can write into another router's chain, and nobody can quietly rewrite their own.</text>
+<text x="32" y="148" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="16" font-weight="600" fill="#e6edf3">gateway</text>
+<rect x="128" y="104" width="150" height="76" rx="12" fill="#141a23" stroke="#2dd4bf" filter="url(#soft)"/>
+<text x="142" y="130" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="16" font-weight="600" fill="#2dd4bf">#40</text>
+<text x="266" y="130" font-family="ui-sans-serif,system-ui,sans-serif" font-size="12" fill="#a371f7" text-anchor="end">signed</text>
+<text x="142" y="158" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">ap-office silent</text>
+<rect x="318" y="104" width="150" height="76" rx="12" fill="#141a23" stroke="#2dd4bf" filter="url(#soft)"/>
+<text x="332" y="130" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="16" font-weight="600" fill="#2dd4bf">#41</text>
+<text x="456" y="130" font-family="ui-sans-serif,system-ui,sans-serif" font-size="12" fill="#a371f7" text-anchor="end">signed</text>
+<text x="332" y="158" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">delivered</text>
+<line x1="314" y1="142" x2="284" y2="142" stroke="#69788b" stroke-width="2" marker-end="url(#ar-gray)"/>
+<text x="298" y="134" font-family="ui-sans-serif,system-ui,sans-serif" font-size="12" fill="#69788b" text-anchor="middle">prev</text>
+<rect x="508" y="104" width="150" height="76" rx="12" fill="#141a23" stroke="#2dd4bf" filter="url(#soft)"/>
+<text x="522" y="130" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="16" font-weight="600" fill="#2dd4bf">#42</text>
+<text x="646" y="130" font-family="ui-sans-serif,system-ui,sans-serif" font-size="12" fill="#a371f7" text-anchor="end">signed</text>
+<text x="522" y="158" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">going down</text>
+<line x1="504" y1="142" x2="474" y2="142" stroke="#69788b" stroke-width="2" marker-end="url(#ar-gray)"/>
+<text x="488" y="134" font-family="ui-sans-serif,system-ui,sans-serif" font-size="12" fill="#69788b" text-anchor="middle">prev</text>
+<rect x="698" y="104" width="150" height="76" rx="12" fill="#141a23" stroke="#2dd4bf" filter="url(#soft)"/>
+<text x="712" y="130" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="16" font-weight="600" fill="#2dd4bf">#43</text>
+<text x="836" y="130" font-family="ui-sans-serif,system-ui,sans-serif" font-size="12" fill="#a371f7" text-anchor="end">signed</text>
+<text x="712" y="158" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">boot record</text>
+<line x1="694" y1="142" x2="664" y2="142" stroke="#69788b" stroke-width="2" marker-end="url(#ar-gray)"/>
+<text x="678" y="134" font-family="ui-sans-serif,system-ui,sans-serif" font-size="12" fill="#69788b" text-anchor="middle">prev</text>
+<text x="128" y="208" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#69788b">each entry: its number, the hash of the one before, its author's signature</text>
+<rect x="32" y="230" width="896" height="60" rx="12" fill="#11161e" stroke="#283341"/>
+<text x="52" y="266" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#69788b">copies:</text>
+<text x="132" y="266" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#3fb950">✓</text>
+<text x="154" y="266" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">ap-office: a copy of it</text>
+<text x="398" y="266" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#3fb950">✓</text>
+<text x="420" y="266" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">ap-kitchen: a copy of it</text>
+<text x="664" y="266" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#3fb950">✓</text>
+<text x="686" y="266" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">every router: every chain</text>
+<text x="32" y="326" font-family="ui-sans-serif,system-ui,sans-serif" font-size="17" font-weight="600" fill="#e6edf3">A router that shows two histories</text>
+<g transform="translate(40,380) scale(1)"><rect x="12" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="44" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="0" y="14" width="60" height="24" rx="7" fill="#1f2834" stroke="#ff6b63" stroke-width="1.5"/><circle cx="14" cy="26" r="3" fill="#ff6b63"/><circle cx="24" cy="26" r="3" fill="#ff6b63" opacity="0.6"/><rect x="36" y="22" width="16" height="8" rx="2" fill="#0c1118" stroke="#46546a"/></g>
+<text x="70" y="438" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="14" fill="#ff6b63" text-anchor="middle">liar</text>
+<rect x="160" y="356" width="170" height="44" rx="12" fill="#1a1214" stroke="#ff6b63"/>
+<text x="176" y="384" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="15" fill="#ff9a94">#7: version A</text>
+<line x1="104" y1="400" x2="154" y2="378" stroke="#ff6b63" stroke-width="1.5" marker-end="url(#ar-red)"/>
+<g transform="translate(368,358) scale(1)"><rect x="12" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="44" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="0" y="14" width="60" height="24" rx="7" fill="#1f2834" stroke="#2dd4bf" stroke-width="1.5"/><circle cx="14" cy="26" r="3" fill="#2dd4bf"/><circle cx="24" cy="26" r="3" fill="#2dd4bf" opacity="0.6"/><rect x="36" y="22" width="16" height="8" rx="2" fill="#0c1118" stroke="#46546a"/></g>
+<text x="440" y="384" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="14" fill="#2dd4bf">peer P</text>
+<line x1="336" y1="378" x2="362" y2="378" stroke="#ff6b63" stroke-width="1.5" marker-end="url(#ar-red)"/>
+<rect x="160" y="438" width="170" height="44" rx="12" fill="#1a1214" stroke="#ff6b63"/>
+<text x="176" y="466" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="15" fill="#ff9a94">#7: version B</text>
+<line x1="104" y1="400" x2="154" y2="460" stroke="#ff6b63" stroke-width="1.5" marker-end="url(#ar-red)"/>
+<g transform="translate(368,440) scale(1)"><rect x="12" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="44" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="0" y="14" width="60" height="24" rx="7" fill="#1f2834" stroke="#2dd4bf" stroke-width="1.5"/><circle cx="14" cy="26" r="3" fill="#2dd4bf"/><circle cx="24" cy="26" r="3" fill="#2dd4bf" opacity="0.6"/><rect x="36" y="22" width="16" height="8" rx="2" fill="#0c1118" stroke="#46546a"/></g>
+<text x="440" y="466" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="14" fill="#2dd4bf">peer Q</text>
+<line x1="336" y1="460" x2="362" y2="460" stroke="#ff6b63" stroke-width="1.5" marker-end="url(#ar-red)"/>
+<path class="flow" d="M400 404 L400 432" fill="none" stroke="#2dd4bf" stroke-width="2" marker-start="url(#ar-teal)" marker-end="url(#ar-teal)"/>
+<text x="414" y="424" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" fill="#2dd4bf">compare heads</text>
+<line x1="530" y1="418" x2="572" y2="418" stroke="#e3b341" stroke-width="2.5" marker-end="url(#ar-amber)"/>
+<rect x="580" y="356" width="348" height="126" rx="12" fill="#1d1a10" stroke="#e3b341" filter="url(#soft)"/>
+<text x="600" y="388" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" font-weight="600" fill="#e3b341">two signed entries, one number:</text>
+<text x="600" y="412" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" font-weight="600" fill="#e3b341">that is the proof</text>
+<text x="600" y="442" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">an alarm goes to the chat</text>
+<text x="600" y="466" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">the router is marked suspicious</text>
+</svg>

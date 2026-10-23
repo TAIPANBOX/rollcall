@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="386" viewBox="0 0 960 386" role="img" aria-label="From source to the router. Every push builds the arm64 binaries twice and requires them byte-identical. A release tag publishes SHA256SUMS and one build provenance attestation over every file. Each package is checked against both, then signed into the feed with the feed key on a workstation. On the router apk checks that signature with rollcall.pem, so nothing needs --allow-untrusted, and every installed file is owned by root.">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0a0e16"/><stop offset="1" stop-color="#0d1117"/></linearGradient>
+  <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#4493f8"/></linearGradient>
+  <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#161b22" stroke-width="1"/></pattern>
+  <filter id="soft" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#000000" flood-opacity="0.45"/></filter>
+  <marker id="ar-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2dd4bf"/></marker>
+  <marker id="ar-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4493f8"/></marker>
+  <marker id="ar-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ff6b63"/></marker>
+  <marker id="ar-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e3b341"/></marker>
+  <marker id="ar-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#3fb950"/></marker>
+  <marker id="ar-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#69788b"/></marker>
+  <marker id="ar-light" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#9aa7b8"/></marker>
+  <marker id="ar-text" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e6edf3"/></marker>
+  <marker id="ar-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#a371f7"/></marker>
+  <marker id="ar-line" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#283341"/></marker>
+</defs>
+
+<rect width="960" height="386" fill="url(#bg)"/><rect width="960" height="386" fill="url(#grid)" opacity="0.5"/><rect width="960" height="4" fill="url(#accent)"/>
+<text x="32" y="48" font-family="ui-sans-serif,system-ui,sans-serif" font-size="24" font-weight="600" fill="#e6edf3">From source to the router</text>
+<text x="32" y="74" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#69788b">Each step checks the one before it.</text>
+<rect x="32" y="104" width="168" height="152" rx="12" fill="#141a23" stroke="#2dd4bf" filter="url(#soft)"/>
+<circle cx="56" cy="132" r="12.5" fill="#2dd4bf"/>
+<text x="56" y="137" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="600" fill="#0d1117" text-anchor="middle">1</text>
+<text x="76" y="138" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#e6edf3">Every push</text>
+<text x="48" y="176" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#9aa7b8">two arm64 builds</text>
+<text x="48" y="202" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#9aa7b8">must be</text>
+<text x="48" y="228" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#9aa7b8">byte-identical</text>
+<line x1="201" y1="180" x2="213" y2="180" stroke="#2dd4bf" stroke-width="2.5" marker-end="url(#ar-teal)"/>
+<rect x="214" y="104" width="168" height="152" rx="12" fill="#141a23" stroke="#a371f7" filter="url(#soft)"/>
+<circle cx="238" cy="132" r="12.5" fill="#a371f7"/>
+<text x="238" y="137" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="600" fill="#0d1117" text-anchor="middle">2</text>
+<text x="258" y="138" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#e6edf3">Release tag</text>
+<text x="230" y="176" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#9aa7b8">SHA256SUMS and</text>
+<text x="230" y="202" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#9aa7b8">one attestation</text>
+<text x="230" y="228" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#9aa7b8">over every file</text>
+<line x1="383" y1="180" x2="395" y2="180" stroke="#a371f7" stroke-width="2.5" marker-end="url(#ar-purple)"/>
+<rect x="396" y="104" width="168" height="152" rx="12" fill="#141a23" stroke="#e3b341" filter="url(#soft)"/>
+<circle cx="420" cy="132" r="12.5" fill="#e3b341"/>
+<text x="420" y="137" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="600" fill="#0d1117" text-anchor="middle">3</text>
+<text x="440" y="138" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#e6edf3">Feed</text>
+<text x="412" y="176" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#9aa7b8">checked against</text>
+<text x="412" y="202" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#9aa7b8">both, then signed</text>
+<text x="412" y="228" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#9aa7b8">with the feed key</text>
+<line x1="565" y1="180" x2="577" y2="180" stroke="#e3b341" stroke-width="2.5" marker-end="url(#ar-amber)"/>
+<rect x="578" y="104" width="168" height="152" rx="12" fill="#141a23" stroke="#4493f8" filter="url(#soft)"/>
+<circle cx="602" cy="132" r="12.5" fill="#4493f8"/>
+<text x="602" y="137" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="600" fill="#0d1117" text-anchor="middle">4</text>
+<text x="622" y="138" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#e6edf3">Router</text>
+<text x="594" y="176" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#9aa7b8">apk checks the</text>
+<text x="594" y="202" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#9aa7b8">signature with</text>
+<text x="594" y="228" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#9aa7b8">rollcall.pem</text>
+<line x1="747" y1="180" x2="759" y2="180" stroke="#4493f8" stroke-width="2.5" marker-end="url(#ar-blue)"/>
+<rect x="760" y="104" width="168" height="152" rx="12" fill="#141a23" stroke="#3fb950" filter="url(#soft)"/>
+<circle cx="784" cy="132" r="12.5" fill="#3fb950"/>
+<text x="784" y="137" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="600" fill="#0d1117" text-anchor="middle">5</text>
+<text x="804" y="138" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#e6edf3">Installed</text>
+<text x="776" y="176" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#9aa7b8">no flag that</text>
+<text x="776" y="202" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#9aa7b8">skips the check;</text>
+<text x="776" y="228" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#9aa7b8">files owned by root</text>
+<text x="32" y="300" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#9aa7b8">where the feed key lives: on a workstation, never in CI</text>
+<text x="32" y="330" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#69788b">rollcall.pem, sha256:</text>
+<text x="32" y="352" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="14" fill="#e6edf3">1dd696c7afce0464688a5106229723f60c8cfb9bd2f6ec296ee5fec24f57ff39</text>
+</svg>

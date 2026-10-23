@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="526" viewBox="0 0 960 526" role="img" aria-label="The simulator. One process runs a site of 3 to 5 virtual routers on a fake network with a fake clock; one router shows two faces. For four and a half minutes faults hit at random every 15 to 60 s: power cuts, reboots, upgrades, partitions, a lost radio link, internet and Telegram outages, packet loss and delay. Then everything heals, and three minutes later seven invariants are checked. 200 seeds run on every push; 1000 ran clean.">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0a0e16"/><stop offset="1" stop-color="#0d1117"/></linearGradient>
+  <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#4493f8"/></linearGradient>
+  <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#161b22" stroke-width="1"/></pattern>
+  <filter id="soft" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#000000" flood-opacity="0.45"/></filter>
+  <marker id="ar-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2dd4bf"/></marker>
+  <marker id="ar-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4493f8"/></marker>
+  <marker id="ar-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ff6b63"/></marker>
+  <marker id="ar-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e3b341"/></marker>
+  <marker id="ar-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#3fb950"/></marker>
+  <marker id="ar-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#69788b"/></marker>
+  <marker id="ar-light" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#9aa7b8"/></marker>
+  <marker id="ar-text" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e6edf3"/></marker>
+  <marker id="ar-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#a371f7"/></marker>
+  <marker id="ar-line" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#283341"/></marker>
+</defs>
+<style>
+  .flow{stroke-dasharray:4 8;animation:flow 1.6s linear infinite}
+  @keyframes flow{to{stroke-dashoffset:-24}}
+  @media (prefers-reduced-motion:reduce){.flow{animation:none}}
+</style>
+<rect width="960" height="526" fill="url(#bg)"/><rect width="960" height="526" fill="url(#grid)" opacity="0.5"/><rect width="960" height="4" fill="url(#accent)"/>
+<text x="32" y="48" font-family="ui-sans-serif,system-ui,sans-serif" font-size="24" font-weight="600" fill="#e6edf3">The simulator</text>
+<text x="32" y="74" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#69788b">Real rollcall code, virtual routers, random faults, then the checks.</text>
+<rect x="32" y="100" width="470" height="250" rx="12" fill="#141a23" stroke="#2dd4bf" filter="url(#soft)"/>
+<text x="52" y="128" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" font-weight="600" fill="#2dd4bf">one process: fake network, fake clock</text>
+<line class="flow" x1="100" y1="196" x2="230" y2="176" stroke="#283341" stroke-width="2"/>
+<line class="flow" x1="230" y1="176" x2="360" y2="196" stroke="#283341" stroke-width="2"/>
+<line class="flow" x1="100" y1="196" x2="160" y2="288" stroke="#283341" stroke-width="2"/>
+<line class="flow" x1="160" y1="288" x2="320" y2="288" stroke="#283341" stroke-width="2"/>
+<line class="flow" x1="320" y1="288" x2="360" y2="196" stroke="#283341" stroke-width="2"/>
+<line class="flow" x1="230" y1="176" x2="320" y2="288" stroke="#283341" stroke-width="2"/>
+<rect x="66" y="180" width="68" height="32" rx="8" fill="#141a23"/>
+<g transform="translate(70,170) scale(1)"><rect x="12" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="44" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="0" y="14" width="60" height="24" rx="7" fill="#1f2834" stroke="#2dd4bf" stroke-width="1.5"/><circle cx="14" cy="26" r="3" fill="#2dd4bf"/><circle cx="24" cy="26" r="3" fill="#2dd4bf" opacity="0.6"/><rect x="36" y="22" width="16" height="8" rx="2" fill="#0c1118" stroke="#46546a"/></g>
+<rect x="196" y="160" width="68" height="32" rx="8" fill="#141a23"/>
+<g transform="translate(200,150) scale(1)"><rect x="12" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="44" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="0" y="14" width="60" height="24" rx="7" fill="#1f2834" stroke="#2dd4bf" stroke-width="1.5"/><circle cx="14" cy="26" r="3" fill="#2dd4bf"/><circle cx="24" cy="26" r="3" fill="#2dd4bf" opacity="0.6"/><rect x="36" y="22" width="16" height="8" rx="2" fill="#0c1118" stroke="#46546a"/></g>
+<rect x="326" y="180" width="68" height="32" rx="8" fill="#141a23"/>
+<g transform="translate(330,170) scale(1)"><rect x="12" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="44" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="0" y="14" width="60" height="24" rx="7" fill="#1f2834" stroke="#2dd4bf" stroke-width="1.5"/><circle cx="14" cy="26" r="3" fill="#2dd4bf"/><circle cx="24" cy="26" r="3" fill="#2dd4bf" opacity="0.6"/><rect x="36" y="22" width="16" height="8" rx="2" fill="#0c1118" stroke="#46546a"/></g>
+<rect x="126" y="272" width="68" height="32" rx="8" fill="#141a23"/>
+<g transform="translate(130,262) scale(1)"><rect x="12" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="44" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="0" y="14" width="60" height="24" rx="7" fill="#1f2834" stroke="#2dd4bf" stroke-width="1.5"/><circle cx="14" cy="26" r="3" fill="#2dd4bf"/><circle cx="24" cy="26" r="3" fill="#2dd4bf" opacity="0.6"/><rect x="36" y="22" width="16" height="8" rx="2" fill="#0c1118" stroke="#46546a"/></g>
+<rect x="286" y="272" width="68" height="32" rx="8" fill="#141a23"/>
+<g transform="translate(290,262) scale(1)"><rect x="12" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="44" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="0" y="14" width="60" height="24" rx="7" fill="#1f2834" stroke="#ff6b63" stroke-width="1.5"/><circle cx="14" cy="26" r="3" fill="#ff6b63"/><circle cx="24" cy="26" r="3" fill="#ff6b63" opacity="0.6"/><rect x="36" y="22" width="16" height="8" rx="2" fill="#0c1118" stroke="#46546a"/></g>
+<text x="352" y="334" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="600" fill="#ff6b63" text-anchor="middle">two faces</text>
+<text x="52" y="334" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" fill="#9aa7b8">3 to 5 routers per seed</text>
+<rect x="524" y="100" width="404" height="250" rx="12" fill="#1a1214" stroke="#ff6b63" filter="url(#soft)"/>
+<text x="544" y="128" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" font-weight="600" fill="#ff6b63">faults, one every 15 to 60 s</text>
+<circle cx="550" cy="155" r="3.5" fill="#ff6b63"/>
+<text x="564" y="160" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">power cut of one router, or of the site</text>
+<circle cx="550" cy="185" r="3.5" fill="#ff6b63"/>
+<text x="564" y="190" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">planned reboot, upgrade</text>
+<circle cx="550" cy="215" r="3.5" fill="#ff6b63"/>
+<text x="564" y="220" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">partition, a lost radio link</text>
+<circle cx="550" cy="245" r="3.5" fill="#ff6b63"/>
+<text x="564" y="250" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">internet lost by one router, or by all</text>
+<circle cx="550" cy="275" r="3.5" fill="#ff6b63"/>
+<text x="564" y="280" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">Telegram out</text>
+<circle cx="550" cy="305" r="3.5" fill="#ff6b63"/>
+<text x="564" y="310" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">packet loss and delay on every link</text>
+<rect x="32.0" y="392" width="121.4" height="34" rx="8" fill="#69788b" fill-opacity="0.22" stroke="#69788b"/>
+<text x="92.7" y="414" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" font-weight="600" fill="#69788b" text-anchor="middle">warm-up 30 s</text>
+<rect x="157.4" y="392" width="372.3" height="34" rx="8" fill="#ff6b63" fill-opacity="0.22" stroke="#ff6b63"/>
+<text x="343.6" y="414" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" font-weight="600" fill="#ff6b63" text-anchor="middle">faults for 4 min 30 s</text>
+<rect x="533.8" y="392" width="264.8" height="34" rx="8" fill="#2dd4bf" fill-opacity="0.22" stroke="#2dd4bf"/>
+<text x="666.2" y="414" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" font-weight="600" fill="#2dd4bf" text-anchor="middle">heal, wait 3 min</text>
+<rect x="802.6" y="392" width="121.4" height="34" rx="8" fill="#3fb950" fill-opacity="0.22" stroke="#3fb950"/>
+<text x="863.3" y="414" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" font-weight="600" fill="#3fb950" text-anchor="middle">check</text>
+<text x="32" y="460" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">Checked after every seed: every power cycle reaches the chat; no duplicate without a split;</text>
+<text x="32" y="482" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">never two senders at once while the network is whole; the two-faced router is proven, and</text>
+<text x="32" y="504" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#e6edf3">nobody honest is blamed. 200 seeds on every push; 1000 seeds ran clean.</text>
+</svg>

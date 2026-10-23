@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="596" viewBox="0 0 960 596" role="img" aria-label="The four defects the first lab run found, which the tests had not: package files owned by nobody; root-only configuration the daemon could not read; a directory under /tmp prepared as root; procd unable to filter a static program. Each card says what was found, the risk, the fix and the gate that now stops it.">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0a0e16"/><stop offset="1" stop-color="#0d1117"/></linearGradient>
+  <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#4493f8"/></linearGradient>
+  <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#161b22" stroke-width="1"/></pattern>
+  <filter id="soft" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#000000" flood-opacity="0.45"/></filter>
+  <marker id="ar-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2dd4bf"/></marker>
+  <marker id="ar-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4493f8"/></marker>
+  <marker id="ar-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ff6b63"/></marker>
+  <marker id="ar-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e3b341"/></marker>
+  <marker id="ar-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#3fb950"/></marker>
+  <marker id="ar-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#69788b"/></marker>
+  <marker id="ar-light" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#9aa7b8"/></marker>
+  <marker id="ar-text" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e6edf3"/></marker>
+  <marker id="ar-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#a371f7"/></marker>
+  <marker id="ar-line" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#283341"/></marker>
+</defs>
+
+<rect width="960" height="596" fill="url(#bg)"/><rect width="960" height="596" fill="url(#grid)" opacity="0.5"/><rect width="960" height="4" fill="url(#accent)"/>
+<text x="32" y="48" font-family="ui-sans-serif,system-ui,sans-serif" font-size="24" font-weight="600" fill="#e6edf3">Four defects the lab found</text>
+<text x="32" y="74" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#69788b">First run on three routers, 2026-10-23. Each one now has a gate.</text>
+<rect x="32" y="100" width="440" height="214" rx="12" fill="#141a23" stroke="#e3b341" filter="url(#soft)"/>
+<circle cx="58" cy="128" r="13" fill="#e3b341"/>
+<text x="58" y="133" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" font-weight="600" fill="#0d1117" text-anchor="middle">1</text>
+<text x="80" y="134" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#e6edf3">Package files owned by nobody</text>
+<text x="52" y="170" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="600" fill="#e3b341">found</text>
+<text x="108" y="170" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">every file installed as nobody:nogroup</text>
+<text x="52" y="202" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="600" fill="#ff6b63">risk</text>
+<text x="108" y="202" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">a process running as nobody could rewrite</text>
+<text x="108" y="222" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">the init script that root runs</text>
+<text x="52" y="254" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="600" fill="#2dd4bf">fix</text>
+<text x="108" y="254" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">pack a root-owned copy, read it back</text>
+<text x="52" y="286" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="600" fill="#a371f7">gate</text>
+<text x="108" y="286" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#e6edf3">TestPackagesOwnedByRoot</text>
+<rect x="488" y="100" width="440" height="214" rx="12" fill="#141a23" stroke="#e3b341" filter="url(#soft)"/>
+<circle cx="514" cy="128" r="13" fill="#e3b341"/>
+<text x="514" y="133" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" font-weight="600" fill="#0d1117" text-anchor="middle">2</text>
+<text x="536" y="134" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#e6edf3">Root-only configuration</text>
+<text x="508" y="170" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="600" fill="#e3b341">found</text>
+<text x="564" y="170" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">the daemon could not open network, system</text>
+<text x="508" y="202" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="600" fill="#ff6b63">risk</text>
+<text x="564" y="202" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">they can hold PPPoE passwords and</text>
+<text x="564" y="222" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">WireGuard keys</text>
+<text x="508" y="254" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="600" fill="#2dd4bf">fix</text>
+<text x="564" y="254" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">root writes a snapshot; the daemon reads it</text>
+<text x="508" y="286" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="600" fill="#a371f7">gate</text>
+<text x="564" y="286" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#e6edf3">TestInitScriptHardening</text>
+<rect x="32" y="332" width="440" height="214" rx="12" fill="#141a23" stroke="#e3b341" filter="url(#soft)"/>
+<circle cx="58" cy="360" r="13" fill="#e3b341"/>
+<text x="58" y="365" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" font-weight="600" fill="#0d1117" text-anchor="middle">3</text>
+<text x="80" y="366" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#e6edf3">A directory under /tmp, made by root</text>
+<text x="52" y="402" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="600" fill="#e3b341">found</text>
+<text x="108" y="402" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">root ran mkdir and chown under /tmp</text>
+<text x="52" y="434" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="600" fill="#ff6b63">risk</text>
+<text x="108" y="434" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">a link planted there first turns root's</text>
+<text x="108" y="454" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">chown onto any file</text>
+<text x="52" y="486" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="600" fill="#2dd4bf">fix</text>
+<text x="108" y="486" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">the run directory moved to /var/run</text>
+<text x="52" y="518" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="600" fill="#a371f7">gate</text>
+<text x="108" y="518" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#e6edf3">TestInitScriptHardening</text>
+<rect x="488" y="332" width="440" height="214" rx="12" fill="#141a23" stroke="#e3b341" filter="url(#soft)"/>
+<circle cx="514" cy="360" r="13" fill="#e3b341"/>
+<text x="514" y="365" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" font-weight="600" fill="#0d1117" text-anchor="middle">4</text>
+<text x="536" y="366" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#e6edf3">procd cannot filter a static program</text>
+<text x="508" y="402" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="600" fill="#e3b341">found</text>
+<text x="564" y="402" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">the daemon read Seccomp: 0 and refused</text>
+<text x="564" y="422" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">to listen</text>
+<text x="508" y="454" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="600" fill="#ff6b63">risk</text>
+<text x="564" y="454" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">no system call filter at all</text>
+<text x="508" y="486" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="600" fill="#2dd4bf">fix</text>
+<text x="564" y="486" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">the daemon installs its own, every thread</text>
+<text x="508" y="518" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="600" fill="#a371f7">gate</text>
+<text x="564" y="518" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#e6edf3">TestDaemonConfinesFirst</text>
+<text x="32" y="576" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#69788b">The same run showed three more, fixed and confirmed on the routers that evening: bounding set, clock event, count.</text>
+</svg>

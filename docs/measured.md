@@ -127,8 +127,53 @@ home: flint2 rebooted as planned at 20:54, back after 45 s, confirmed by 2 of 2.
   one) each gave one line, counted by both routers that saw it, and with the routers' clocks
   trusted: the daemons had started after the clocks synced and learned of it from ntp's periodic
   event.
+- **The two reboots, timed.** beryl2 was forced to reboot at 20:52:24 with no clean shutdown, and
+  flint2 was rebooted cleanly at 20:53:57 (the times the commands were sent). The lines give 39 s
+  and 45 s; the chat shows them arriving at 20:53 and 20:55. flint2 is the only sender: its first
+  line went out before its own reboot, and the line about that reboot once it was back.
+
+![The two reboots as a time line, with the chat line each gave](timeline.svg)
+
 - **Resources at the start of the long run** (20:45): 12.1 to 15.3 MB resident per daemon, 8 to 11
   threads, 43 to 60 KB of state.
+
+### Footprint per router, 21:57
+
+![The three routers with the same measurements beside each](routers.svg)
+
+| Router | Role | RAM | Resident (peak) | Threads | CPU, one core | State on flash |
+|---|---|---|---|---|---|---|
+| `flint2`, Flint 2 (GL-MT6000) | primary admin, sender | 986 MB | 15.5 MB (15.7) | 11 | 0.15% | 65 KB |
+| `beryl1`, Beryl AX (GL-MT3000) | backup admin | 485 MB | 12.8 MB (13.7) | 9 | 0.14% | 80 KB |
+| `beryl2`, Beryl AX (GL-MT3000) | member | 485 MB | 12.6 MB (13.0) | 8 | 0.14% | 76 KB |
+
+How each column was taken, over SSH on each router:
+
+- **RAM**: `MemTotal` from `/proc/meminfo`.
+- **Resident and peak**: `VmRSS` and `VmHWM` from `/proc/$(pidof rollcalld)/status`, in kB, divided
+  by 1000. **Threads**: the `Threads:` line of the same file.
+- **CPU**: `utime` plus `stime` from `/proc/<pid>/stat`, sampled twice 120 s apart, against
+  `/proc/uptime`. flint2 used 18 ticks of 10 ms in 120.6 s, each Beryl AX 17: 0.15% and 0.14% of one
+  core.
+- **State on flash**: `du -k /etc/rollcall`, the group's keys, roster and history.
+
+The package, `rollcall-1.0.0_rc1-r1` for `aarch64_cortex-a53`: 4,865,188 bytes to download (4.9 MB),
+11 MiB installed. The daemon `rollcalld` is 8,192,160 bytes and the `rollcall` CLI 3,866,784 bytes,
+the same on all three routers. `luci-app-rollcall` is 8,716 bytes.
+
+Not measured: flash writes per hour (a two-minute window could not separate rollcall's writes from
+the rest of the system; the long run will), network bytes, and power.
+
+### Next to hermes-openwrt on flint2
+
+![One Flint 2 runs Hermes Agent and rollcall side by side, memory and installed size to scale](with-hermes.svg)
+
+flint2 also runs [hermes-openwrt](https://github.com/TAIPANBOX/hermes-openwrt), an AI agent packaged
+as an OpenWrt service. The same day, Hermes Agent with openwrt-mcp held 238 MB resident in 6
+processes; `hermes-agent` has an installed size of 207 MiB, and its data took 45 MB on a USB stick.
+rollcall beside it: 15.5 MB and 11 MiB. The two ran side by side through two reboots of flint2.
+They are separate packages, and neither depends on the other. Each needs its own Telegram bot: a
+second program polling the same bot gets in the way of rollcall's chat binding.
 
 ## CI
 
@@ -145,27 +190,40 @@ Run `39990683889`, the push of commit `4186091` on 2026-10-23. Every job passed:
   for 30 s and stopped cleanly. Daemons built with one call left out of the list (`prctl`,
   `eventfd2`, `epoll_pwait`, and `futex_time64` on arm) were killed by SIGSYS.
 
-CI has no MIPS runner. A mutation job (gremlins) runs on manual runs and tags; it reports scores and
-does not gate.
+Also on every push: the **simulator sweep**, 200 seeds, each a site of 3 to 5 routers put through
+random faults (power cuts, reboots, upgrades, partitions, internet and Telegram outages, packet loss
+and delay), with its invariants checked afterwards. 1000 seeds, run twice on a development branch,
+were all clean.
+
+**Gates**: 18 under `internal/gates`. `TestGatesHaveTeeth` plants, for each one, the fault it exists
+for and requires the gate to fail, or requires it to pass on clean input. On `cafed12`, 2026-10-23,
+`go test ./internal/gates -run TestGatesHaveTeeth -count=1 -v` passed all 123 cases.
+
+CI has no MIPS runner. A mutation job (gremlins v0.6.0) runs on manual runs and tags; it reports
+scores and does not gate. Run `39990682729` on `4186091`, test efficacy per package: replay 100.00%,
+epoch 94.34%, roster 93.33%, history 90.65%, deliver 90.57%, pairing 84.69%, elect 84.62%, sig
+80.00%, wire 80.00%, node 75.38%.
 
 ## Tests on a workstation
 
-`go test ./... -count=1` on 2026-10-23 at 18:44 BST, commit `80c38d8`, Go 1.27.3 on darwin/arm64:
-31 packages passed, none failed, two have no tests. The same run with `-json` counted 848 top-level
-tests passed, 0 failed, 4 skipped, and 867 subtests passed. The four skips: two gates that read what
-CI prepares (`ROLLCALL_COVERAGE`, `ROLLCALL_PACKAGES`), the ICMP probe (it needs a raw socket), and
-one link-local test that does not apply to macOS's loopback.
+`go test ./... -count=1 -json` on 2026-10-23 at 22:20 BST, commit `cafed12`, Go 1.27.3 on
+darwin/arm64: 871 top-level tests passed, 0 failed, 4 skipped, and 913 subtests passed; 31 packages
+passed, two have no tests. The four skips: two gates that read what CI prepares
+(`ROLLCALL_COVERAGE`, `ROLLCALL_PACKAGES`), the ICMP probe (it needs a raw socket), and one
+link-local test that does not apply to macOS's loopback. Earlier runs that day: 869 and 902 at
+19:40 on `b2f9618`, 848 and 867 at 18:44 on `80c38d8`.
 
-Coverage, `go test -cover ./internal/...` on the same commit: from 90.4% (`internal/node`) to
-100% per package; every statement of `internal/...` together, 94.3%
-(`go test -coverprofile=internal.out ./internal/... && go tool cover -func=internal.out`). On macOS
-the code that installs the seccomp filter does not run; the CI legs above run it. The CI gate keeps
-coverage from falling below `coverage-baseline.txt`, which still holds 0.0, so it holds no real
-floor yet.
+Coverage on `cafed12`, every statement of `internal/...` together: 94.4%
+(`go test -coverprofile=internal.out ./internal/... && go tool cover -func=internal.out`), as on
+`b2f9618`. On `80c38d8` it was 94.3%, from 90.4% (`internal/node`) to 100% per package. CI over `./...` with
+`-race` on `4186091`: 90.3%. On macOS the code that installs the seccomp filter does not run; the
+CI legs above run it. The CI gate keeps coverage from falling below `coverage-baseline.txt`, which
+holds 90.0 since commit `2f3f314`.
 
 ## Not yet
 
-- **Flash wear over days.** Only a baseline was taken.
+- **Flash wear over days, flash writes per hour, network bytes, power.** Not measured. For the
+  flash only baselines were taken; the long run of 1.0.0-rc1 that started at 20:45 will give it.
 - **MIPS on hardware**, and every target but `aarch64_cortex-a53` on a router. arm and x86_64 ran in
   CI only.
 - **OpenWrt 24.10 and the `.ipk`.** Built, never installed on a router.

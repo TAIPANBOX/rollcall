@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="688" viewBox="0 0 960 688" role="img" aria-label="How rollcall differs from the usual ways: no monitoring server, every router of the site watched, failures told rather than hidden, each kind of incident told apart, and a signed history no single router can rewrite.">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0a0e16"/><stop offset="1" stop-color="#0d1117"/></linearGradient>
+  <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#4493f8"/></linearGradient>
+  <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#161b22" stroke-width="1"/></pattern>
+  <filter id="soft" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#000000" flood-opacity="0.45"/></filter>
+  <marker id="ar-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2dd4bf"/></marker>
+  <marker id="ar-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4493f8"/></marker>
+  <marker id="ar-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ff6b63"/></marker>
+  <marker id="ar-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e3b341"/></marker>
+  <marker id="ar-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#3fb950"/></marker>
+  <marker id="ar-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#69788b"/></marker>
+  <marker id="ar-light" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#9aa7b8"/></marker>
+  <marker id="ar-text" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e6edf3"/></marker>
+  <marker id="ar-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#a371f7"/></marker>
+  <marker id="ar-line" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#283341"/></marker>
+</defs>
+
+<rect width="960" height="688" fill="url(#bg)"/><rect width="960" height="688" fill="url(#grid)" opacity="0.5"/><rect width="960" height="4" fill="url(#accent)"/>
+<text x="32" y="48" font-family="ui-sans-serif,system-ui,sans-serif" font-size="24" font-weight="600" fill="#e6edf3">How this differs from the usual ways</text>
+<text x="32" y="74" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#69788b">Left: the usual way. Right: rollcall. Below: why it matters.</text>
+<text x="32" y="96" font-family="ui-sans-serif,system-ui,sans-serif" font-size="12" fill="#69788b" letter-spacing="1">THE USUAL WAY</text>
+<text x="512" y="96" font-family="ui-sans-serif,system-ui,sans-serif" font-size="12" fill="#2dd4bf" letter-spacing="1">ROLLCALL</text>
+<rect x="32" y="104" width="420" height="54" rx="12" fill="#11161e" stroke="#262d38"/>
+<g transform="translate(48,119)" fill="none" stroke="#5b6676" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="2" width="18" height="8" rx="2"/><rect x="3" y="14" width="18" height="8" rx="2"/><circle cx="7" cy="6" r="0.8" fill="#5b6676"/><circle cx="7" cy="18" r="0.8" fill="#5b6676"/></g>
+<text x="84" y="137" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" fill="#8b95a3">A monitoring server polls the routers</text>
+<line x1="462" y1="131" x2="498" y2="131" stroke="#2dd4bf" stroke-width="2" marker-end="url(#ar-teal)"/>
+<rect x="508" y="104" width="420" height="54" rx="12" fill="#10221f" stroke="#2dd4bf"/>
+<g transform="translate(524,119)" fill="none" stroke="#2dd4bf" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></g>
+<text x="560" y="137" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#e6edf3">The routers watch each other; no server</text>
+<text x="48" y="184" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#9aa7b8">Nothing extra to run, and a whole-site outage is still told afterwards.</text>
+<rect x="32" y="212" width="420" height="54" rx="12" fill="#11161e" stroke="#262d38"/>
+<g transform="translate(48,227)" fill="none" stroke="#5b6676" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2c3 3 4.5 6.5 4.5 10S15 19 12 22c-3-3-4.5-6.5-4.5-10S9 5 12 2z"/></g>
+<text x="84" y="245" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" fill="#8b95a3">A cloud ping checks the public address</text>
+<line x1="462" y1="239" x2="498" y2="239" stroke="#2dd4bf" stroke-width="2" marker-end="url(#ar-teal)"/>
+<rect x="508" y="212" width="420" height="54" rx="12" fill="#10221f" stroke="#2dd4bf"/>
+<g transform="translate(524,227)" fill="none" stroke="#2dd4bf" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></g>
+<text x="560" y="245" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#e6edf3">Every router inside the site is watched</text>
+<text x="48" y="292" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#9aa7b8">A failed access point behind the gateway is seen, and a short reboot too.</text>
+<rect x="32" y="320" width="420" height="54" rx="12" fill="#11161e" stroke="#262d38"/>
+<g transform="translate(48,335)" fill="none" stroke="#5b6676" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h14l-4-4M20 16H6l4 4"/></g>
+<text x="84" y="353" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" fill="#8b95a3">Failover moves an address to a spare</text>
+<line x1="462" y1="347" x2="498" y2="347" stroke="#2dd4bf" stroke-width="2" marker-end="url(#ar-teal)"/>
+<rect x="508" y="320" width="420" height="54" rx="12" fill="#10221f" stroke="#2dd4bf"/>
+<g transform="translate(524,335)" fill="none" stroke="#2dd4bf" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></g>
+<text x="560" y="353" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#e6edf3">It tells you what failed, when and how</text>
+<text x="48" y="400" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#9aa7b8">You learn about the failure instead of it being hidden.</text>
+<rect x="32" y="428" width="420" height="54" rx="12" fill="#11161e" stroke="#262d38"/>
+<g transform="translate(48,443)" fill="none" stroke="#5b6676" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 3v5h-5"/></g>
+<text x="84" y="461" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" fill="#8b95a3">A watchdog reboots a router that lost its link</text>
+<line x1="462" y1="455" x2="498" y2="455" stroke="#2dd4bf" stroke-width="2" marker-end="url(#ar-teal)"/>
+<rect x="508" y="428" width="420" height="54" rx="12" fill="#10221f" stroke="#2dd4bf"/>
+<g transform="translate(524,443)" fill="none" stroke="#2dd4bf" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></g>
+<text x="560" y="461" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#e6edf3">Planned, crash, upgrade or lost link, told apart</text>
+<text x="48" y="508" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#9aa7b8">You know what happened, not only that something did.</text>
+<rect x="32" y="536" width="420" height="54" rx="12" fill="#11161e" stroke="#262d38"/>
+<g transform="translate(48,551)" fill="none" stroke="#5b6676" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="6" r="2.5"/><circle cx="19" cy="6" r="2.5"/><circle cx="12" cy="19" r="2.5"/><path d="M7.5 6h9M6.3 8.2l4.4 8.6M17.7 8.2l-4.4 8.6"/></g>
+<text x="84" y="569" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" fill="#8b95a3">Mesh data sharing trusts every node</text>
+<line x1="462" y1="563" x2="498" y2="563" stroke="#2dd4bf" stroke-width="2" marker-end="url(#ar-teal)"/>
+<rect x="508" y="536" width="420" height="54" rx="12" fill="#10221f" stroke="#2dd4bf"/>
+<g transform="translate(524,551)" fill="none" stroke="#2dd4bf" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></g>
+<text x="560" y="569" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#e6edf3">Signed roster and histories; a liar is proven</text>
+<text x="48" y="616" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#9aa7b8">One compromised router cannot rewrite what happened.</text>
+<text x="32" y="666" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#69788b">rollcall is not a metrics system: it keeps no graphs of traffic or load; it tells you about incidents.</text>
+</svg>
