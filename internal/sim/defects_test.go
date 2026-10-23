@@ -19,14 +19,8 @@ import (
 // running strict and removing its entry here. Anything that fails and is not
 // listed here always fails.
 var knownDefects = map[string]string{
-	"D1": "a router that stayed up corrects the others' silence claim and records an update, which the chat gets as an " +
-		"extra message ('r03 lost contact until 09:01 but stayed up'): redundant with the group's own link-loss message, " +
-		"and its time is the claim's (when the silence began), told as 'until' (TestMeshNodeLinkLoss; the sweep checks " +
-		"duplicates only without partitions, so it does not see this one)",
 	"D8": "the chat tells a silence 45 to 55 s after a power cut (detection at 30 s, then the 20 s coalescing settle); " +
 		"the bound is 30 s of detection and 15 s (TestPowerLossReported)",
-	"D9": "a router whose own link was cut records every other router silent; once the link is back the chat gets 'r01, r02 " +
-		"stopped answering, confirmed by 0 of 2' and an update per router: one link loss, six messages (TestMeshNodeLinkLoss)",
 	"D14": "a router that restarts while a peer is away forgets the peer (its last boot and version live in RAM only): it " +
 		"reports the peer silent from its own start, a second message for an absence already told, and tells the peer's " +
 		"return as 'went silent ..., back after' counted from its own start, never as the reboot or upgrade it was (sweep I2)",
