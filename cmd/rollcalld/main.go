@@ -1,6 +1,6 @@
 // Command rollcalld is the rollcall daemon.
 //
-//	rollcalld -config /etc/config/rollcall -state /etc/rollcall -run /tmp/rollcall \
+//	rollcalld -config /etc/config/rollcall -state /etc/rollcall -run /var/run/rollcalld \
 //	          -control /var/run/rollcall/control.sock
 //
 // It reads /etc/config/rollcall, and the firewall zones, their devices and
@@ -60,7 +60,7 @@ func main() {
 	flag.StringVar(&f.config, "config", "/etc/config/rollcall", "rollcall configuration")
 	flag.StringVar(&f.snapshot, "snapshot", config.SnapshotPath, "the facts root takes from the firewall, network and system files beside -config (rollcall snapshot)")
 	flag.StringVar(&f.state, "state", "/etc/rollcall", "state directory (identity, roster, keys, history)")
-	flag.StringVar(&f.run, "run", "/tmp/rollcall", "run-time directory")
+	flag.StringVar(&f.run, "run", "/var/run/rollcalld", "run-time directory")
 	flag.StringVar(&f.control, "control", ControlSocketPath, "control socket")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()

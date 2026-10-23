@@ -150,7 +150,7 @@ interface a few milliseconds apart may reach the daemon in the opposite order.
 `procd_add_jail rollcall log procfs sysfs ronly requirejail`: `requirejail` makes procd refuse
 to start the daemon without the jail, and `ronly` remounts the jail's root read-only (`ujail -o`),
 so the only writable paths are the `procd_add_jail_mount_rw` ones: `/etc/rollcall`,
-`/tmp/rollcall` and `/var/run/rollcall`. Read-only, the jail carries `/etc/config/rollcall`,
+`/var/run/rollcalld` and `/var/run/rollcall`. Read-only, the jail carries `/etc/config/rollcall`,
 `/etc/openwrt_release`, `/etc/ssl/certs`, `/usr/share/zoneinfo` and the three resolver paths
 below, and never `/etc/config/network`, `/etc/config/system` or `/etc/config/firewall`, nor a
 directory holding them (next section). The gate `TestInitScriptHardening` refuses a jail mount

@@ -26,10 +26,12 @@ start_service() {
 	mkdir -p /var/run/rollcall
 	chown rollcall:rollcall /var/run/rollcall
 	chmod 0700 /var/run/rollcall
-	# The run-time directory (-run) is mounted into the jail too, so it must exist first.
-	mkdir -p /tmp/rollcall
-	chown rollcall:rollcall /tmp/rollcall
-	chmod 0700 /tmp/rollcall
+	# The run-time directory (-run) is mounted into the jail too, so it must exist first. It lives
+	# under /var/run (/tmp/run, root's alone), never under /tmp, where anyone could plant a symbolic
+	# link for root's chown to follow.
+	mkdir -p /var/run/rollcalld
+	chown rollcall:rollcall /var/run/rollcalld
+	chmod 0700 /var/run/rollcalld
 	# The daemon never reads /etc/config/network, system or firewall: on OpenWrt 25.12 network and
 	# system are root's alone (0600) and may hold PPPoE passwords and WireGuard private keys. Root
 	# writes what the daemon needs from them (the zones, their devices, which zones face the
@@ -40,7 +42,7 @@ start_service() {
 	fi
 
 	procd_open_instance
-	procd_set_param command "$DAEMON" -config /etc/config/rollcall -state /etc/rollcall -run /tmp/rollcall
+	procd_set_param command "$DAEMON" -config /etc/config/rollcall -state /etc/rollcall -run /var/run/rollcalld
 	procd_set_param user rollcall
 	procd_set_param group rollcall
 	procd_set_param no_new_privs 1
@@ -60,7 +62,7 @@ start_service() {
 	# interface state from /proc and /sys. ronly remounts the jail's root read-only (ujail -o), so
 	# only the procd_add_jail_mount_rw paths below are writable (security section 7).
 	procd_add_jail rollcall log procfs sysfs ronly requirejail
-	procd_add_jail_mount_rw /etc/rollcall /tmp/rollcall /var/run/rollcall
+	procd_add_jail_mount_rw /etc/rollcall /var/run/rollcalld /var/run/rollcall
 	# Read-only. Never /etc/config/network, system or firewall, nor a directory holding them: the
 	# snapshot in /var/run/rollcall carries all the daemon takes from them.
 	procd_add_jail_mount /etc/config/rollcall /etc/openwrt_release /etc/ssl/certs /usr/share/zoneinfo

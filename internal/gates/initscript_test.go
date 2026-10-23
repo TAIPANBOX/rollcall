@@ -163,6 +163,18 @@ func initScriptProblems(text string) []string {
 		if strings.Contains(line, "ubus") {
 			problems = append(problems, "uses ubus, which rollcall never touches: "+line)
 		}
+		// Root prepares nothing under /tmp: anyone can write there, so a path
+		// planted as a symbolic link before the first start turns root's
+		// mkdir, chown or chmod into a change of any file on the router.
+		// /var/run is /tmp/run, which only root can write.
+		if f := strings.Fields(line); len(f) > 1 && (f[0] == "mkdir" || f[0] == "chown" || f[0] == "chmod") {
+			for _, a := range f[1:] {
+				if strings.HasPrefix(a, "/tmp/") {
+					problems = append(problems, "root runs "+f[0]+" on "+a+", under /tmp, which anyone can write: "+
+						"a symbolic link planted there before the first start redirects it to any file; use a directory under /var/run")
+				}
+			}
+		}
 		switch {
 		case strings.HasPrefix(line, "if "):
 			ifStack = append(ifStack, strings.Contains(line, "icmp"))
@@ -311,6 +323,18 @@ func init() {
 				})
 			},
 			outcome: wantFail, expect: "outside the icmp branch",
+		},
+		toothCase{
+			// The lab defect L3: root chowned a directory under /tmp that anyone
+			// could have planted as a symbolic link.
+			name: "initscript_prepares_under_tmp", gate: "TestInitScriptHardening",
+			plant: func(t *testing.T, dst string) {
+				editCopy(t, dst, initScriptRel, func(s string) string {
+					return strings.Replace(s, "procd_open_instance\n",
+						"mkdir -p /tmp/rollcall\n\tchown rollcall:rollcall /tmp/rollcall\n\tprocd_open_instance\n", 1)
+				})
+			},
+			outcome: wantFail, expect: "under /tmp",
 		},
 		toothCase{
 			name: "initscript_ubus_added", gate: "TestInitScriptHardening",
