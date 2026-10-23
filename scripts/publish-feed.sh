@@ -122,7 +122,10 @@ git -C "$WT" push -qf origin HEAD:gh-pages
 echo "==> pushed gh-pages"
 
 echo "==> GitHub Pages"
-src=$(gh api "repos/$REPO/pages" --jq '"\(.source.branch) \(.source.path)"' 2>/dev/null || echo none)
+# gh prints the 404 body on standard output, so the status decides, not the text.
+if ! src=$(gh api "repos/$REPO/pages" --jq '"\(.source.branch) \(.source.path)"' 2>/dev/null); then
+	src=none
+fi
 case "$src" in
 	"gh-pages /") echo "Pages already serves gh-pages /" ;;
 	none)

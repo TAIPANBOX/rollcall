@@ -111,7 +111,7 @@ if [ -n "$FROM_RUN" ]; then
 	cp "$ART"/*.apk "$ART/SHA256SUMS" "$DL/"
 	rm -rf "$ART"
 	SOURCE_URL="https://github.com/$REPO/actions/runs/$FROM_RUN"
-	SOURCE_TEXT="the run"
+	SOURCE_TEXT="run $FROM_RUN"
 else
 	echo "==> downloading the packages of $REPO $TAG"
 	gh release download "$TAG" --repo "$REPO" --dir "$DL" --pattern '*.apk' --pattern SHA256SUMS
@@ -225,6 +225,9 @@ CONTAINER
 # The public key travels with the feed so the instructions are two lines, not a search.
 cp "$PUB_KEY" "$OUT/rollcall.pem"
 KEY_SHA=$(shasum -a 256 "$PUB_KEY" | cut -d' ' -f1)
+# The full apk version, with the package release, as the router's apk reports it.
+first=$(printf '%s\n' $ARCHES | head -n 1)
+PKGVER=$(cd "$OUT/$RELEASE/$first" && ls -1 rollcall-*.apk | sed 's/^rollcall-//; s/\.apk$//')
 
 arch_items=""
 for arch in $ARCHES; do
@@ -254,7 +257,7 @@ pre{padding:.8rem;overflow-x:auto;white-space:pre}h2{margin-top:2rem}
 <a href="https://github.com/TAIPANBOX/rollcall">rollcall and luci-app-rollcall</a>: the routers of
 one site watch each other over the LAN and report incidents to a chat.</p>
 <p>Current release: <a href="https://github.com/$REPO/tree/$TAG">$TAG</a>
-(apk version $APKVER).$PRERELEASE</p>
+(apk version $PKGVER).$PRERELEASE</p>
 
 <h2>Add the feed</h2>
 <p>On the router, as root. The first line trusts the key, the second adds the feed for the
