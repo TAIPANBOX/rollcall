@@ -32,16 +32,18 @@ import (
 
 // The documented delivery format.
 const (
-	fmtBlobSize  = 1261 // version 1 + signer 16 + HPKE ciphertext 1180 + signature 64
-	fmtVersion   = 1
+	fmtBlobSize  = 1304 // version 1 + signer 16 + HPKE ciphertext 1223 + signature 64
+	fmtVersion   = 2
 	fmtSignerOff = 1
 	fmtCTOff     = 17
-	fmtSigOff    = 1197
+	fmtSigOff    = 1240
 	fmtEncSize   = 1120 // ML-KEM-768 ciphertext 1088 + X25519 point 32
-	fmtPTSize    = 44   // epoch ID 4 + NotAfter 8 + secret 32
+	fmtPTSize    = 87   // epoch ID 4 + NotAfter 8 + roster version 8 + roster hash 32 + seq 2 + authority 1 + secret 32
 	fmtInfoLabel = "rollcall/v1 epoch"
 	fmtSigPrefix = "rollcall/v1/epoch\x00"
+	fmtIDLabel   = "rollcall/v1 epoch id\x00"
 	fmtMaxUnix   = 253402300799 // 9999-12-31T23:59:59Z
+	fmtMaxSeq    = 1023
 )
 
 // t0 is a fixed instant for the ring tests; testNotAfter is a fixed
@@ -64,8 +66,18 @@ func testSecret(n byte) []byte {
 	return s
 }
 
+// testBinding is the roster the test keys are bound to: version 7, a hash
+// of 0x42 bytes; testSeq and testAuthority their sequence number and
+// authority.
+var testBinding = Binding{Version: 7, Hash: ids.Hash(bytes.Repeat([]byte{0x42}, 32))}
+
+const (
+	testSeq       = 3
+	testAuthority = 1
+)
+
 func testKey(id uint32, n byte) Key {
-	return Key{ID: id, Secret: testSecret(n), NotAfter: testNotAfter}
+	return Key{ID: id, Secret: testSecret(n), NotAfter: testNotAfter, Roster: testBinding, Seq: testSeq, Authority: testAuthority}
 }
 
 // mustPacketKey derives the packet key with crypto/hkdf directly, so the
@@ -337,43 +349,116 @@ func TestRingInstallRejectsBadSecret(t *testing.T) {
 	}
 }
 
-// TestRingRejectsStaleEpoch: an epoch that is not newer than the current
-// one is refused, so a replayed old delivery cannot bring back a key that a
-// removed member knows.
-func TestRingRejectsStaleEpoch(t *testing.T) {
+// TestRingRefusesSameIDOtherSecret: the current epoch's ID with another
+// secret is refused and changes nothing; the overlap of the epoch before
+// it is not restarted.
+func TestRingRefusesSameIDOtherSecret(t *testing.T) {
 	c := &fakeClock{now: t0}
 	r := &Ring{Now: c.Now}
 	mustInstall(t, r, testKey(5, 5), t0)
-
-	for _, k := range []Key{
-		testKey(4, 4),
-		testKey(0, 4),
-		{ID: 5, Secret: testSecret(6), NotAfter: testNotAfter}, // same ID, another secret
-	} {
-		if err := r.Install(k, t0); err != ErrStale {
-			t.Errorf("Install(epoch %d) over epoch 5 = %v, want ErrStale", k.ID, err)
-		}
-	}
-	c.Set(t0.Add(time.Hour))
-	wantKey(t, r, 5, testSecret(5), "after the stale installs")
-	wantNoKey(t, r, 4, "after the stale installs")
-	wantNoKey(t, r, 0, "after the stale installs")
-
-	t1 := t0.Add(2 * time.Hour)
+	t1 := t0.Add(time.Hour)
 	c.Set(t1)
 	mustInstall(t, r, testKey(6, 6), t1)
-	if err := r.Install(testKey(5, 5), t1.Add(time.Second)); err != ErrStale {
-		t.Errorf("Install(epoch 5) after epoch 6 = %v, want ErrStale", err)
+	if err := r.Install(Key{ID: 6, Secret: testSecret(7), NotAfter: testNotAfter}, t1.Add(30*time.Second)); err != ErrStale {
+		t.Errorf("Install(epoch 6, another secret) = %v, want ErrStale", err)
 	}
 	c.Set(t1.Add(30 * time.Second))
-	wantKey(t, r, 6, testSecret(6), "epoch 6 after the refused reinstall of 5")
+	wantKey(t, r, 6, testSecret(6), "epoch 6 after the refused install")
 	wantKey(t, r, 5, testSecret(5), "epoch 5 within the overlap")
 	c.Set(t1.Add(60 * time.Second))
-	wantNoKey(t, r, 5, "epoch 5 after the overlap: the refused reinstall must not reopen it")
+	wantNoKey(t, r, 5, "epoch 5 after the overlap: the refused install must not reopen it")
+}
 
-	mustInstall(t, r, testKey(math.MaxUint32, 7), t1.Add(time.Hour))
-	if err := r.Install(testKey(math.MaxUint32-1, 8), t1.Add(time.Hour)); err != ErrStale {
-		t.Errorf("Install(MaxUint32-1) after MaxUint32 = %v, want ErrStale", err)
+// TestRingDoesNotOrder (A1): the Ring takes any other ID as the next
+// epoch, a lower one too: which key comes next is the node's decision, by
+// the roster the key is bound to, not by the ID. The epoch it replaces is
+// kept for the overlap, as with any switch.
+func TestRingDoesNotOrder(t *testing.T) {
+	c := &fakeClock{now: t0}
+	r := &Ring{Now: c.Now}
+	mustInstall(t, r, testKey(math.MaxUint32, 9), t0)
+	t1 := t0.Add(time.Hour)
+	c.Set(t1)
+	mustInstall(t, r, testKey(4, 4), t1)
+	wantKey(t, r, 4, testSecret(4), "the lower ID, installed")
+	wantKey(t, r, math.MaxUint32, testSecret(9), "the higher ID, within the overlap")
+	c.Set(t1.Add(60 * time.Second))
+	wantNoKey(t, r, math.MaxUint32, "the higher ID after the overlap")
+	// The previous epoch installed again becomes the current one.
+	mustInstall(t, r, testKey(3, 3), t1.Add(2*time.Minute))
+	mustInstall(t, r, testKey(4, 4), t1.Add(3*time.Minute))
+	c.Set(t1.Add(3*time.Minute + 30*time.Second))
+	wantKey(t, r, 4, testSecret(4), "epoch 4 installed again")
+	wantKey(t, r, 3, testSecret(3), "epoch 3 within the overlap after epoch 4 again")
+}
+
+// TestIDOf (A1): the wire ID is the first 32 bits of the documented
+// SHA-256 over the binding, the sequence number and the authority, with the
+// lowest bit set; any of them changes it, and it is never 0.
+func TestIDOf(t *testing.T) {
+	hand := func(b Binding, seq uint16, authority byte) uint32 {
+		m := append([]byte(fmtIDLabel), binary.BigEndian.AppendUint64(nil, b.Version)...)
+		m = append(m, b.Hash[:]...)
+		m = binary.BigEndian.AppendUint16(m, seq)
+		m = append(m, authority)
+		sum := sha256.Sum256(m)
+		return binary.BigEndian.Uint32(sum[:4]) | 1
+	}
+	if got, want := IDOf(testBinding, testSeq, testAuthority), hand(testBinding, testSeq, testAuthority); got != want {
+		t.Fatalf("IDOf = %#x, want %#x", got, want)
+	}
+	base := IDOf(testBinding, 1, 0)
+	other := testBinding
+	other.Hash[31] ^= 1
+	for name, id := range map[string]uint32{
+		"version + 1":     IDOf(Binding{Version: testBinding.Version + 1, Hash: testBinding.Hash}, 1, 0),
+		"another hash":    IDOf(other, 1, 0),
+		"sequence 2":      IDOf(testBinding, 2, 0),
+		"the backup's":    IDOf(testBinding, 1, 1),
+		"version 2^20+7":  IDOf(Binding{Version: 7 + 1<<20, Hash: testBinding.Hash}, 1, 0),
+		"version 2^32+7":  IDOf(Binding{Version: 7 + 1<<32, Hash: testBinding.Hash}, 1, 0),
+		"sequence 1+2^10": IDOf(testBinding, 1+1<<10, 0),
+	} {
+		if id == base {
+			t.Errorf("%s: the same ID %#x as version 7, sequence 1, primary", name, id)
+		}
+	}
+	// Over many bindings the IDs do not collide and none is 0.
+	seen := map[uint32]bool{}
+	for v := uint64(1); v <= 200; v++ {
+		for seq := uint16(1); seq <= 5; seq++ {
+			for a := uint8(0); a <= 1; a++ {
+				id := IDOf(Binding{Version: v, Hash: testBinding.Hash}, seq, a)
+				if id == 0 || seen[id] {
+					t.Fatalf("version %d seq %d authority %d: ID %#x is 0 or repeated", v, seq, a, id)
+				}
+				seen[id] = true
+			}
+		}
+	}
+}
+
+// TestNewer (A1): the order of keys by their binding: a higher roster
+// version first, then a higher sequence number, then the primary's before
+// a backup's; never by the wire ID.
+func TestNewer(t *testing.T) {
+	k := func(v uint64, seq uint16, a uint8, id uint32) Key {
+		return Key{ID: id, Roster: Binding{Version: v, Hash: testBinding.Hash}, Seq: seq, Authority: a}
+	}
+	for _, c := range []struct {
+		name string
+		a, b Key
+	}{
+		{"higher version, lower sequence and ID", k(8, 1, 1, 1), k(7, fmtMaxSeq, 0, math.MaxUint32)},
+		{"higher sequence, lower ID", k(7, 2, 1, 1), k(7, 1, 0, math.MaxUint32)},
+		{"primary over backup at one sequence", k(7, 3, 0, 1), k(7, 3, 1, math.MaxUint32)},
+	} {
+		if !Newer(c.a, c.b) || Newer(c.b, c.a) {
+			t.Errorf("%s: Newer(a, b) = %v, Newer(b, a) = %v; want true, false", c.name, Newer(c.a, c.b), Newer(c.b, c.a))
+		}
+	}
+	if x := k(7, 3, 0, 5); Newer(x, x) {
+		t.Error("a key is newer than itself")
 	}
 }
 
@@ -549,10 +634,21 @@ func seal(t testing.TB, k Key, m, admin *identity.Identity) []byte {
 	return blob
 }
 
-// handPlaintext builds the sealed plaintext from the documented layout.
+// handPlaintext builds the sealed plaintext from the documented layout,
+// bound as the test keys are.
 func handPlaintext(id uint32, notAfter uint64, secret []byte) []byte {
+	return handBound(id, notAfter, testBinding.Version, testBinding.Hash, testSeq, testAuthority, secret)
+}
+
+// handBound builds the sealed plaintext from the documented layout with
+// the given binding.
+func handBound(id uint32, notAfter, version uint64, hash ids.Hash, seq uint16, authority byte, secret []byte) []byte {
 	pt := binary.BigEndian.AppendUint32(nil, id)
 	pt = binary.BigEndian.AppendUint64(pt, notAfter)
+	pt = binary.BigEndian.AppendUint64(pt, version)
+	pt = append(pt, hash[:]...)
+	pt = binary.BigEndian.AppendUint16(pt, seq)
+	pt = append(pt, authority)
 	return append(pt, secret...)
 }
 
@@ -573,11 +669,12 @@ func handSeal(t testing.TB, version byte, pt []byte, to hpke.PublicKey, recipien
 
 // keysEqual compares two keys field by field.
 func keysEqual(a, b Key) bool {
-	return a.ID == b.ID && bytes.Equal(a.Secret, b.Secret) && a.NotAfter.Equal(b.NotAfter)
+	return a.ID == b.ID && bytes.Equal(a.Secret, b.Secret) && a.NotAfter.Equal(b.NotAfter) &&
+		a.Roster == b.Roster && a.Seq == b.Seq && a.Authority == b.Authority
 }
 
 func isZeroKey(k Key) bool {
-	return k.ID == 0 && k.Secret == nil && k.NotAfter.IsZero()
+	return k.ID == 0 && k.Secret == nil && k.NotAfter.IsZero() && k.Roster == (Binding{}) && k.Seq == 0 && k.Authority == 0
 }
 
 // adminsOf maps each member's ID to its signing public key.
@@ -813,7 +910,8 @@ func TestDeliverBoundToRecipientID(t *testing.T) {
 // values written out in this file.
 func TestDeliverWireFormat(t *testing.T) {
 	admin, m := member(t), member(t)
-	k := Key{ID: 0x01020304, Secret: testSecret(9), NotAfter: time.Unix(0x0102030405, 0).UTC()}
+	k := Key{ID: 0x01020304, Secret: testSecret(9), NotAfter: time.Unix(0x0102030405, 0).UTC(),
+		Roster: testBinding, Seq: testSeq, Authority: testAuthority}
 	blob := seal(t, k, m, admin)
 
 	if len(blob) != fmtBlobSize {
@@ -827,7 +925,7 @@ func TestDeliverWireFormat(t *testing.T) {
 	}
 	signed := append([]byte(fmtSigPrefix), blob[:fmtSigOff]...)
 	if !ed25519.Verify(pubOf(admin), signed, blob[fmtSigOff:]) {
-		t.Error("the signature is not the admin's Ed25519 signature over \"rollcall/v1/epoch\\x00\" || bytes 0..1196")
+		t.Error("the signature is not the admin's Ed25519 signature over \"rollcall/v1/epoch\\x00\" || bytes 0..1239")
 	}
 	if !sig.Verify(pubOf(admin), "epoch", blob[:fmtSigOff], blob[fmtSigOff:]) {
 		t.Error("sig.Verify(kind epoch) rejects the signature")
@@ -838,7 +936,9 @@ func TestDeliverWireFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hpke.Open with info \"rollcall/v1 epoch\" || recipient ID: %v", err)
 	}
-	want := []byte{1, 2, 3, 4, 0, 0, 0, 1, 2, 3, 4, 5}
+	want := []byte{1, 2, 3, 4, 0, 0, 0, 1, 2, 3, 4, 5, 0, 0, 0, 0, 0, 0, 0, 7}
+	want = append(want, bytes.Repeat([]byte{0x42}, 32)...)
+	want = append(want, 0, testSeq, testAuthority)
 	want = append(want, k.Secret...)
 	if !bytes.Equal(pt, want) {
 		t.Errorf("plaintext = %x, want %x", pt, want)
@@ -864,7 +964,7 @@ func TestOpenHandBuiltBlob(t *testing.T) {
 			t.Errorf("NotAfter %d: Open = %v", na, err)
 			continue
 		}
-		want := Key{ID: 77, Secret: testSecret(77), NotAfter: time.Unix(int64(na), 0).UTC()}
+		want := Key{ID: 77, Secret: testSecret(77), NotAfter: time.Unix(int64(na), 0).UTC(), Roster: testBinding, Seq: testSeq, Authority: testAuthority}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("NotAfter %d: Open = epoch %d, NotAfter %#v; want epoch 77, NotAfter %#v", na, got.ID, got.NotAfter, want.NotAfter)
 		}
@@ -892,15 +992,18 @@ func TestOpenRejectsMalformed(t *testing.T) {
 		wantOpenErr(t, blob, m, admins, ErrFormat, name)
 		wantOpenErr(t, blob, m, nil, ErrFormat, name+", no admins")
 	}
-	for _, v := range []byte{0, 2, 0xff} {
+	for _, v := range []byte{0, 1, 3, 0xff} {
 		b := bytes.Clone(good)
 		b[0] = v
 		wantOpenErr(t, b, m, admins, ErrFormat, fmt.Sprintf("version %d", v))
 	}
 	// A blob in another version, validly signed by the admin, is refused for its version.
 	pt := handPlaintext(9, uint64(testNotAfter.Unix()), testSecret(9))
-	v2 := handSeal(t, 2, pt, m.Recv.PublicKey(), m.ID, admin.ID, admin.Sign)
-	wantOpenErr(t, v2, m, admins, ErrFormat, "version 2, signed by the admin")
+	v3 := handSeal(t, 3, pt, m.Recv.PublicKey(), m.ID, admin.ID, admin.Sign)
+	wantOpenErr(t, v3, m, admins, ErrFormat, "version 3, signed by the admin")
+	// Version 1 had no binding: its layout, signed by the admin, is refused.
+	v1 := handSeal(t, 1, pt[:12], m.Recv.PublicKey(), m.ID, admin.ID, admin.Sign)
+	wantOpenErr(t, v1, m, admins, ErrFormat, "version 1 without a binding, signed by the admin")
 }
 
 // TestOpenSingleBitFlips: a single changed bit anywhere in a delivery is
@@ -1002,12 +1105,42 @@ func TestOpenRejectsBadPlaintext(t *testing.T) {
 	}
 }
 
-// TestDecodePlaintextLength: a plaintext that is not exactly 44 bytes is a
+// TestOpenRejectsUnboundKey (A1): a delivery whose key is bound to no
+// roster, or carries a sequence number or authority out of range, is
+// refused, though sealed and signed by the admin.
+func TestOpenRejectsUnboundKey(t *testing.T) {
+	admin, m := member(t), member(t)
+	admins := adminsOf(admin)
+	na := uint64(testNotAfter.Unix())
+	h := testBinding.Hash
+	for name, pt := range map[string][]byte{
+		"roster version 0":     handBound(9, na, 0, h, testSeq, 0, testSecret(9)),
+		"zero roster hash":     handBound(9, na, 7, ids.Hash{}, testSeq, 0, testSecret(9)),
+		"sequence 0":           handBound(9, na, 7, h, 0, 0, testSecret(9)),
+		"sequence past MaxSeq": handBound(9, na, 7, h, fmtMaxSeq+1, 0, testSecret(9)),
+		"authority 4":          handBound(9, na, 7, h, testSeq, 4, testSecret(9)),
+	} {
+		blob := handSeal(t, fmtVersion, pt, m.Recv.PublicKey(), m.ID, admin.ID, admin.Sign)
+		wantOpenErr(t, blob, m, admins, ErrInvalidKey, name)
+	}
+	for name, pt := range map[string][]byte{
+		"sequence MaxSeq": handBound(9, na, 7, h, fmtMaxSeq, 0, testSecret(9)),
+		"authority 3":     handBound(9, na, 7, h, 1, 3, testSecret(9)),
+		"version MaxUint": handBound(9, na, math.MaxUint64, h, 1, 0, testSecret(9)),
+	} {
+		blob := handSeal(t, fmtVersion, pt, m.Recv.PublicKey(), m.ID, admin.ID, admin.Sign)
+		if _, _, err := Open(blob, m, admins); err != nil {
+			t.Errorf("%s: Open = %v, want the key", name, err)
+		}
+	}
+}
+
+// TestDecodePlaintextLength: a plaintext that is not exactly 87 bytes is a
 // format error, never a panic or a key. A BlobSize blob cannot produce one,
 // so the decoder is called directly.
 func TestDecodePlaintextLength(t *testing.T) {
 	good := handPlaintext(9, uint64(testNotAfter.Unix()), testSecret(9))
-	for _, n := range []int{0, 1, 4, 12, 43, 45, 88} {
+	for _, n := range []int{0, 1, 4, 12, 43, 44, 45, 86, 88, 174} {
 		pt := make([]byte, n)
 		copy(pt, good)
 		if n > len(good) {
@@ -1020,7 +1153,7 @@ func TestDecodePlaintextLength(t *testing.T) {
 	}
 	k, err := decodePlaintext(good)
 	if err != nil || !keysEqual(k, testKey(9, 9)) {
-		t.Errorf("44-byte plaintext: decodePlaintext = %v, want the key", err)
+		t.Errorf("87-byte plaintext: decodePlaintext = %v, want the key", err)
 	}
 	clear(good)
 	if !bytes.Equal(k.Secret, testSecret(9)) {
@@ -1065,7 +1198,7 @@ func TestOpenPlaintextSweep(t *testing.T) {
 			t.Errorf("case %d (epoch %d, NotAfter %d): Open = %v, want the key", i, id, na, err)
 		case valid:
 			accepted++
-			want := Key{ID: id, Secret: secret, NotAfter: time.Unix(int64(na), 0).UTC()}
+			want := Key{ID: id, Secret: secret, NotAfter: time.Unix(int64(na), 0).UTC(), Roster: testBinding, Seq: testSeq, Authority: testAuthority}
 			if !reflect.DeepEqual(got, want) {
 				t.Errorf("case %d: Open = epoch %d NotAfter %v, want epoch %d NotAfter %v", i, got.ID, got.NotAfter, id, want.NotAfter)
 			}
@@ -1092,7 +1225,7 @@ func TestNotAfterRoundTrip(t *testing.T) {
 		{time.Unix(1, 0), time.Unix(1, 0).UTC()},
 		{time.Unix(fmtMaxUnix, 0), time.Unix(fmtMaxUnix, 0).UTC()},
 	} {
-		k := Key{ID: 1, Secret: testSecret(1), NotAfter: c.in}
+		k := Key{ID: 1, Secret: testSecret(1), NotAfter: c.in, Roster: testBinding, Seq: testSeq, Authority: testAuthority}
 		got, _, err := Open(seal(t, k, m, admin), m, admins)
 		if err != nil || !reflect.DeepEqual(got.NotAfter, c.want) {
 			t.Errorf("NotAfter %v: opened as %#v (%v), want %#v", c.in, got.NotAfter, err, c.want)
@@ -1147,6 +1280,12 @@ func TestSealRejectsBadInput(t *testing.T) {
 		"33-byte secret":         {with(func(a *args) { a.k.Secret = append(testSecret(9), 1) }), ErrInvalidKey},
 		"all-zero secret":        {with(func(a *args) { a.k.Secret = make([]byte, 32) }), ErrInvalidKey},
 		"zero NotAfter":          {with(func(a *args) { a.k.NotAfter = time.Time{} }), ErrInvalidKey},
+		"no binding":             {with(func(a *args) { a.k.Roster = Binding{} }), ErrInvalidKey},
+		"roster version 0":       {with(func(a *args) { a.k.Roster.Version = 0 }), ErrInvalidKey},
+		"zero roster hash":       {with(func(a *args) { a.k.Roster.Hash = ids.Hash{} }), ErrInvalidKey},
+		"sequence 0":             {with(func(a *args) { a.k.Seq = 0 }), ErrInvalidKey},
+		"sequence past MaxSeq":   {with(func(a *args) { a.k.Seq = fmtMaxSeq + 1 }), ErrInvalidKey},
+		"authority 4":            {with(func(a *args) { a.k.Authority = 4 }), ErrInvalidKey},
 		"nil recipient key":      {with(func(a *args) { a.to = nil }), ErrRecipientKey},
 		"X25519 recipient key":   {with(func(a *args) { a.to = dh.PublicKey() }), ErrRecipientKey},
 		"ML-KEM-768 only":        {with(func(a *args) { a.to = pq.PublicKey() }), ErrRecipientKey},
@@ -1262,9 +1401,9 @@ func TestErrorsCarryNoKeyBytes(t *testing.T) {
 	var r Ring
 	note(r.Install(Key{ID: 1, Secret: append(bytes.Clone(canary), 1)}, t0))
 	mustInstall(t, &r, Key{ID: 5, Secret: canary}, t0)
-	note(r.Install(Key{ID: 4, Secret: canary}, t0))
+	note(r.Install(Key{ID: 5, Secret: testSecret(0xc5)}, t0))
 
-	k := Key{ID: 1, Secret: canary, NotAfter: testNotAfter}
+	k := Key{ID: 1, Secret: canary, NotAfter: testNotAfter, Roster: testBinding, Seq: testSeq, Authority: testAuthority}
 	lowRaw := m.Recv.PublicKey().Bytes()
 	clear(lowRaw[len(lowRaw)-32:])
 	lowOrder, err := hpke.MLKEM768X25519().NewPublicKey(lowRaw)
@@ -1273,7 +1412,7 @@ func TestErrorsCarryNoKeyBytes(t *testing.T) {
 	}
 	_, err = Seal(k, lowOrder, m.ID, admin.ID, admin.Sign)
 	note(err)
-	_, err = Seal(Key{ID: 1, Secret: canary[:31], NotAfter: testNotAfter}, m.Recv.PublicKey(), m.ID, admin.ID, admin.Sign)
+	_, err = Seal(Key{ID: 1, Secret: canary[:31], NotAfter: testNotAfter, Roster: testBinding, Seq: testSeq}, m.Recv.PublicKey(), m.ID, admin.ID, admin.Sign)
 	note(err)
 	_, err = Seal(k, m.Recv.PublicKey(), m.ID, admin.ID, admin.Sign[:63])
 	note(err)

@@ -720,8 +720,8 @@ func TestRemoveRotatesAndExcludes(t *testing.T) {
 	var newID uint32
 	with(a, func() any {
 		newID = a.current().ID
-		if newID != (2<<2)|0 {
-			t.Errorf("new epoch ID %d, want %d (sequence 2, primary)", newID, (2<<2)|0)
+		if want := epoch.IDOf(a.binding(), 1, 0); newID != want {
+			t.Errorf("new epoch ID %d, want %d (roster version 2, sequence 1, primary)", newID, want)
 		}
 		if a.deliveries[g.ids[2].ID] != nil {
 			t.Error("a delivery to the removed member is planned")
@@ -878,7 +878,7 @@ func TestEpochRotatesAfter30Days(t *testing.T) {
 		}
 	}
 	g.run(15 * sec)
-	want := uint32(2<<2 | 0)
+	want := with(g.nodes[0], func() uint32 { return epoch.IDOf(g.nodes[0].binding(), 2, 0) }) // roster version 1, sequence 2, primary
 	for i, n := range g.nodes {
 		if id := with(n, func() uint32 { return n.current().ID }); id != want {
 			t.Fatalf("r%02d is on epoch %d, want %d", i+1, id, want)

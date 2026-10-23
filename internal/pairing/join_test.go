@@ -379,7 +379,7 @@ func TestJoinResponseWrongAdmin(t *testing.T) {
 
 	// The genuine response, re-signed by another key.
 	n := len(resp) - fmtSigSize
-	rewrapped := append([]byte{1}, pubOf(f.stranger)...)
+	rewrapped := append([]byte{fmtRespVersion}, pubOf(f.stranger)...)
 	rewrapped = append(rewrapped, resp[fmtRespHeader:n]...)
 	rewrapped = append(rewrapped, ed25519.Sign(f.stranger.Sign, append([]byte("rollcall/v1/join-response\x00"), rewrapped...))...)
 	_, _, _, err = OpenJoinResponse(c, rewrapped, f.joiner)
@@ -604,8 +604,8 @@ func TestSecretsOnlyForSender(t *testing.T) {
 			t.Errorf("%s: roster differs", name)
 		}
 		pt := handOpenResponse(t, resp, f.joiner, pubOf(f.admin))
-		if pt[32+44] != 0 || bytes.Contains(pt, []byte(canary)) {
-			t.Errorf("%s: the sealed payload carries the token (secrets flag %d)", name, pt[32+44])
+		if pt[32+fmtEpochSize] != 0 || bytes.Contains(pt, []byte(canary)) {
+			t.Errorf("%s: the sealed payload carries the token (secrets flag %d)", name, pt[32+fmtEpochSize])
 		}
 	}
 
@@ -795,7 +795,7 @@ func TestJoinResponsePayloadStrict(t *testing.T) {
 	if err := open(good); err != nil {
 		t.Fatalf("good payload: %v", err)
 	}
-	flagAt := 32 + 44
+	flagAt := 32 + fmtEpochSize
 	tokenLenAt := flagAt + 1 + 8
 	withByte := func(i int, v byte) []byte {
 		p := bytes.Clone(good)
@@ -822,7 +822,7 @@ func TestJoinResponsePayloadStrict(t *testing.T) {
 	late := handPayload(binding, epoch.Key{ID: 1, Secret: bytes.Repeat([]byte{1}, 32), NotAfter: time.Unix(fmtMaxNotAfter+1, 0)}, nil, s2)
 	wantErr(t, "NotAfter after 9999", open(late), ErrEpochKey)
 	// A token length that runs past the end of the payload.
-	short := handPayload(binding, f.ek, nil, s2)[:32+44]
+	short := handPayload(binding, f.ek, nil, s2)[:32+fmtEpochSize]
 	short = append(short, 1, 0, 0, 0, 0, 0, 0, 0, 5, MaxTokenLen)
 	short = append(short, bytes.Repeat([]byte{'A'}, 100)...)
 	wantErr(t, "token longer than what is left", open(short), ErrResponseFormat)
@@ -979,3 +979,80 @@ func TestErrorsCarryNoSecrets(t *testing.T) {
 
 // jsonOf encodes r as the roster package does, without its checks.
 func jsonOf(r roster.Roster) ([]byte, error) { return json.Marshal(r) }
+
+// TestJoinKeyBoundToRoster (A1): the first epoch key a router receives is
+// bound to the roster it receives with it, its version and hash. A key
+// without a binding is bound to that roster by NewJoinResponse; a key
+// bound to another roster is refused on both sides; a sequence number or
+// authority out of range is refused when it is read.
+func TestJoinKeyBoundToRoster(t *testing.T) {
+	f := newFixture(t)
+	c, resp, s2 := f.pair(t, nil)
+	_, ek, _, err := OpenJoinResponse(c, resp, f.joiner)
+	if err != nil {
+		t.Fatalf("OpenJoinResponse: %v", err)
+	}
+	want := epoch.Binding{Version: 2, Hash: s2.Hash()}
+	if ek.Roster != want || ek.Seq != 1 || ek.Authority != 0 {
+		t.Fatalf("the joiner's key is bound to %+v, seq %d, authority %d; want version 2 with the roster's hash, seq 1, authority 0", ek.Roster, ek.Seq, ek.Authority)
+	}
+
+	// A key the admin bound to the roster it sends goes through as it is.
+	inv, c2 := f.open(t)
+	req := f.accepted(t, inv, c2)
+	bound := f.ek
+	bound.Roster, bound.Seq, bound.Authority = want, 5, 1
+	resp, err = NewJoinResponse(req, s2, bound, nil, f.admin)
+	if err != nil {
+		t.Fatalf("NewJoinResponse with a key bound to the roster: %v", err)
+	}
+	if _, ek, _, err := OpenJoinResponse(c2, resp, f.joiner); err != nil || ek.Roster != want || ek.Seq != 5 || ek.Authority != 1 {
+		t.Fatalf("OpenJoinResponse of a bound key: %v, %+v seq %d authority %d", err, ek.Roster, ek.Seq, ek.Authority)
+	}
+
+	// The admin refuses to send a key bound to another roster, or with a
+	// sequence number or authority out of range.
+	inv, c3 := f.open(t)
+	req = f.accepted(t, inv, c3)
+	key := func(b epoch.Binding, seq uint16, authority uint8) epoch.Key {
+		return epoch.Key{ID: 1, Secret: f.ek.Secret, NotAfter: f.ek.NotAfter, Roster: b, Seq: seq, Authority: authority}
+	}
+	for name, k := range map[string]epoch.Key{
+		"bound to the roster before": key(epoch.Binding{Version: 1, Hash: f.s1.Hash()}, 1, 0),
+		"bound to another hash":      key(epoch.Binding{Version: 2, Hash: f.s1.Hash()}, 1, 0),
+		"sequence past MaxSeq":       key(want, epoch.MaxSeq+1, 0),
+		"authority 4":                key(want, 1, 4),
+	} {
+		if _, err := NewJoinResponse(req, s2, k, nil, f.admin); !errors.Is(err, ErrEpochKey) {
+			t.Errorf("NewJoinResponse, key %s: %v, want ErrEpochKey", name, err)
+		}
+	}
+
+	// The joiner refuses a key bound to another roster than the one in the
+	// response, or out of range, though sealed and signed by the admin.
+	binding := handBinding(t, c3.Secret)
+	open := func(k epoch.Key) error {
+		p := handPayload(binding, k, nil, s2)
+		_, _, _, err := OpenJoinResponse(c3, handResponse(t, f.admin.Sign, pubOf(f.admin), f.joiner, p), f.joiner)
+		return err
+	}
+	if err := open(f.ek); err != nil {
+		t.Fatalf("a hand-built payload bound to its roster: %v", err)
+	}
+	for name, k := range map[string]epoch.Key{
+		"bound to the roster before": key(epoch.Binding{Version: 1, Hash: f.s1.Hash()}, 1, 0),
+		"bound to version 3":         key(epoch.Binding{Version: 3, Hash: s2.Hash()}, 1, 0),
+		"bound to another hash":      key(epoch.Binding{Version: 2, Hash: f.s1.Hash()}, 1, 0),
+		"sequence past MaxSeq":       key(want, epoch.MaxSeq+1, 0),
+		"authority 4":                key(want, 1, 4),
+	} {
+		wantErr(t, name, open(k), ErrEpochKey)
+	}
+	// handPayload writes sequence 1 for a key without one: patch 0 into a
+	// good payload.
+	p := handPayload(binding, f.ek, nil, s2)
+	at := 32 + 4 + 8 + 8 + 32
+	p[at], p[at+1] = 0, 0
+	_, _, _, err = OpenJoinResponse(c3, handResponse(t, f.admin.Sign, pubOf(f.admin), f.joiner, p), f.joiner)
+	wantErr(t, "sequence 0", err, ErrEpochKey)
+}

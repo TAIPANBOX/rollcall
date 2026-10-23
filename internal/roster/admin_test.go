@@ -553,6 +553,65 @@ func TestTakeoverNeedsTenMinutes(t *testing.T) {
 	}
 }
 
+// TestConfirmationNeedsADay (A4): a confirmation signed by an admin is
+// accepted only after a day without hearing the primary it replaced.
+func TestConfirmationNeedsADay(t *testing.T) {
+	if ConfirmAfter != 24*time.Hour {
+		t.Fatalf("ConfirmAfter = %v, want 24h", ConfirmAfter)
+	}
+	now := time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name string
+		last time.Time
+		want bool
+	}{
+		{"heard 23h59m ago", now.Add(-(23*time.Hour + 59*time.Minute)), false},
+		{"heard 24h less 1ns ago", now.Add(-24*time.Hour + 1), false},
+		{"heard 24h ago", now.Add(-24 * time.Hour), true},
+		{"heard two days ago", now.Add(-48 * time.Hour), true},
+		{"heard 11m ago, past the takeover window", now.Add(-11 * time.Minute), false},
+		{"never heard", time.Time{}, true},
+		{"clock skew: heard a day in the future", now.Add(24 * time.Hour), false},
+	}
+	for _, c := range cases {
+		if got := AcceptConfirmation(c.last, now); got != c.want {
+			t.Errorf("%s: AcceptConfirmation = %v, want %v", c.name, got, c.want)
+		}
+	}
+	start := time.Now()
+	if AcceptConfirmation(start, start.Add(24*time.Hour-time.Nanosecond)) {
+		t.Error("monotonic: 24h less 1ns accepted")
+	}
+	if !AcceptConfirmation(start, start.Add(24*time.Hour)) {
+		t.Error("monotonic: 24h refused")
+	}
+}
+
+// TestConfirmedByAdmin (A4): which links are a confirmation an admin
+// signed, which the day of silence holds back.
+func TestConfirmedByAdmin(t *testing.T) {
+	c := newTakeoverChain(t)
+	r3, s3 := c.confirmed(t)
+	if !ConfirmedByAdmin(c.t2, s3, r3) {
+		t.Error("the backup's confirmation of its takeover is not one")
+	}
+	if ConfirmedByAdmin(c.t2, c.st2, c.t2) {
+		t.Error("an unconfirmed takeover counts as a confirmation")
+	}
+	r4 := after(r3, s3, func(r *Roster) { addMember(r) })
+	if ConfirmedByAdmin(r3, mustSign(t, r4, c.B), r4) {
+		t.Error("a roster that carries a confirmation forward counts as a new one")
+	}
+	if ConfirmedByAdmin(c.t2, mustSignRecovery(t, r3, recoveryKey), r3) {
+		t.Error("a confirmation signed with the recovery key counts as an admin's")
+	}
+	both := takeoverOf(c.r1, c.s1, c.B.ID)
+	both.OwnerConfirmed = true
+	if !ConfirmedByAdmin(c.r1, mustSign(t, both, c.B), both) {
+		t.Error("a takeover and its confirmation in one roster is not one")
+	}
+}
+
 // TestActingAdminOrder is the brief's test: the first live admin in the
 // admin list acts, ordinary members never do.
 func TestActingAdminOrder(t *testing.T) {
@@ -607,13 +666,18 @@ type candidate struct {
 	r    Roster
 }
 
-// preferBoth runs Prefer in both orders and requires want each time.
+// one returns c as a branch of one roster: c is both its first roster and
+// its tip.
+func one(c candidate) Branch { return Branch{First: c.s, Tip: c.s, Version: c.r.Version} }
+
+// preferBoth runs Prefer in both orders, on x and y as branches of one
+// roster, and requires want each time.
 func preferBoth(t *testing.T, what string, x, y candidate, common Roster, want candidate) {
 	t.Helper()
-	if got := Prefer(x.s, y.s, x.r, y.r, common); !reflect.DeepEqual(got, want.s) {
+	if got := Prefer(one(x), one(y), common).Tip; !reflect.DeepEqual(got, want.s) {
 		t.Errorf("%s: Prefer(%s, %s) did not pick %s", what, x.name, y.name, want.name)
 	}
-	if got := Prefer(y.s, x.s, y.r, x.r, common); !reflect.DeepEqual(got, want.s) {
+	if got := Prefer(one(y), one(x), common).Tip; !reflect.DeepEqual(got, want.s) {
 		t.Errorf("%s: Prefer(%s, %s) did not pick %s", what, y.name, x.name, want.name)
 	}
 }
@@ -776,7 +840,7 @@ func TestPreferHashAtEqualAuthority(t *testing.T) {
 		preferBoth(t, "two forks by "+name, x, y, c.r1, want)
 	}
 	same := forkOf(t, "same", c.r1, c.s1, &P, 0, nil)
-	if got := Prefer(same.s, same.s, same.r, same.r, c.r1); !reflect.DeepEqual(got, same.s) {
+	if got := Prefer(one(same), one(same), c.r1).Tip; !reflect.DeepEqual(got, same.s) {
 		t.Error("Prefer of a roster with itself did not return it")
 	}
 }
@@ -830,7 +894,7 @@ func TestPreferIsAnOrder(t *testing.T) {
 	}
 	for i, x := range cands {
 		for _, y := range cands[i:] {
-			p, q := Prefer(x.s, y.s, x.r, y.r, c.r1), Prefer(y.s, x.s, y.r, x.r, c.r1)
+			p, q := Prefer(one(x), one(y), c.r1).Tip, Prefer(one(y), one(x), c.r1).Tip
 			if !reflect.DeepEqual(p, q) {
 				t.Errorf("Prefer(%s, %s) differs from Prefer(%s, %s)", x.name, y.name, y.name, x.name)
 			}
@@ -845,7 +909,7 @@ func TestPreferIsAnOrder(t *testing.T) {
 		rng.Shuffle(len(order), func(i, j int) { order[i], order[j] = order[j], order[i] })
 		win := order[0]
 		for _, x := range order[1:] {
-			s := Prefer(win.s, x.s, win.r, x.r, c.r1)
+			s := Prefer(one(win), one(x), c.r1).Tip
 			if reflect.DeepEqual(s, x.s) {
 				win = x
 			}
@@ -855,4 +919,54 @@ func TestPreferIsAnOrder(t *testing.T) {
 		}
 	}
 	t.Logf("winner of %d candidates: %s", len(cands), want.name)
+}
+
+// branchOf returns the branch from first to tip, both candidates.
+func branchOf(first, tip candidate) Branch {
+	return Branch{First: first.s, Tip: tip.s, Version: tip.r.Version}
+}
+
+// TestPreferVersionFromTheTips (A2): at equal authority the branch whose
+// tip has the higher version wins, even when its first roster has the
+// higher hash. The first rosters of two branches are always one version
+// past common, so a version read from them could never decide.
+func TestPreferVersionFromTheTips(t *testing.T) {
+	c := newTakeoverChain(t)
+	P := c.P
+	for k := 0; k < 64; k++ {
+		long1 := forkOf(t, "long v2", c.r1, c.s1, &P, 1000+k, nil)
+		short := forkOf(t, "short v2", c.r1, c.s1, &P, 2000+k, nil)
+		if !higherHash(long1.s, short.s) {
+			continue
+		}
+		long3 := chainOf(t, "long v4", long1.r, long1.s, &P, 2)
+		long, shortB := branchOf(long1, long3), one(short)
+		for _, got := range []Branch{Prefer(long, shortB, c.r1), Prefer(shortB, long, c.r1)} {
+			if !reflect.DeepEqual(got, long) {
+				t.Fatalf("the primary's branch at version %d lost to the primary's branch at version %d", long.Version, shortB.Version)
+			}
+		}
+		return
+	}
+	t.Fatal("no fork pair with the hashes against the version in 64 tries")
+}
+
+// TestPreferAuthorityFromTheFirstRoster (A2, the ruling of task 18): a
+// branch belongs to whoever started it. The primary starts one and makes O
+// backup on it, and O signs its tip; the backup starts the other, longer
+// one and signs its tip. The primary's branch wins: judged by the tips, O,
+// no admin of the common roster, would rank below the backup.
+func TestPreferAuthorityFromTheFirstRoster(t *testing.T) {
+	c := newTakeoverChain(t)
+	P, B, O := c.P, c.B, c.O
+	q2 := forkOf(t, "primary makes O backup", c.r1, c.s1, &P, 0, func(r *Roster) { setAdmins(r, P.ID, O.ID) })
+	q3 := forkOf(t, "O v3", q2.r, q2.s, &O, 0, nil)
+	b2 := forkOf(t, "backup v2", c.r1, c.s1, &B, 0, nil)
+	b4 := chainOf(t, "backup v4", b2.r, b2.s, &B, 2)
+	byP, byB := branchOf(q2, q3), branchOf(b2, b4)
+	for _, got := range []Branch{Prefer(byP, byB, c.r1), Prefer(byB, byP, c.r1)} {
+		if !reflect.DeepEqual(got, byP) {
+			t.Fatal("the branch the primary started, its tip signed by a backup it appointed, lost to the backup's longer branch")
+		}
+	}
 }

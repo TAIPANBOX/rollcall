@@ -53,7 +53,7 @@ const (
 	reqFixed     = memberIDSize + ed25519.PublicKeySize + recvKeySize
 	minRequest   = reqHeader + reqFixed + 1 + tagSize
 
-	respVersion  = 1
+	respVersion  = 2
 	respKind     = "join-response"
 	respInfo     = "rollcall/v1 join-response"
 	encSize      = mlkem.CiphertextSize768 + 32 // X-Wing: ML-KEM-768 ciphertext and an X25519 point
@@ -61,7 +61,9 @@ const (
 	respOverhead = respHeader + encSize + tagSize + ed25519.SignatureSize
 
 	bindingSize = 32
-	epochSize   = 4 + 8 + epoch.SecretSize
+	// epochSize is the epoch key in the payload: ID, NotAfter, the roster it
+	// is bound to (version and hash), sequence number, authority, secret.
+	epochSize = 4 + 8 + 8 + len(ids.Hash{}) + 2 + 1 + epoch.SecretSize
 	// The payload's fixed part: binding, epoch key, secrets flag, roster
 	// signer and roster signature. The roster body follows, at least 1 byte.
 	payloadFixed = bindingSize + epochSize + 1 + memberIDSize + ed25519.SignatureSize
@@ -112,7 +114,9 @@ var (
 	// return, so no code was burned for it.
 	ErrNotAccepted = errors.New("pairing: the join request was not accepted by an Inviter")
 	// ErrEpochKey reports an epoch key whose secret is not 32 bytes or is
-	// all zero, or whose NotAfter is outside 1970..9999.
+	// all zero, whose NotAfter is outside 1970..9999, whose sequence number
+	// or authority is out of range, or that is not bound to the roster the
+	// response carries (security spec 5.5).
 	ErrEpochKey = errors.New("pairing: invalid epoch key")
 	// ErrToken reports a bot token that is empty, longer than MaxTokenLen,
 	// or has a byte outside A-Z, a-z, 0-9, ':', '_' and '-'.
@@ -329,7 +333,7 @@ func binding(secret [16]byte) ([bindingSize]byte, error) {
 //
 // The response is
 //
-//	version (1) = 1 | admin's Ed25519 public key (32) | HPKE ciphertext | signature (64)
+//	version (1) = 2 | admin's Ed25519 public key (32) | HPKE ciphertext | signature (64)
 //
 // The ciphertext is hpke.Seal, base mode, to req.RecvPub with HKDF-SHA256
 // and ChaCha20-Poly1305 and the info "rollcall/v1 join-response" followed by
@@ -337,21 +341,29 @@ func binding(secret [16]byte) ([bindingSize]byte, error) {
 // The signature is sig.Sign(admin, "join-response", everything before it).
 // The payload is
 //
-//	binding (32) | epoch ID (4) | NotAfter (8, Unix seconds) | epoch secret (32) |
+//	binding (32) | epoch ID (4) | NotAfter (8, Unix seconds) |
+//	roster version (8) | roster hash (32) | sequence number (2) | authority (1) |
+//	epoch secret (32) |
 //	secrets (1): 0, or 1 followed by chat ID (8) | token length (1) | token |
 //	roster signer ID (16) | roster signature (64) | roster body (the rest)
 //
 // integers big endian, with the binding hkdf.Key(sha256.New, code secret,
 // nil, "rollcall/v1 join-binding", 32). The epoch key travels in the payload
 // itself rather than as a separate epoch.Seal delivery: the payload is
-// already sealed to the router and signed by the admin.
+// already sealed to the router and signed by the admin. It is bound to the
+// roster the response carries, its version and roster.Signed.Hash: a key
+// that carries no binding (ek.Roster zero, as the first key of a group
+// before it is stored) is bound to r here, with sequence number 1 if it has
+// none; one bound to another roster is refused. Version 1 responses, whose
+// key carried no binding, are refused.
 //
 // It returns, cheapest first: ErrInvalid for an unusable admin identity or
 // one whose fingerprint is not the code's; ErrNotAccepted for a request that
 // Inviter.Accept did not return; ErrRosterAnchor for a roster that
 // OpenJoinResponse would refuse (signed by anyone but admin, as an admin of
 // r, with a valid signature, passing Check); ErrNotInRoster if r does not
-// hold req.ID with req's keys; ErrEpochKey; ErrToken for a token that is
+// hold req.ID with req's keys; ErrEpochKey, also for a key bound to another
+// roster than r; ErrToken for a token that is
 // sent and invalid; ErrTooLarge. A token for a router that is not a sender
 // is left out without an error.
 func NewJoinResponse(req JoinRequest, r roster.Signed, ek epoch.Key, token *Secrets, admin *identity.Identity) ([]byte, error) {
@@ -378,6 +390,17 @@ func NewJoinResponse(req JoinRequest, r roster.Signed, ek epoch.Key, token *Secr
 	}
 	if err := checkEpochKey(ek.Secret, ek.NotAfter.Unix()); err != nil {
 		return nil, err
+	}
+	bound := epoch.Binding{Version: rr.Version, Hash: r.Hash()}
+	switch {
+	case ek.Roster == (epoch.Binding{}):
+		ek.Roster = bound
+		ek.Seq = max(ek.Seq, 1)
+	case ek.Roster != bound:
+		return nil, ErrEpochKey
+	}
+	if !validSeq(ek.Seq, ek.Authority) {
+		return nil, ErrEpochKey
 	}
 	var sec *Secrets
 	if token != nil && slices.Contains(m.Roles, roster.RoleSender) {
@@ -426,6 +449,10 @@ func encodePayload(b [bindingSize]byte, ek epoch.Key, sec *Secrets, r roster.Sig
 	p = append(p, b[:]...)
 	p = binary.BigEndian.AppendUint32(p, ek.ID)
 	p = binary.BigEndian.AppendUint64(p, uint64(ek.NotAfter.Unix()))
+	p = binary.BigEndian.AppendUint64(p, ek.Roster.Version)
+	p = append(p, ek.Roster.Hash[:]...)
+	p = binary.BigEndian.AppendUint16(p, ek.Seq)
+	p = append(p, ek.Authority)
 	p = append(p, ek.Secret...)
 	if sec == nil {
 		p = append(p, 0)
@@ -458,14 +485,21 @@ func decodePayload(p []byte) (payload, error) {
 	out.binding = bytes.Clone(p[:bindingSize])
 	p = p[bindingSize:]
 	notAfter := int64(binary.BigEndian.Uint64(p[4:12]))
-	if err := checkEpochKey(p[12:epochSize], notAfter); err != nil {
+	secret := p[epochSize-epoch.SecretSize : epochSize]
+	if err := checkEpochKey(secret, notAfter); err != nil {
 		return payload{}, err
 	}
-	out.key = epoch.Key{
-		ID:       binary.BigEndian.Uint32(p[0:4]),
-		Secret:   bytes.Clone(p[12:epochSize]),
-		NotAfter: time.Unix(notAfter, 0).UTC(),
+	k := epoch.Key{ID: binary.BigEndian.Uint32(p[0:4]), NotAfter: time.Unix(notAfter, 0).UTC()}
+	k.Roster.Version = binary.BigEndian.Uint64(p[12:20])
+	b := p[20:]
+	copy(k.Roster.Hash[:], b[:len(k.Roster.Hash)])
+	b = b[len(k.Roster.Hash):]
+	k.Seq, k.Authority = binary.BigEndian.Uint16(b[0:2]), b[2]
+	if !validSeq(k.Seq, k.Authority) {
+		return payload{}, ErrEpochKey
 	}
+	k.Secret = bytes.Clone(secret)
+	out.key = k
 	p = p[epochSize:]
 	switch p[0] {
 	case 0:
@@ -511,9 +545,10 @@ func decodePayload(p []byte) (payload, error) {
 // ErrToken); the binding to c (ErrBinding); the roster (ErrRosterAnchor),
 // which roster.Signed.VerifyAnchored accepts whatever its version, but only
 // if it is signed by that same key, the key belongs to an admin of that
-// roster, and the roster passes Check; that the roster holds self with its own keys
-// (ErrNotInRoster); and that secrets come only to a sender
-// (ErrSecretsNotSender). On error every value returned is zero.
+// roster, and the roster passes Check; that the epoch key is bound to that
+// roster, its version and hash (ErrEpochKey); that the roster holds self
+// with its own keys (ErrNotInRoster); and that secrets come only to a
+// sender (ErrSecretsNotSender). On error every value returned is zero.
 func OpenJoinResponse(c Code, blob []byte, self *identity.Identity) (roster.Signed, epoch.Key, *Secrets, error) {
 	if c.check() != nil {
 		return roster.Signed{}, epoch.Key{}, nil, ErrInvalid
@@ -550,6 +585,9 @@ func OpenJoinResponse(c Code, blob []byte, self *identity.Identity) (roster.Sign
 	if err != nil {
 		return roster.Signed{}, epoch.Key{}, nil, fmt.Errorf("%w: %w", ErrRosterAnchor, err)
 	}
+	if p.key.Roster != (epoch.Binding{Version: r.Version, Hash: p.roster.Hash()}) {
+		return roster.Signed{}, epoch.Key{}, nil, ErrEpochKey
+	}
 	m := findMember(&r, self.ID)
 	if m == nil || !bytes.Equal(m.SignPub, selfPub) || !bytes.Equal(m.RecvPub, self.Recv.PublicKey().Bytes()) {
 		return roster.Signed{}, epoch.Key{}, nil, ErrNotInRoster
@@ -584,6 +622,12 @@ func checkEpochKey(secret []byte, notAfter int64) error {
 		return ErrEpochKey
 	}
 	return nil
+}
+
+// validSeq reports whether seq and authority are a key's sequence number
+// and authority as epoch.Seal would carry them.
+func validSeq(seq uint16, authority uint8) bool {
+	return seq >= 1 && seq <= epoch.MaxSeq && authority <= epoch.MaxAuthority
 }
 
 // validToken reports whether t is 1 to MaxTokenLen bytes from A-Z, a-z,
