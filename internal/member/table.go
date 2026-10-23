@@ -217,7 +217,8 @@ type Config struct {
 // accepted, and New loads them: after a restart of the local member a packet
 // of a peer's older boot is refused, and so is one of the stored boot with a
 // counter at or below the stored one, which is how far a recording can still
-// be replayed (at most a minute of heartbeats). A packet of the stored boot
+// be replayed (at most a minute of heartbeats after a power cut; none after a
+// stop, which writes the file at once with Flush). A packet of the stored boot
 // number with another boot ID is a duplicate identity, as below.
 //
 // A peer state file that cannot be read or decoded does not stop New: the
@@ -1191,6 +1192,15 @@ func decodeState(data []byte, states map[ids.MemberID]bootRun) error {
 	}
 	return nil
 }
+
+// Flush writes the peer state file at once, whatever the store's Flusher
+// last did, and returns the store's error. The Flusher writes it at most
+// once a minute, so without Flush a stop would leave the replay floors of a
+// minute before, and a restart would take a recording of that minute
+// again; the node calls it with everything else it keeps on flash, on Stop
+// and on GoingDown. A mark the Flusher holds stays: its next turn writes
+// the same again.
+func (t *Table) Flush() error { return t.writeState() }
 
 // writeState stores the boot each current member's packets were last
 // accepted from. The store's Flusher calls it.

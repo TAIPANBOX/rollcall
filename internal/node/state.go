@@ -289,12 +289,16 @@ func returnOfRestored(before, h member.Heartbeat, e events.Event) events.Event {
 }
 
 // flushAllLocked writes at once everything the node keeps on flash: the
-// history, the fork proofs, the state file and the alive file.
+// history, the fork proofs, the state file, the peers' replay floors
+// (member.Table.Flush) and the alive file.
 func (n *Node) flushAllLocked(now clock.Stamp) error {
 	if n.flusher == nil {
 		return nil
 	}
 	err := n.writeHistory()
+	if terr := n.table.Flush(); err == nil {
+		err = terr
+	}
 	if n.rec.bootSeen {
 		if !n.goingDown {
 			n.aliveAt = n.localStamp(now)

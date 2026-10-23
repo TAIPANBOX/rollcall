@@ -1403,6 +1403,53 @@ func TestPeerStatePersisted(t *testing.T) {
 	}
 }
 
+// TestFlushWritesTheFloorsNow (N5): Flush writes the peer state at once,
+// within the Flusher's minute, so a stop leaves on disk the boot and
+// counter of the last packet accepted from each peer, the replay floors a
+// restart refuses below; a periodic write before it would leave a minute of
+// recordings replayable.
+func TestFlushWritesTheFloorsNow(t *testing.T) {
+	ms := members(3)
+	r02, r03 := ms[1], ms[2]
+	f := newFixtureOf(t, ms, start)
+	stored := func() string {
+		return fmt.Sprintf(`{"version":1,"peers":[{"id":"%s","boot_seq":1,"boot":"%s","counter":%d},{"id":"%s","boot_seq":1,"boot":"%s","counter":%d}]}`+"\n",
+			r02.id.ID, bootID(1), f.sim(r02).counter, r03.id.ID, bootID(1), f.sim(r03).counter)
+	}
+	f.mustSend(r02, at(start+s))
+	f.mustSend(r03, at(start+s))
+	f.tick(at(start + s)) // the Flusher's write
+	for d := 5 * s; d <= 30*s; d += 5 * s {
+		f.mustSend(r02, at(start+d))
+		f.mustSend(r03, at(start+d))
+		f.tick(at(start + d))
+	}
+	if data, _ := f.st.ReadFile(peerStateFile); string(data) == stored() {
+		t.Fatal("the Flusher wrote within its minute: the case did not happen")
+	}
+	if err := f.tab.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if data, _ := f.st.ReadFile(peerStateFile); string(data) != stored() {
+		t.Fatalf("after Flush stored\n%s\nwant\n%s", data, stored())
+	}
+	// A restart refuses what was accepted before the stop.
+	f.restart(start + 40*s)
+	old := f.beat(r02)
+	old.Counter = f.sim(r02).counter - 1
+	if _, err := f.tab.Observe(testEpoch, enc(t, old, r02), at(start+41*s)); !errors.Is(err, ErrReplay) {
+		t.Errorf("a heartbeat accepted before the stop, replayed after the restart: %v, want ErrReplay", err)
+	}
+	// A failed write is reported.
+	if err := os.Chmod(f.dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(f.dir, 0o700)
+	if err := f.tab.Flush(); err == nil {
+		t.Error("Flush into a store that refuses writes reported no error")
+	}
+}
+
 func TestPeerStateFileRejected(t *testing.T) {
 	ms := members(3)
 	id2 := ms[1].id.ID.String()
