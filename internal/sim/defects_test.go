@@ -38,7 +38,7 @@ var knownDefects = map[string]string{
 		"flushed), and an alarm not yet delivered when its router restarts is never queued again, because its own alarm " +
 		"record, read back, marks it raised; so the equivocator shows up, or its alarm never reaches the chat (sweep I3)",
 	"D8": "the chat tells a silence 45 to 55 s after a power cut (detection at 30 s, then the 20 s coalescing settle); " +
-		"design goal 2 and the scenario ask for 30 s and one probe cycle (TestPowerLossReported)",
+		"the bound is 30 s of detection and 15 s (TestPowerLossReported)",
 	"D9": "a router whose own link was cut records every other router silent; once the link is back the chat gets 'r01, r02 " +
 		"stopped answering, confirmed by 0 of 2' and an update per router: one link loss, six messages (TestMeshNodeLinkLoss)",
 	"D14": "a router that restarts while a peer is away forgets the peer (its last boot and version live in RAM only): it " +

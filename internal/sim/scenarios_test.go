@@ -33,6 +33,9 @@ const (
 	settle = 20 * time.Second
 	// probePeriod is the internet probe period; lost after 3 failures.
 	probePeriod = 10 * time.Second
+	// chatAfter is how long after detection the chat may tell a silence:
+	// the coalescing settle, at most 10 s, and delivery.
+	chatAfter = 15 * time.Second
 )
 
 // matching returns the messages whose text matches the regular expression.
@@ -87,8 +90,9 @@ func allName(s *Site, want string) bool {
 }
 
 // TestPowerLossReported: a router loses power; within 30 s and one probe
-// round another router marks it silent and the chat tells it; when it
-// comes back, the chat tells an unexpected reboot with the downtime.
+// round another router marks it silent, and the chat tells it within 30 s
+// and 15 s; when it comes back, the chat tells an unexpected reboot with
+// the downtime.
 func TestPowerLossReported(t *testing.T) {
 	v := newVerdict(t)
 	defer v.done()
@@ -115,8 +119,8 @@ func TestPowerLossReported(t *testing.T) {
 		t.Fatalf("%d messages tell r03's silence, want 1", len(silence))
 	}
 	t.Logf("marked silent %s after the cut; told in the chat %s after the cut", silentAt-cut, silence[0].At-cut)
-	if d := silence[0].At - cut; d > silentAfter+probeCycle {
-		v.fail("D8", "the chat told the silence %s after the power cut, want within %s", d, silentAfter+probeCycle)
+	if d := silence[0].At - cut; d > silentAfter+chatAfter {
+		v.fail("D8", "the chat told the silence %s after the power cut, want within %s", d, silentAfter+chatAfter)
 	}
 	reboot := matching(ms, `^Home: r03 rebooted unexpectedly at 09:01, back after 2 min( [0-9]+ s)?[,.]`)
 	if len(reboot) != 1 || reboot[0].At < back {

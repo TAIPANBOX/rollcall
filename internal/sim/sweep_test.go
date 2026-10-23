@@ -22,7 +22,8 @@ import (
 
 // # The sweep
 //
-// Every seed builds a site of 3 to 5 routers, one of which equivocates (it
+// TestSweep runs 25 seeds by default; ROLLCALL_SEEDS sets the count (CI runs
+// 200) and ROLLCALL_SEED replays one. Every seed builds a site of 3 to 5 routers, one of which equivocates (it
 // runs twice with one identity, and a random part of the group sees its
 // second face), and puts it through four and a half minutes of random
 // faults, one every 15 to 60 s: power
@@ -66,6 +67,9 @@ const (
 	// ackLife is how long a sender's acknowledgement may still die with
 	// its RAM: a copy sent after its sender lost power this soon is allowed.
 	ackLife = 30 * time.Second
+	// defaultSeeds is how many seeds go test runs; CI runs 200 in a step of
+	// its own (ROLLCALL_SEEDS=200).
+	defaultSeeds = 25
 )
 
 // breakage is a fault planted in the fake, for TestSweepHasTeeth.
@@ -87,7 +91,7 @@ func sweepSeeds(t *testing.T) []int64 {
 		}
 		return []int64{s}
 	}
-	n := 200
+	n := defaultSeeds
 	if v := os.Getenv("ROLLCALL_SEEDS"); v != "" {
 		c, err := strconv.Atoi(v)
 		if err != nil || c < 1 {

@@ -17,7 +17,9 @@
 //
 // Router i is called r01, r02, ... and has the address 10.0.0.(i+1):7432.
 // Each has its own store directory (and an identity directory for its boot
-// sequence numbers) in a temporary directory that Close removes. A power
+// sequence numbers) in a temporary directory that Close removes. The stores
+// are opened with store.OpenNoSync: what a node writes is what a router
+// writes, without the fsyncs that would make the sweep wait on the disk. A power
 // cut drops the node with everything it held in RAM; power on starts a new
 // node from what the store holds, with a new boot ID, the next boot
 // sequence number, and a wall clock that is wrong until the router reaches
@@ -275,7 +277,7 @@ func New(o Options) *Site {
 	s.key = epoch.Key{ID: 4, Secret: s.bytes(epoch.SecretSize), NotAfter: start.Add(epoch.RotationPeriod)}
 	for _, x := range s.routers {
 		for _, f := range x.faces {
-			st, err := store.Open(f.dir)
+			st, err := store.OpenNoSync(f.dir)
 			must(err)
 			must(node.Bootstrap(st, first, s.key))
 			if x.sender {
@@ -368,7 +370,7 @@ func (s *Site) start(r *router, newBoot bool) {
 		return errNoInternet
 	}}
 	for _, f := range r.faces {
-		st, err := store.Open(f.dir)
+		st, err := store.OpenNoSync(f.dir)
 		must(err)
 		var ch deliver.Channel
 		if r.sender {
@@ -671,7 +673,7 @@ func (s *Site) Join(sender bool) (int, error) {
 		return 0, err
 	}
 	r.powered, r.trusted, r.bootAt = true, true, s.el-10*time.Minute
-	st, err := store.Open(r.faces[0].dir)
+	st, err := store.OpenNoSync(r.faces[0].dir)
 	must(err)
 	if err := node.Join(st, r.faces[0], code, r.id, r.name); err != nil {
 		return 0, err

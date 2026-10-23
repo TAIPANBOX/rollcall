@@ -43,6 +43,9 @@ jobs:
       - name: Test with the race detector and coverage profile
         run: go test -race -coverprofile=coverage.out ./...
 
+      - name: Simulator sweep, 200 seeds
+        run: ROLLCALL_SEEDS=200 go test ./internal/sim/ -run 'TestSweep' -timeout 15m
+
       - name: Coverage is not below the committed baseline
         run: ROLLCALL_COVERAGE=1 go test ./internal/gates -run TestCoverageNotBelowBaseline -v
 

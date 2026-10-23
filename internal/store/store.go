@@ -20,6 +20,11 @@
 //
 // Open removes the temporary files a crash left behind. Nothing here locks the
 // directory across processes: one process owns it.
+//
+// OpenNoSync is for tests and simulations only: its store writes the same
+// files the same atomic way but never syncs, so a write is not durable
+// across a power cut. Nothing that runs on a router calls it
+// (TestOpenNoSyncOnlyInTestsAndSim).
 package store
 
 import (
@@ -62,7 +67,8 @@ var (
 
 // Store is a private directory of state files. It is safe for concurrent use.
 type Store struct {
-	dir string
+	dir    string
+	noSync bool // OpenNoSync: writes are not synced
 
 	mu      sync.Mutex
 	lastErr error // the outcome of the most recent write, see LastError
@@ -82,6 +88,19 @@ func Open(dir string) (*Store, error) {
 	return &Store{dir: dir}, nil
 }
 
+// OpenNoSync is Open for tests and simulations only: the store it returns
+// writes without syncing the file or the directory. A write is still atomic
+// for readers (temporary file, rename), but not durable across a power cut.
+// A router never uses it.
+func OpenNoSync(dir string) (*Store, error) {
+	s, err := Open(dir)
+	if err != nil {
+		return nil, err
+	}
+	s.noSync = true
+	return s, nil
+}
+
 // WriteFileAtomic replaces name in the store with data, mode 0600, and
 // returns the result. LastError reports the same result afterwards. A name
 // that is not a plain file name, or data over maxFileSize, is refused and
@@ -99,7 +118,7 @@ func (s *Store) write(name string, data []byte) error {
 	if len(data) > maxFileSize {
 		return fmt.Errorf("%w: %s would be %d bytes, limit %d", ErrTooLarge, name, len(data), maxFileSize)
 	}
-	return writeFile(s.dir, name, data)
+	return writeFile(s.dir, name, data, !s.noSync)
 }
 
 // ReadFile returns the content of name in the store. A missing file is an
@@ -364,9 +383,10 @@ func isTempName(n string) bool {
 }
 
 // writeFile replaces dir/name with data, mode 0600: it writes a temporary file
-// in dir, syncs it, renames it over name and syncs dir. On failure before the
-// rename, the temporary file is removed and name keeps its old content.
-func writeFile(dir, name string, data []byte) error {
+// in dir, syncs it, renames it over name and syncs dir; without durable, it
+// skips both syncs. On failure before the rename, the temporary file is
+// removed and name keeps its old content.
+func writeFile(dir, name string, data []byte, durable bool) error {
 	if err := makeDir(dir); err != nil {
 		return err
 	}
@@ -374,7 +394,7 @@ func writeFile(dir, name string, data []byte) error {
 	if err != nil {
 		return fmt.Errorf("store: %w", err)
 	}
-	if err := fillAndClose(tmp, data); err != nil {
+	if err := fillAndClose(tmp, data, durable); err != nil {
 		os.Remove(tmp.Name())
 		return err
 	}
@@ -382,17 +402,24 @@ func writeFile(dir, name string, data []byte) error {
 		os.Remove(tmp.Name())
 		return fmt.Errorf("store: %w", err)
 	}
+	if !durable {
+		return nil
+	}
 	return syncDir(dir)
 }
 
-// fillAndClose sets f to mode 0600, writes data, syncs and closes f.
-func fillAndClose(f *os.File, data []byte) error {
+// syncFile makes what was written to f durable; a test counts the calls.
+var syncFile = (*os.File).Sync
+
+// fillAndClose sets f to mode 0600, writes data, syncs f when durable, and
+// closes it.
+func fillAndClose(f *os.File, data []byte, durable bool) error {
 	err := f.Chmod(0o600)
 	if err == nil {
 		_, err = f.Write(data)
 	}
-	if err == nil {
-		err = f.Sync()
+	if err == nil && durable {
+		err = syncFile(f)
 	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
@@ -409,7 +436,7 @@ func syncDir(dir string) error {
 	if err != nil {
 		return fmt.Errorf("store: %w", err)
 	}
-	err = d.Sync()
+	err = syncFile(d)
 	if cerr := d.Close(); err == nil {
 		err = cerr
 	}
