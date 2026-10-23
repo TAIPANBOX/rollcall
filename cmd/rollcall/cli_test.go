@@ -1251,7 +1251,7 @@ func TestRunbookCommandsParse(t *testing.T) {
 	inline := regexp.MustCompile("`rollcall (" + verbs + "\\b[^`]*)`")
 	var cmds []string
 	for _, line := range strings.Split(doc, "\n") {
-		if strings.Contains(line, "tailscale ssh") {
+		if strings.Contains(line, "lab_ssh ") {
 			for _, m := range inSSH.FindAllStringSubmatch(line, -1) {
 				cmds = append(cmds, m[1])
 			}

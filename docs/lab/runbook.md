@@ -1,6 +1,6 @@
 # Lab runbook: Task 27 on flint2, beryl1 and beryl2
 
-This runbook proves the v1 group on three lab routers: flint2 (primary and sender), beryl1 (backup admin) and beryl2. It uses Tailscale SSH to the routers and, for the hostile-LAN checks, the Mac on flint2's LAN. No other router is used.
+This runbook proves the v1 group on three lab routers: flint2 (primary and sender), beryl1 (backup admin) and beryl2. It reaches the routers with `lab_ssh` (Tailscale SSH by default, see step 0) and uses, for the hostile-LAN checks, the Mac on flint2's LAN. No other router is used.
 
 **Status: draft, not yet run.** The commands below were checked against `rollcall help` of Task 21 (fix round 1). The status report is described in `luci-app-rollcall/STATUS-JSON.md`. If a command differs from the CLI's usage text on the first run, correct it here in the same change, and do not improvise on a router.
 
@@ -14,13 +14,16 @@ This runbook proves the v1 group on three lab routers: flint2 (primary and sende
 
 ## 0. Setup on the Mac
 
+Every router command goes through `lab_ssh <router> '<command>'`. It is Tailscale SSH by default. When Tailscale is not running on the Mac, set `LAB_SSH=ssh` and give each router name a `Host` entry in `~/.ssh/config` (its LAN address and the lab key), so `ssh root@flint2` reaches it. No router address is written in this repository.
+
 ```sh
 cd ~/Development/rollcall
 RUN="$HOME/rollcall-lab/$(date +%Y%m%d-%H%M)"
 mkdir -p "$RUN"
+lab_ssh() { h=$1; shift; ${LAB_SSH:-tailscale ssh} "root@$h" "$@"; }
 for h in flint2 beryl1 beryl2; do
   echo "== $h"
-  tailscale ssh root@$h 'grep -E "DISTRIB_(RELEASE|ARCH)" /etc/openwrt_release'
+  lab_ssh $h 'grep -E "DISTRIB_(RELEASE|ARCH)" /etc/openwrt_release'
 done
 ```
 
@@ -29,9 +32,9 @@ Expected: on each of the three routers, `DISTRIB_RELEASE='25.12.x'` and `DISTRIB
 Define the two status helpers once. They are used in later steps:
 
 ```sh
-lab_status() { tailscale ssh root@flint2 'rollcall status --json' | python3 -m json.tool; }
+lab_status() { lab_ssh flint2 'rollcall status --json' | python3 -m json.tool; }
 lab_members() {
-  tailscale ssh root@flint2 'rollcall status --json' | python3 -c 'import json,sys; s=json.load(sys.stdin); print(s.get("initialised"), [(m["name"], m["state"], m["roles"]) for m in s.get("members", [])])'
+  lab_ssh flint2 'rollcall status --json' | python3 -c 'import json,sys; s=json.load(sys.stdin); print(s.get("initialised"), [(m["name"], m["state"], m["roles"]) for m in s.get("members", [])])'
 }
 ```
 
@@ -39,13 +42,20 @@ Expected: both definitions return without error.
 
 ## 1. Build the packages (Mac only, no router touched)
 
+The packages are built on GitHub by the `lab-packages` job of the ci workflow, which runs only when the workflow is started by hand, so the Mac needs neither Docker nor apk-tools v3. Start it on the branch under test and fetch its artifact:
+
 ```sh
 cd ~/Development/rollcall
-make apk luci VERSION=0.0.0-lab TARGETS=aarch64_cortex-a53
+gh workflow run ci.yml --ref "$(git rev-parse --abbrev-ref HEAD)"
+sleep 15
+LAB_RUN=$(gh run list --workflow ci.yml --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId')
+gh run watch "$LAB_RUN" --exit-status --interval 30
+rm -rf dist/pkg && gh run download "$LAB_RUN" -n lab-packages -D dist/pkg
 ls dist/pkg/aarch64_cortex-a53/*.apk dist/pkg/luci/*.apk
+shasum -a 256 dist/pkg/aarch64_cortex-a53/*.apk dist/pkg/luci/*.apk
 ```
 
-Expected: `make` ends without error. The listing shows the `rollcall` package in `dist/pkg/aarch64_cortex-a53/` and `luci-app-rollcall` in `dist/pkg/luci/`. `scripts/mkapk.sh` uses Docker unless the Mac has an apk v3 (see the script's header); start Docker Desktop first if it is needed.
+Expected: the run ends green (the mutation job of the same run only reports). The listing shows the `rollcall` package in `dist/pkg/aarch64_cortex-a53/` and `luci-app-rollcall` in `dist/pkg/luci/`, and the checksums equal the ones the run's build step printed. Record the run ID and the commit in `$RUN`.
 
 ## 2. Install on each router
 
@@ -54,7 +64,7 @@ Copy the packages to each router over standard input, with no scp:
 ```sh
 for h in flint2 beryl1 beryl2; do
   for f in dist/pkg/aarch64_cortex-a53/*.apk dist/pkg/luci/*.apk; do
-    cat "$f" | tailscale ssh root@$h "cat > /tmp/$(basename "$f")"
+    cat "$f" | lab_ssh $h "cat > /tmp/$(basename "$f")"
   done
 done
 ```
@@ -66,7 +76,7 @@ Install them:
 ```sh
 for h in flint2 beryl1 beryl2; do
   echo "== $h"
-  tailscale ssh root@$h 'apk add --allow-untrusted /tmp/*.apk && apk info -v rollcall'
+  lab_ssh $h 'apk add --allow-untrusted /tmp/*.apk && apk info -v rollcall'
 done
 ```
 
@@ -81,8 +91,8 @@ The daemon reads `/etc/config/rollcall` when it starts, and it sends to Telegram
 ### 3.1 Init on flint2 (primary)
 
 ```sh
-tailscale ssh root@flint2 "uci set rollcall.main.sender='1' && uci commit rollcall"
-tailscale ssh root@flint2 'rollcall init --name flint2 && /etc/init.d/rollcall enable && /etc/init.d/rollcall start && sleep 5'
+lab_ssh flint2 "uci set rollcall.main.sender='1' && uci commit rollcall"
+lab_ssh flint2 'rollcall init --name flint2 && /etc/init.d/rollcall enable && /etc/init.d/rollcall start && sleep 5'
 lab_members
 ```
 
@@ -91,13 +101,13 @@ Expected: the group is created and the recovery code is printed once. Write the 
 ### 3.2 Invite and join beryl1
 
 ```sh
-tailscale ssh root@flint2 'rollcall invite'
+lab_ssh flint2 'rollcall invite'
 ```
 
 Expected: a line saying the join window is open for 10 minutes, then the join code on its own line, valid for one use. Copy it by hand into the next command, which hands it to `rollcall join` on standard input: join never takes the code on its command line, where every process on the router could read it. The code names the first IPv4 address of flint2's peer-zone interfaces; if beryl1 cannot reach that address, run `rollcall invite --address <an address of flint2 that beryl1 reaches>` instead.
 
 ```sh
-echo '<join code>' | tailscale ssh root@beryl1 '/etc/init.d/rollcall enable && /etc/init.d/rollcall start && sleep 5 && rollcall join --name beryl1'
+echo '<join code>' | lab_ssh beryl1 '/etc/init.d/rollcall enable && /etc/init.d/rollcall start && sleep 5 && rollcall join --name beryl1'
 lab_members
 ```
 
@@ -106,9 +116,9 @@ Expected: `lab_members` lists `beryl1` as `up`. Its roles are empty.
 ### 3.3 Make beryl1 backup admin
 
 ```sh
-tailscale ssh root@flint2 'rollcall roles backup -- beryl1'
+lab_ssh flint2 'rollcall roles backup -- beryl1'
 lab_members
-tailscale ssh root@beryl1 'rollcall status --json' | python3 -c 'import json,sys; print(json.load(sys.stdin)["self"]["admin"])'
+lab_ssh beryl1 'rollcall status --json' | python3 -c 'import json,sys; print(json.load(sys.stdin)["self"]["admin"])'
 ```
 
 Expected: `beryl1` shows `backup` in `lab_members`. The last command prints `backup`.
@@ -116,8 +126,8 @@ Expected: `beryl1` shows `backup` in `lab_members`. The last command prints `bac
 ### 3.4 Invite and join beryl2
 
 ```sh
-tailscale ssh root@flint2 'rollcall invite'
-echo '<join code>' | tailscale ssh root@beryl2 '/etc/init.d/rollcall enable && /etc/init.d/rollcall start && sleep 5 && rollcall join --name beryl2'
+lab_ssh flint2 'rollcall invite'
+echo '<join code>' | lab_ssh beryl2 '/etc/init.d/rollcall enable && /etc/init.d/rollcall start && sleep 5 && rollcall join --name beryl2'
 lab_members
 ```
 
@@ -126,7 +136,7 @@ Expected: three members, all `up`.
 ### 3.5 Make flint2 a sender
 
 ```sh
-tailscale ssh root@flint2 'rollcall roles sender -- flint2'
+lab_ssh flint2 'rollcall roles sender -- flint2'
 lab_members
 ```
 
@@ -137,7 +147,7 @@ Expected: `flint2` shows `primary` and `sender`. Only senders hold the bot token
 The token is in the environment on the Mac, loaded from the local secrets file that is kept outside the repository. It reaches the router on standard input, and `rollcall set-token` reads it from the environment:
 
 ```sh
-printf '%s\n' "$TELEGRAM_ROLLCALL_TOKEN" | tailscale ssh root@flint2 'IFS= read -r TELEGRAM_ROLLCALL_TOKEN && export TELEGRAM_ROLLCALL_TOKEN && rollcall set-token'
+printf '%s\n' "$TELEGRAM_ROLLCALL_TOKEN" | lab_ssh flint2 'IFS= read -r TELEGRAM_ROLLCALL_TOKEN && export TELEGRAM_ROLLCALL_TOKEN && rollcall set-token'
 ```
 
 Expected: `Bot token saved. Run rollcall bind-telegram next to bind the chat.` The reply never repeats the token. If the variable is empty on the Mac, `set-token` reports that `TELEGRAM_ROLLCALL_TOKEN is not set`. It never takes the token as an argument.
@@ -145,7 +155,7 @@ Expected: `Bot token saved. Run rollcall bind-telegram next to bind the chat.` T
 Check that no token-shaped string reached the router log, without printing anything secret:
 
 ```sh
-tailscale ssh root@flint2 'logread | grep -c -E "[0-9]{6,}:[A-Za-z0-9_-]{20,}"'
+lab_ssh flint2 'logread | grep -c -E "[0-9]{6,}:[A-Za-z0-9_-]{20,}"'
 ```
 
 Expected: `0`. Any other number means a token was logged. Revoke the token in BotFather, then repeat step 3.6 with the new one.
@@ -153,13 +163,13 @@ Expected: `0`. Any other number means a token was logged. Revoke the token in Bo
 ### 3.7 Bind the Telegram chat
 
 ```sh
-tailscale ssh root@flint2 'rollcall bind-telegram'
+lab_ssh flint2 'rollcall bind-telegram'
 ```
 
 Expected: a line asking to send the code to the bot within 10 minutes, then the bind code on its own line (10 digits). `bind-telegram` checks the token with Telegram first, so a wrong token fails at once. The operator sends the code to the bot in a private chat from the phone. Then:
 
 ```sh
-tailscale ssh root@flint2 'rollcall status --json' | python3 -c 'import json,sys; print(json.load(sys.stdin)["telegram"])'
+lab_ssh flint2 'rollcall status --json' | python3 -c 'import json,sys; print(json.load(sys.stdin)["telegram"])'
 ```
 
 Expected: `{'state': 'ok', 'last_ok': '<time>'}`. `not_bound` means the chat has not answered the bind code yet. `bot_blocked` means the bot is blocked in that chat. The chat stays quiet after binding, because nothing has happened yet; a bind confirmation, if the CLI sends one, is recorded as it is.
@@ -169,9 +179,9 @@ Expected: `{'state': 'ok', 'last_ok': '<time>'}`. `not_bound` means the chat has
 ```sh
 for h in flint2 beryl1 beryl2; do
   echo "== $h"
-  tailscale ssh root@$h 'grep -E "NoNewPrivs|Seccomp|Cap" /proc/$(pidof rollcalld)/status'
-  tailscale ssh root@$h 'grep -E "^(Uid|Gid)" /proc/$(pidof rollcalld)/status; grep "^rollcall:" /etc/passwd'
-  tailscale ssh root@$h 'ls -l /proc/$(pidof rollcalld)/root/'
+  lab_ssh $h 'grep -E "NoNewPrivs|Seccomp|Cap" /proc/$(pidof rollcalld)/status'
+  lab_ssh $h 'grep -E "^(Uid|Gid)" /proc/$(pidof rollcalld)/status; grep "^rollcall:" /etc/passwd'
+  lab_ssh $h 'ls -l /proc/$(pidof rollcalld)/root/'
 done
 ```
 
@@ -185,7 +195,7 @@ Expected, per router:
 The device binding of the listener is the last sandbox question:
 
 ```sh
-tailscale ssh root@flint2 'logread -e rollcall | grep -i -E "device|bind"'
+lab_ssh flint2 'logread -e rollcall | grep -i -E "device|bind"'
 ```
 
 Expected: one line at each start, `rollcalld <version>: listening on port 7432 on <devices>; SO_BINDTODEVICE applied: true` (or `false`, when the kernel refused the pin to the unprivileged daemon). Copy the line as it is into the results log (step 10). If no such line exists, record that the daemon does not log the binding. Do not record it as working.
@@ -209,7 +219,7 @@ Expected: a chat line `Home: beryl2 rebooted unexpectedly at HH:MM, back after N
 flint2 is the only sender in this plan, so its messages can leave only after it is back.
 
 ```sh
-tailscale ssh root@flint2 'reboot'
+lab_ssh flint2 'reboot'
 ```
 
 Expected: after flint2 returns, one chat line `Home: flint2 rebooted as planned at HH:MM, back after N min.` It arrives after the reboot, because flint2 is the only router that can reach Telegram. Record the delay.
@@ -219,15 +229,15 @@ Expected: after flint2 returns, one chat line `Home: flint2 rebooted as planned 
 The sysupgrade image is the one for beryl1's board and the release it already runs. Using the same release keeps the classification to planned or unplanned. Copy the image into `$RUN` and check its checksum against the release's `sha256sums` file:
 
 ```sh
-tailscale ssh root@beryl1 'ubus call system board'
-cat "$RUN/sysupgrade.bin" | tailscale ssh root@beryl1 'cat > /tmp/sysupgrade.bin'
-tailscale ssh root@beryl1 'sha256sum /tmp/sysupgrade.bin'
+lab_ssh beryl1 'ubus call system board'
+cat "$RUN/sysupgrade.bin" | lab_ssh beryl1 'cat > /tmp/sysupgrade.bin'
+lab_ssh beryl1 'sha256sum /tmp/sysupgrade.bin'
 ```
 
 Expected: the printed hash matches the `sha256sums` entry for that image. The `ubus` call runs in the operator's root shell, not in the daemon, which has no ubus access.
 
 ```sh
-tailscale ssh root@beryl1 'sysupgrade -v /tmp/sysupgrade.bin'
+lab_ssh beryl1 'sysupgrade -v /tmp/sysupgrade.bin'
 ```
 
 Expected: the upgrade keeps the configuration (no `-n`). The SSH session ends at the reboot. About two minutes later the chat shows either:
@@ -252,9 +262,9 @@ Check the mesh link before the test. Read the name of the mesh interface from th
 ```sh
 for h in beryl1 beryl2; do
   echo "== $h"
-  tailscale ssh root@$h 'iw dev'
+  lab_ssh $h 'iw dev'
 done
-tailscale ssh root@beryl2 'iw dev <mesh interface> station dump | grep -c ^Station'
+lab_ssh beryl2 'iw dev <mesh interface> station dump | grep -c ^Station'
 lab_members
 ```
 
@@ -265,7 +275,7 @@ Expected: each router lists an interface of type `mesh point`. The peer count on
 The restore runs on the router, so the test ends even if the SSH session drops:
 
 ```sh
-tailscale ssh root@beryl2 'nohup sh -c "wifi down; sleep 180; wifi up" >/dev/null 2>&1 &'
+lab_ssh beryl2 'nohup sh -c "wifi down; sleep 180; wifi up" >/dev/null 2>&1 &'
 ```
 
 Expected: within about 30 seconds, the chat shows `Home: beryl2 lost contact HH:MM to HH:MM but stayed up: a link problem, not a reboot.` No `rebooted` line appears. After three minutes the radios are back. `lab_members` shows `beryl2` as `up`, and the mesh peer is listed again.
@@ -277,13 +287,13 @@ Expected: within about 30 seconds, the chat shows `Home: beryl2 lost contact HH:
 Once that is decided, the steps are:
 
 ```sh
-tailscale ssh root@flint2 'ip -4 -br addr'
+lab_ssh flint2 'ip -4 -br addr'
 ```
 
 Expected: the WAN address of flint2 on the upstream switch. Call it `FLINT2_WAN`, then:
 
 ```sh
-tailscale ssh root@beryl2 "uci add_list rollcall.main.peer='$FLINT2_WAN:7432' && uci commit rollcall && /etc/init.d/rollcall restart"
+lab_ssh beryl2 "uci add_list rollcall.main.peer='$FLINT2_WAN:7432' && uci commit rollcall && /etc/init.d/rollcall restart"
 lab_members
 ```
 
@@ -298,7 +308,7 @@ Then repeat step 5.1 with beryl2 behind the NAT. The expected chat lines are the
 ```sh
 cd ~/Development/rollcall
 RUN="$HOME/rollcall-lab/$(date +%Y%m%d-%H%M)"; mkdir -p "$RUN"
-FLINT2_LAN=<flint2 LAN IPv4 address>   # from: tailscale ssh root@flint2 'uci -q get network.lan.ipaddr'
+FLINT2_LAN=<flint2 LAN IPv4 address>   # from: lab_ssh flint2 'uci -q get network.lan.ipaddr'
 TARGET="$FLINT2_LAN:7432"
 IF=$(route -n get "$FLINT2_LAN" | awk '/interface:/ {print $2}')
 echo "interface: $IF"
@@ -358,7 +368,7 @@ Then check the router and the chat:
 
 ```sh
 lab_members
-tailscale ssh root@flint2 'rollcall status --json' | python3 -c 'import json,sys; [print(i["time"], i["text"]) for i in json.load(sys.stdin)["incidents"][:3]]'
+lab_ssh flint2 'rollcall status --json' | python3 -c 'import json,sys; [print(i["time"], i["text"]) for i in json.load(sys.stdin)["incidents"][:3]]'
 ```
 
 Expected:
@@ -377,12 +387,12 @@ Both questions are answered in the same sysupgrade as step 5.3. The answer for Q
 Put a probe in place before the sysupgrade of step 5.3. It writes into `/etc/rollcall/`, which the package keeps across upgrades through `/lib/upgrade/keep.d/rollcall`:
 
 ```sh
-tailscale ssh root@beryl1 'cat > /lib/upgrade/rollcall-hook-probe <<"EOF"
+lab_ssh beryl1 'cat > /lib/upgrade/rollcall-hook-probe <<"EOF"
 #!/bin/sh
 echo "hook ran $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> /etc/rollcall/hook-probe
 EOF
 chmod +x /lib/upgrade/rollcall-hook-probe'
-tailscale ssh root@beryl1 'ls -l /lib/upgrade/rollcall-hook-probe; test -e /etc/rollcall/hook-probe && echo "already present" || echo "no probe output yet"'
+lab_ssh beryl1 'ls -l /lib/upgrade/rollcall-hook-probe; test -e /etc/rollcall/hook-probe && echo "already present" || echo "no probe output yet"'
 ```
 
 Expected: the probe file is listed, and the second command prints `no probe output yet`.
@@ -390,7 +400,7 @@ Expected: the probe file is listed, and the second command prints `no probe outp
 After beryl1 is back from the sysupgrade:
 
 ```sh
-tailscale ssh root@beryl1 'cat /etc/rollcall/hook-probe'
+lab_ssh beryl1 'cat /etc/rollcall/hook-probe'
 ```
 
 Expected, and what each result means:
@@ -401,7 +411,7 @@ Expected, and what each result means:
 Clean up the probe after recording the result:
 
 ```sh
-tailscale ssh root@beryl1 'rm -f /lib/upgrade/rollcall-hook-probe /etc/rollcall/hook-probe'
+lab_ssh beryl1 'rm -f /lib/upgrade/rollcall-hook-probe /etc/rollcall/hook-probe'
 ```
 
 Record both answers in `docs/notes/hardware-2026-10.md`, with the date and the line you saw. Do not paste chat contents or tokens into that file.
