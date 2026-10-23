@@ -755,13 +755,17 @@ func (n *Node) heartbeatIn(from netip.AddrPort, epochID uint32, b []byte, now cl
 	}
 	for _, e := range obs.Events {
 		body := EventBody{Subject: e.Subject, Type: e.Type}
-		if absence(e.Type) && e.Subject == h.From && before.From == h.From {
-			body.Last = Boot{ID: before.Boot, Seq: before.BootSeq}
+		if absence(e.Type) && e.Subject == h.From {
 			if e.Type != events.MemberSilent {
+				// The boot it came back in: this heartbeat names it, also
+				// when the boot before is unknown here.
 				body.Back = Boot{ID: h.Boot, Seq: h.BootSeq}
 			}
-			if hd := n.log.Head(h.From); hd.Seq > 0 {
-				body.Ref = EntryRef{Seq: hd.Seq, Hash: hd.Hash}
+			if before.From == h.From {
+				body.Last = Boot{ID: before.Boot, Seq: before.BootSeq}
+				if hd := n.log.Head(h.From); hd.Seq > 0 {
+					body.Ref = EntryRef{Seq: hd.Seq, Hash: hd.Hash}
+				}
 			}
 		}
 		n.recordEvent(e, body, now)

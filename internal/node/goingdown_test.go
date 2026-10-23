@@ -95,3 +95,34 @@ func TestLateGuessAbsorbed(t *testing.T) {
 		t.Fatalf("reboot messages %q; the late guess told the return again", ms)
 	}
 }
+
+// TestReturnNamesItsBoot (D18): a router that does not know a peer's boot
+// before (its daemon restarted while the peer was away) still records the
+// boot the peer came back in, which its heartbeat names, so its record joins
+// the peer's own account of that return.
+func TestReturnNamesItsBoot(t *testing.T) {
+	g := newGroup(t, setup{n: 3, senders: map[int]int{0: 1}})
+	g.run(40 * sec)
+	g.stop(2)
+	g.run(10 * sec)
+	g.stop(0)
+	g.cfgs[0].BootSeq = 2 // the same boot: only the daemon restarted
+	g.start(0)
+	g.run(time.Minute)
+	g.reboot(2)
+	g.run(30 * sec)
+	var backs []Boot
+	for _, e := range ownEntries(g.nodes[0], history.KindEvent) {
+		if b, err := DecodeEvent(e); err == nil && b.Subject == g.ids[2].ID && b.Type != events.MemberSilent && absence(b.Type) {
+			backs = append(backs, b.Back)
+		}
+	}
+	if len(backs) == 0 {
+		t.Fatal("r01 recorded no return of r03: the case did not happen")
+	}
+	for _, b := range backs {
+		if b != (Boot{ID: bootN(2, 2), Seq: 2}) {
+			t.Fatalf("r01 recorded r03's return with back %+v, want the boot its heartbeat names", b)
+		}
+	}
+}
