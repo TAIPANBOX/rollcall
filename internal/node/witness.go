@@ -36,10 +36,11 @@ import (
 // No statement is made about this node itself (Reconcile judges those), nor
 // about an event the node has no view of, nor about one whose stamp is more
 // than witnessAge from the local clock (an event caught up after an
-// absence). A message tells "confirmed by N of M" from these statements
-// (not an incident of its own, which goes out before any statement can):
-// history.Confirmations over the roster members, N those that agree, M the
-// members other than the event's origin.
+// absence). A message about a member's absence tells "confirmed by N of M"
+// (confirmations): of the M members other than the absent ones, the N that
+// recorded the absence themselves or whose statement agrees with such a
+// record. Delivery never waits for statements: the count is what the
+// sender's log holds when it renders the message.
 //
 // # Alarms
 //
@@ -194,27 +195,57 @@ func absDuration(d time.Duration) time.Duration {
 	return d
 }
 
-// confirmations returns "confirmed by N of M" for an incident made of evs:
-// the statements about its earliest event of a kind members state views
-// on, N agreeing members, M the members other than its origin. Of is 0 when
-// no such event is there.
-func (n *Node) confirmations(evs []events.Event) (confirmed, of int) {
-	var pick *events.Event
-	for i, e := range evs {
-		switch e.Type {
-		case events.MemberSilent, events.RebootUnplanned, events.LinkLost, events.InternetLost:
-		default:
-			continue
-		}
-		if pick == nil || e.At.Wall.Before(pick.At.Wall) || (e.At.Wall.Equal(pick.At.Wall) && string(e.Ref[:]) < string(pick.Ref[:])) {
-			pick = &evs[i]
+// confirmations returns "confirmed by N of M" for the incident inc, made of
+// evs, when it tells the absence of its causes (Incident.Causes): M is the
+// members of the current roster that are not causes, the routers that could
+// have seen the absence from outside, and N those of them that did, as this
+// node's log tells it now: each one that recorded a cause's silence or
+// return in the incident, the sender's own record included, or whose latest
+// witness statement about one of those records says it saw the same
+// (history.Confirmations). A cause is never counted, nor a member removed
+// from the roster. For any other incident both are 0 and the message says
+// nothing: a change of a router's own WAN or internet is told with the
+// routers that saw it ("Seen by"), and no other router can see it; and when
+// every member was a cause (a site power cut) nobody was left to see it.
+//
+// The count needs no trusted clock: a record is a member's own view, while a
+// statement is made only on trusted stamps (witnessLocked). It used to count
+// only the statements about the incident's earliest record, of the members
+// other than that record's origin, the absent member among them, so on the
+// lab run of 2026-10-23 a reboot both other routers saw read "confirmed by 0
+// of 2" (no clock trusted, no statement made) and at best "1 of 2" (L8).
+func (n *Node) confirmations(inc events.Incident, evs []events.Event) (confirmed, of int) {
+	causes := map[ids.MemberID]bool{}
+	for _, h := range inc.Members[:min(max(inc.Causes, 0), len(inc.Members))] {
+		var x ids.MemberID
+		if x.UnmarshalText([]byte(h)) == nil {
+			causes[x] = true
 		}
 	}
-	if pick == nil || !n.isMember(pick.Witness) {
+	if len(causes) == 0 {
 		return 0, 0
 	}
-	agree, _ := history.Confirmations(n.log, pick.Ref, n.isMember)
-	return len(agree), len(n.cur().Members) - 1
+	for _, m := range n.cur().Members {
+		if !causes[m.ID] {
+			of++
+		}
+	}
+	saw := map[ids.MemberID]bool{}
+	for _, e := range evs {
+		if !absence(e.Type) || !causes[e.Subject] {
+			continue
+		}
+		if !causes[e.Witness] && n.isMember(e.Witness) {
+			saw[e.Witness] = true
+		}
+		agree, _ := history.Confirmations(n.log, e.Ref, n.isMember)
+		for _, w := range agree {
+			if !causes[w] {
+				saw[w] = true
+			}
+		}
+	}
+	return len(saw), of
 }
 
 // forkAlarmID is the incident ID of the alarm about a fork of origin o's

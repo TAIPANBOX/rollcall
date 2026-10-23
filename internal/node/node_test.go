@@ -1446,8 +1446,10 @@ func TestWitnessWrittenOnce(t *testing.T) {
 	}
 }
 
-// TestConfirmedByCount: a message says how many members confirmed the event
-// from their own view: N agreeing, of the members other than its origin.
+// TestConfirmedByCount: a message about a member's absence says how many
+// of the other members saw it (L8): the three that recorded r04 silent, of
+// the three that could. A router's own internet loss carries no count: only
+// it can see it, and "Seen by" names it.
 func TestConfirmedByCount(t *testing.T) {
 	g := newGroup(t, setup{n: 4, senders: map[int]int{0: 1}})
 	g.run(20 * sec)
@@ -1456,11 +1458,11 @@ func TestConfirmedByCount(t *testing.T) {
 	g.nodes[1].LocalEvent(events.Event{Type: events.InternetLost})
 	g.run(60 * sec)
 	t.Logf("chat:\n%s", strings.Join(g.chat.all(), "\n"))
-	if n := len(g.chat.messages("r04 stopped answering at 09:00, confirmed by 2 of 3.")); n != 1 {
-		t.Fatalf("%d silence messages confirmed by 2 of 3, want 1", n)
+	if n := len(g.chat.messages("r04 stopped answering at 09:00, confirmed by 3 of 3.")); n != 1 {
+		t.Fatalf("%d silence messages confirmed by 3 of 3, want 1", n)
 	}
-	if n := len(g.chat.messages("internet lost at 09:01, confirmed by 0 of 3. Seen by r02.")); n != 1 {
-		t.Fatalf("%d messages of r02's own internet loss confirmed by 0 of 3, want 1", n)
+	if n := len(g.chat.messages("internet lost at 09:01. Seen by r02.")); n != 1 {
+		t.Fatalf("%d messages of r02's own internet loss without a count, want 1", n)
 	}
 }
 

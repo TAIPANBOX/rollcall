@@ -242,7 +242,11 @@ func TestRenderConfirmations(t *testing.T) {
 		{"3 of 4", crash, 3, 4, "Home: ap-kitchen rebooted unexpectedly at 14:02, back after 1 min 5 s, confirmed by 3 of 4."},
 		{"0 of 4 is said", crash, 0, 4, "Home: ap-kitchen rebooted unexpectedly at 14:02, back after 1 min 5 s, confirmed by 0 of 4."},
 		{"all", crash, 4, 4, "Home: ap-kitchen rebooted unexpectedly at 14:02, back after 1 min 5 s, confirmed by 4 of 4."},
-		{"on the first sentence", outage, 2, 3, "Home: internet was down from 03:12 to 03:40 (28 min), confirmed by 2 of 3. Seen by gateway, ap-kitchen, ap-office."},
+		{"a silence", absence(local(14, 2, 0), local(14, 2, 0), []string{kitchen}, events.MemberSilent), 2, 2, "Home: ap-kitchen stopped answering at 14:02, confirmed by 2 of 2."},
+		// L8: a router's own internet or WAN is seen by no other router;
+		// "Seen by" names who saw it, and a count would mean nothing.
+		{"a link change: left out", outage, 2, 3, "Home: internet was down from 03:12 to 03:40 (28 min). Seen by gateway, ap-kitchen, ap-office."},
+		{"an announcement: left out", fact(local(9, 30, 0), "", events.RosterChanged), 1, 2, "Home: the group changed at 09:30."},
 		{"none possible: left out", crash, 0, 0, "Home: ap-kitchen rebooted unexpectedly at 14:02, back after 1 min 5 s."},
 		{"more than possible: left out", crash, 5, 4, "Home: ap-kitchen rebooted unexpectedly at 14:02, back after 1 min 5 s."},
 		{"negative: left out", crash, -1, 4, "Home: ap-kitchen rebooted unexpectedly at 14:02, back after 1 min 5 s."},

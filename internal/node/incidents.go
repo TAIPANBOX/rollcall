@@ -1192,7 +1192,7 @@ func (n *Node) renderLocked(inc events.Incident) string {
 		}
 	}
 	if r := n.inc.byID[inc.ID]; r != nil && !r.single && len(n.rosters) > 0 {
-		f.Confirmed, f.Of = n.confirmations(r.events)
+		f.Confirmed, f.Of = n.confirmations(inc, r.events)
 	}
 	if r := n.inc.byID[inc.ID]; r != nil && slices.Contains(inc.Events, events.Upgraded) {
 		for _, e := range r.events {

@@ -454,13 +454,18 @@ func (n *Node) Status() Status {
 		if start.IsZero() {
 			start = r.queuedAt
 		}
-		confirmed := 0
+		// The count the message tells (confirmations); without one, how
+		// many members saw it, of the whole roster.
+		confirmed, of := 0, 0
 		if !r.single {
-			confirmed, _ = n.confirmations(r.events)
+			confirmed, of = n.confirmations(r.inc, r.events)
+		}
+		if of == 0 {
+			confirmed, of = max(len(r.inc.Witnesses), 1), len(cur.Members)
 		}
 		s.Incidents = append(s.Incidents, IncidentStatus{
 			ID: shortID(r.inc.ID), Time: at(start), Text: n.renderLocked(r.inc),
-			ConfirmedBy: confirmed + 1, Members: len(cur.Members),
+			ConfirmedBy: confirmed, Members: of,
 			Delivered: n.inc.ackedIDs[r.inc.ID],
 		})
 	}

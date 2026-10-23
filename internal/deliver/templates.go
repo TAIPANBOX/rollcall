@@ -103,8 +103,8 @@ const (
 
 // Facts is what a message needs beyond the incident itself. The node gathers
 // it: names from the roster, versions from the events' Detail, the count of
-// confirmations from the history (history.Confirmations), and the changes
-// from the rosters. Every string in it is treated as hostile: a name that is
+// confirmations from the records and witness statements in the history, and
+// the changes from the rosters. Every string in it is treated as hostile: a name that is
 // not a roster name and a version that is not a plain version are left out of
 // the message, never repeated.
 type Facts struct {
@@ -116,8 +116,11 @@ type Facts struct {
 	// incident. The node fills them only when every member the incident
 	// names went from From to To; both must be plain versions to be shown.
 	From, To string
-	// Confirmed and Of give "confirmed by Confirmed of Of". The count is left
-	// out unless 0 <= Confirmed <= Of and Of > 0.
+	// Confirmed and Of give "confirmed by Confirmed of Of": of the Of
+	// members other than the absent ones, Confirmed saw the absence. The
+	// count is told only on a message about a member's absence, and left out
+	// unless 0 <= Confirmed <= Of and Of > 0: a router's own WAN or internet
+	// is seen by no other router, and its witnesses are named ("Seen by").
 	Confirmed, Of int
 	// Changes are the roster changes a RosterChanged incident announces or a
 	// RosterChangesDropped incident lists as undone, in the order to show.
@@ -179,7 +182,7 @@ func Render(inc events.Incident, site string, tz *time.Location, f Facts) string
 		b.WriteString(": ")
 	}
 	b.WriteString(first)
-	if f.Of > 0 && f.Confirmed >= 0 && f.Confirmed <= f.Of {
+	if _, ok := absenceOf(inc.Events); ok && f.Of > 0 && f.Confirmed >= 0 && f.Confirmed <= f.Of {
 		fmt.Fprintf(&b, wordConfirmed, f.Confirmed, f.Of)
 	}
 	b.WriteString(".")
