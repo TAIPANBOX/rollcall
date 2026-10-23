@@ -57,8 +57,6 @@ not from rollcall.
 | Tools that share data between mesh nodes trust every node | The roster and every router's history are signed; a router that shows two histories is proven | One compromised router cannot rewrite what happened |
 </details>
 
-rollcall is not a metrics system: it keeps no graphs of traffic or load; it tells you about incidents.
-
 ## How it works
 
 ![Heartbeats over the LAN, signed records on every router, the same rule chooses the sender, one message per incident](docs/how-it-works.svg)

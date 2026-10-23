@@ -57,7 +57,7 @@
 <rect x="730" y="146" width="128" height="26" rx="13" fill="#0f1520" stroke="#69788b"/>
 <text x="794" y="164" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" font-weight="600" fill="#69788b" text-anchor="middle">never sends</text>
 <rect x="32" y="290" width="896" height="52" rx="12" fill="#10221f" stroke="#2dd4bf"/>
-<text x="52" y="322" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#e6edf3">The rule: of the eligible (all three, and not silent), the highest priority, then the lowest ID.</text>
+<text x="52" y="322" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#e6edf3">The rule: of the routers with all three ticks and not silent, the highest priority, then the lowest ID.</text>
 <rect x="32" y="366" width="440" height="210" rx="12" fill="#141a23" stroke="#1b2331" filter="url(#soft)"/>
 <text x="52" y="396" font-family="ui-sans-serif,system-ui,sans-serif" font-size="17" font-weight="600" fill="#e6edf3">The sender goes silent</text>
 <g transform="translate(56,420) scale(1)" opacity="0.35"><rect x="12" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="44" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="0" y="14" width="60" height="24" rx="7" fill="#1f2834" stroke="#4493f8" stroke-width="1.5"/><circle cx="14" cy="26" r="3" fill="#4493f8"/><circle cx="24" cy="26" r="3" fill="#4493f8" opacity="0.6"/><rect x="36" y="22" width="16" height="8" rx="2" fill="#0c1118" stroke="#46546a"/></g>
