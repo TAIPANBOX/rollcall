@@ -107,7 +107,7 @@ func controlDirProblems(text, dir string) []string {
 func initScriptProblems(text string) []string {
 	var problems []string
 	present := map[string]bool{}
-	jailed := false
+	jailed, readOnly := false, false
 	// One entry per open if block: true when the block's condition tests the icmp option.
 	var ifStack []bool
 	inICMP := func() bool {
@@ -142,6 +142,9 @@ func initScriptProblems(text string) []string {
 			if hasWord(line, "requirejail") {
 				jailed = true
 			}
+			if hasWord(line, "ronly") {
+				readOnly = true
+			}
 		}
 		present[line] = true
 	}
@@ -153,6 +156,11 @@ func initScriptProblems(text string) []string {
 	}
 	if !jailed {
 		problems = append(problems, "no 'procd_add_jail rollcall ... requirejail' line: the daemon could start unjailed")
+	}
+	// Security section 7: the jail's root is read-only; only the procd_add_jail_mount_rw paths
+	// are writable. procd.sh turns the word ronly into ujail -o, which remounts / read-only.
+	if !readOnly {
+		problems = append(problems, "no 'ronly' on the procd_add_jail rollcall line: the jail's root would be writable (security section 7)")
 	}
 	return problems
 }
@@ -212,6 +220,15 @@ func init() {
 				})
 			},
 			outcome: wantFail, expect: "requirejail",
+		},
+		toothCase{
+			name: "initscript_ronly_removed", gate: "TestInitScriptHardening",
+			plant: func(t *testing.T, dst string) {
+				editCopy(t, dst, initScriptRel, func(s string) string {
+					return strings.Replace(s, " ronly", "", 1)
+				})
+			},
+			outcome: wantFail, expect: "no 'ronly'",
 		},
 		toothCase{
 			name: "initscript_capabilities_outside_icmp", gate: "TestInitScriptHardening",

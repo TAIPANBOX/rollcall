@@ -62,6 +62,15 @@ and LuCI, and reaches the socket whatever the directory mode, because root bypas
 permissions. The gate `TestInitScriptHardening` applies the control rule to the mode and owner
 the init script sets, and reads the path from `ControlDirPath` in `cmd/rollcalld/main.go`.
 
+## Jail
+
+`procd_add_jail rollcall log procfs sysfs ronly requirejail`: `requirejail` makes procd refuse
+to start the daemon without the jail, and `ronly` remounts the jail's root read-only (`ujail -o`),
+so the only writable paths are the `procd_add_jail_mount_rw` ones: `/etc/rollcall`,
+`/tmp/rollcall` and `/var/run/rollcall`. The word `ronly` is the one `_procd_add_jail` in
+OpenWrt's `procd.sh` accepts (read on openwrt/openwrt main, 2026-10-23); that the root is in fact
+read-only is proven only by the lab run, by a write outside those paths failing inside the jail.
+
 ## Other status
 
 - `capabilities/rollcall.json` follows the procd capability layout as understood at writing

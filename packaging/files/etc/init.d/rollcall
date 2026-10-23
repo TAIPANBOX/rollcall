@@ -42,8 +42,9 @@ start_service() {
 		procd_set_param capabilities /etc/capabilities/rollcall.json
 	fi
 	# procfs and sysfs: the daemon reads its boot ID, its own sandbox state, the routes and the
-	# interface state from /proc and /sys.
-	procd_add_jail rollcall log procfs sysfs requirejail
+	# interface state from /proc and /sys. ronly remounts the jail's root read-only (ujail -o), so
+	# only the procd_add_jail_mount_rw paths below are writable (security section 7).
+	procd_add_jail rollcall log procfs sysfs ronly requirejail
 	procd_add_jail_mount_rw /etc/rollcall /tmp/rollcall /var/run/rollcall
 	procd_add_jail_mount /etc/config/rollcall /etc/config/firewall /etc/config/system /etc/config/network /etc/openwrt_release /etc/ssl/certs /usr/share/zoneinfo
 	procd_close_instance
