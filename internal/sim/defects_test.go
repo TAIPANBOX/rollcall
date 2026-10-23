@@ -19,9 +19,10 @@ import (
 // running strict and removing its entry here. Anything that fails and is not
 // listed here always fails.
 var knownDefects = map[string]string{
-	"D5": "after an outage the sender becomes eligible (its ping succeeds) before the restore has settled, so the queued " +
-		"'internet lost at 09:01' goes out alone and 20 s later 'internet was down from 09:01 to 09:06 (5 min)': two " +
-		"messages where one is wanted (TestSingleRouterGroup, TestNobodyReachesTelegram20Min)",
+	"D1": "a router that stayed up corrects the others' silence claim and records an update, which the chat gets as an " +
+		"extra message ('r03 lost contact until 09:01 but stayed up'): redundant with the group's own link-loss message, " +
+		"and its time is the claim's (when the silence began), told as 'until' (TestMeshNodeLinkLoss; the sweep checks " +
+		"duplicates only without partitions, so it does not see this one)",
 	"D8": "the chat tells a silence 45 to 55 s after a power cut (detection at 30 s, then the 20 s coalescing settle); " +
 		"the bound is 30 s of detection and 15 s (TestPowerLossReported)",
 	"D9": "a router whose own link was cut records every other router silent; once the link is back the chat gets 'r01, r02 " +
