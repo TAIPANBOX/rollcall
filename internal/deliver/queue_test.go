@@ -949,15 +949,17 @@ func FuzzAckOf(f *testing.F) {
 	f.Add([]byte(`{"ack":"0123456789ABCDEF"}`))
 	f.Add([]byte(`{"ack":"0123456789abcdef"} `))
 	f.Add([]byte(`{"ack":"`))
+	f.Add([]byte(`{"ack":"0123456789abcdef","refs":["0100000000000000000000000000000000000000000000000000000000000000"]}`))
 	f.Fuzz(func(t *testing.T, body []byte) {
-		id, by, ok := AckOf(history.Entry{Origin: a, Kind: history.KindEvent, Body: body})
+		e := history.Entry{Origin: a, Kind: history.KindEvent, Body: body}
+		id, by, ok := AckOf(e)
 		if !ok {
 			return
 		}
 		if by != a {
 			t.Fatalf("by = %v", by)
 		}
-		want, err := AckBody(id)
+		want, err := AckBodyRefs(id, AckRefs(e))
 		if err != nil || string(want) != string(body) {
 			t.Fatalf("AckOf accepted %q as %q, whose body is %q (%v)", body, id, want, err)
 		}

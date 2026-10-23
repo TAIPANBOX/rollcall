@@ -216,7 +216,7 @@ func (n *Node) queueRestoredLocked(now clock.Stamp) {
 			continue
 		}
 		switch {
-		case n.deliveredLocked(r.inc.ID) || r.paired:
+		case n.deliveredLocked(r.inc.ID) || r.paired || n.toldByAckLocked(r):
 			r.requeue = false
 		case t.Trusted:
 			r.requeue = false

@@ -540,12 +540,23 @@ func limit(s string, n int) string {
 
 func utf8RuneStart(b byte) bool { return b&0xC0 != 0x80 }
 
-// The body of an acknowledgement: {"ack":"<incident ID>"}, the one form
-// encoding/json writes for it, so it passes the history's body rules.
+// The body of an acknowledgement: {"ack":"<incident ID>"}, or with the
+// events the message told, {"ack":"<incident ID>","refs":["<hash>",...]}:
+// the one form encoding/json writes for each, so it passes the history's
+// body rules.
 const (
 	ackPrefix = `{"ack":"`
 	ackSuffix = `"}`
+	// MaxAckRefs bounds the events an acknowledgement names, so that one
+	// stays near a kilobyte of its sender's history budget.
+	MaxAckRefs = 16
 )
+
+// ackRefsBody is the form of an acknowledgement that names events.
+type ackRefsBody struct {
+	Ack  string     `json:"ack"`
+	Refs []ids.Hash `json:"refs"`
+}
 
 // AckBody returns the body of the history entry, of kind event, that records
 // the delivery of incident id: {"ack":"<id>"}.
@@ -556,19 +567,74 @@ func AckBody(id string) (json.RawMessage, error) {
 	return json.RawMessage(ackPrefix + id + ackSuffix), nil
 }
 
+// AckBodyRefs returns the body of an acknowledgement of incident id that
+// also names the events the message told (Incident.Refs): sorted, without
+// repeats, and at most MaxAckRefs of them, the caller's choice when there
+// are more. With no refs it is AckBody's. A member whose own incident of the
+// same cause has another ID (it made it of other records) tells from these
+// that the chat was told it (the node's ackedLocked).
+func AckBodyRefs(id string, refs []ids.Hash) (json.RawMessage, error) {
+	if !isHex(id, 16) {
+		return nil, ErrIncidentID
+	}
+	refs = slices.Clone(refs)
+	slices.SortFunc(refs, func(a, b ids.Hash) int { return strings.Compare(string(a[:]), string(b[:])) })
+	refs = slices.Compact(refs)
+	if len(refs) == 0 {
+		return AckBody(id)
+	}
+	if len(refs) > MaxAckRefs {
+		return nil, fmt.Errorf("deliver: an acknowledgement names at most %d events", MaxAckRefs)
+	}
+	return json.Marshal(ackRefsBody{Ack: id, Refs: refs})
+}
+
 // AckOf returns the incident ID e acknowledges and the member that did, if e
 // is an acknowledgement: an entry of kind event with a non-zero origin whose
-// body is exactly what AckBody writes. Any other entry gives false. AckOf does
-// not verify e; the caller passes only entries its Log accepted.
+// body is exactly what AckBody or AckBodyRefs writes. Any other entry gives
+// false. AckOf does not verify e; the caller passes only entries its Log
+// accepted.
 func AckOf(e history.Entry) (string, ids.MemberID, bool) {
+	if e.Kind != history.KindEvent || e.Origin == (ids.MemberID{}) {
+		return "", ids.MemberID{}, false
+	}
 	b := string(e.Body)
-	if e.Kind != history.KindEvent || e.Origin == (ids.MemberID{}) ||
-		len(b) != len(ackPrefix)+16+len(ackSuffix) || !strings.HasPrefix(b, ackPrefix) || !strings.HasSuffix(b, ackSuffix) {
-		return "", ids.MemberID{}, false
+	if len(b) == len(ackPrefix)+16+len(ackSuffix) && strings.HasPrefix(b, ackPrefix) && strings.HasSuffix(b, ackSuffix) {
+		id := b[len(ackPrefix) : len(ackPrefix)+16]
+		if !isHex(id, 16) {
+			return "", ids.MemberID{}, false
+		}
+		return id, e.Origin, true
 	}
-	id := b[len(ackPrefix) : len(ackPrefix)+16]
-	if !isHex(id, 16) {
-		return "", ids.MemberID{}, false
+	if id, _, ok := ackRefsOf(e.Body); ok {
+		return id, e.Origin, true
 	}
-	return id, e.Origin, true
+	return "", ids.MemberID{}, false
+}
+
+// AckRefs returns the events an acknowledgement entry names, nil for one
+// that names none or for any other entry.
+func AckRefs(e history.Entry) []ids.Hash {
+	if _, _, ok := AckOf(e); !ok {
+		return nil
+	}
+	_, refs, _ := ackRefsOf(e.Body)
+	return refs
+}
+
+// ackRefsOf decodes an acknowledgement that names events, only in the form
+// AckBodyRefs writes.
+func ackRefsOf(body []byte) (string, []ids.Hash, bool) {
+	if !strings.HasPrefix(string(body), ackPrefix) || len(body) > history.MaxBodySize {
+		return "", nil, false
+	}
+	var a ackRefsBody
+	if json.Unmarshal(body, &a) != nil {
+		return "", nil, false
+	}
+	want, err := AckBodyRefs(a.Ack, a.Refs)
+	if err != nil || len(a.Refs) == 0 || string(want) != string(body) {
+		return "", nil, false
+	}
+	return a.Ack, a.Refs, true
 }

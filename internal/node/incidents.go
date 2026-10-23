@@ -101,7 +101,22 @@ type incidents struct {
 
 	witnessBudget  map[ids.MemberID]*budget // statements left per origin (witness.go)
 	witnessDropped uint64                   // statements not made for lack of budget
+
+	ackNotes   []ackNote // acknowledgements that name what they told, newest last
+	coverDirty bool      // events arrived since the last look for incidents they tell
 }
+
+// ackNote is an acknowledgement of incident id by a member, with the events
+// its message told (deliver.AckRefs).
+type ackNote struct {
+	id   string
+	by   ids.MemberID
+	refs []ids.Hash
+}
+
+// keepAckNotes bounds the acknowledgements with events kept: the incidents
+// kept here (keepIncidents) are what they are compared with.
+const keepAckNotes = 4 * keepIncidents
 
 func (c *incidents) init() {
 	c.evs = map[ids.Hash]*evRec{}
@@ -142,6 +157,7 @@ func (c *incidents) eventIn(e history.Entry, b EventBody, now clock.Stamp) {
 		return
 	}
 	ev := eventOf(e, b)
+	c.coverDirty = true
 	if events.Own(ev) && ev.Back != (ids.BootID{}) {
 		if len(c.ownBacks) >= keepEvents {
 			clear(c.ownBacks)
@@ -416,6 +432,7 @@ func (n *Node) droppedLocked(base roster.Roster, ours []roster.Signed, oursR []r
 // incidentsLocked turns settled events into incidents and queues them.
 func (n *Node) incidentsLocked(now clock.Stamp) {
 	n.queueRestoredLocked(now)
+	n.coverLocked()
 	var list []events.Event
 	distrusted := n.distrustedLocked()
 	for _, r := range n.inc.evs {
@@ -650,10 +667,162 @@ func (n *Node) queueLocked(inc events.Incident, evs []events.Event, components [
 		n.inc.recent = slices.Clone(n.inc.recent[over:])
 	}
 	n.inc.byID[inc.ID] = r
-	if !n.deliveredLocked(inc.ID) {
+	if !n.deliveredLocked(inc.ID) && !n.toldByAckLocked(r) {
 		n.queue.Add(inc, now.Wall)
 	}
 	n.flusher.Mark()
+}
+
+// # Acknowledgements that name what they told (Q4)
+//
+// Members that hold the same events make the same incidents, but not
+// always at once: a record that reaches one member after it made its
+// incident, and another in time, or an equivocator that shows each member
+// another face, leave them with incidents of one cause under different
+// IDs, and an acknowledgement of one ID does not stop the other. So an
+// acknowledgement names the events its message told (deliver.AckBodyRefs,
+// up to deliver.MaxAckRefs, one of each kind and member first), and a kept
+// incident not delivered counts as told by it when they share an event and
+// every other event of it has a twin among the named ones that this member
+// holds: the same type about the same member, or the same type of link
+// change. A guess at a return whose member's own account is in the incident
+// needs none: the incident tells the account. An incident that tells more,
+// a return after a silence that was told alone, is not told by it.
+
+// noteAckLocked keeps the events the acknowledgement of id by by names, when
+// it is the head of by's chain (entryIn hands each entry over right after
+// the log took it), and counts as told every kept incident they tell.
+func (n *Node) noteAckLocked(id string, by ids.MemberID) {
+	hd := n.log.Head(by)
+	es := n.log.Range(by, hd.Seq, hd.Seq)
+	if len(es) != 1 {
+		return
+	}
+	if aid, aby, ok := deliver.AckOf(es[0]); !ok || aid != id || aby != by {
+		return
+	}
+	refs := deliver.AckRefs(es[0])
+	if len(refs) == 0 {
+		return
+	}
+	note := ackNote{id: id, by: by, refs: refs}
+	n.inc.ackNotes = append(n.inc.ackNotes, note)
+	if over := len(n.inc.ackNotes) - keepAckNotes; over > 0 {
+		n.inc.ackNotes = slices.Clone(n.inc.ackNotes[over:])
+	}
+	for _, r := range n.inc.recent {
+		if !n.deliveredLocked(r.inc.ID) && n.coveredLocked(r, note) {
+			n.ackedLocked(r.inc.ID, by)
+		}
+	}
+}
+
+// toldByAckLocked reports whether a kept acknowledgement tells r, and counts
+// r as told by it then.
+func (n *Node) toldByAckLocked(r *incRec) bool {
+	for _, note := range n.inc.ackNotes {
+		if n.coveredLocked(r, note) {
+			n.ackedLocked(r.inc.ID, note.by)
+			return true
+		}
+	}
+	return false
+}
+
+// coverLocked looks again, once events arrived, for kept incidents the
+// kept acknowledgements tell: an acknowledgement may name events that
+// reach this member after it.
+func (n *Node) coverLocked() {
+	if !n.inc.coverDirty || len(n.inc.ackNotes) == 0 {
+		n.inc.coverDirty = false
+		return
+	}
+	n.inc.coverDirty = false
+	for _, r := range n.inc.recent {
+		if !n.deliveredLocked(r.inc.ID) {
+			n.toldByAckLocked(r)
+		}
+	}
+}
+
+// coveredLocked reports whether note's message told what r tells, as the
+// doc above says.
+func (n *Node) coveredLocked(r *incRec, note ackNote) bool {
+	if r.single || len(r.events) == 0 || r.inc.ID == note.id {
+		return false
+	}
+	named := map[ids.Hash]bool{}
+	var told []events.Event
+	for _, h := range note.refs {
+		named[h] = true
+		if e := n.inc.evs[h]; e != nil {
+			told = append(told, e.ev)
+		}
+	}
+	own := map[ids.MemberID]bool{}
+	for _, e := range r.events {
+		if !absence(e.Type) && !linkChange(e.Type) {
+			// An announcement or an alarm: its event's ref is a roster's
+			// hash or its proof, shared with other announcements of it.
+			return false
+		}
+		if events.Own(e) {
+			own[e.Subject] = true
+		}
+	}
+	shared := false
+	for _, e := range r.events {
+		switch {
+		case named[e.Ref]:
+			shared = true
+		case own[e.Subject] && !events.Own(e) && e.Type != events.MemberSilent && absence(e.Type):
+			// A guess the member's own account here overrides.
+		case !slices.ContainsFunc(told, func(f events.Event) bool { return twin(e, f) }):
+			return false
+		}
+	}
+	return shared
+}
+
+// twin reports whether e and f tell the same thing: one type about one
+// member, or one type of link change, which is told for the site.
+func twin(e, f events.Event) bool {
+	if e.Type != f.Type {
+		return false
+	}
+	return linkChange(e.Type) || e.Subject == f.Subject
+}
+
+// linkChange reports whether t is a change of a member's own link, which an
+// incident tells for the site.
+func linkChange(t events.Type) bool {
+	switch t {
+	case events.WanDown, events.WanUp, events.InternetLost, events.InternetRestored, events.UplinkSwitched:
+		return true
+	}
+	return false
+}
+
+// ackRefsLocked returns the events an acknowledgement of incident id names:
+// one of each type about each member (of each type of link change) first,
+// then the others, up to deliver.MaxAckRefs, each by its ref.
+func (n *Node) ackRefsLocked(id string) []ids.Hash {
+	r := n.inc.byID[id]
+	if r == nil {
+		return nil
+	}
+	evs := slices.Clone(r.events)
+	slices.SortFunc(evs, func(a, b events.Event) int { return compareHash(a.Ref, b.Ref) })
+	var first, rest []ids.Hash
+	for i, e := range evs {
+		if slices.ContainsFunc(evs[:i], func(f events.Event) bool { return twin(e, f) }) {
+			rest = append(rest, e.Ref)
+		} else {
+			first = append(first, e.Ref)
+		}
+	}
+	out := append(first, rest...)
+	return out[:min(len(out), deliver.MaxAckRefs)]
 }
 
 // deliveredLocked reports whether incident id was acknowledged: its own ID,
@@ -674,6 +843,7 @@ func (n *Node) deliveredLocked(id string) bool {
 func (n *Node) ackedLocked(id string, by ids.MemberID) {
 	n.queue.Ack(id, by)
 	n.inc.acked(id)
+	defer n.noteAckLocked(id, by)
 	if r := n.inc.byID[id]; r != nil {
 		for _, c := range r.components {
 			if !n.inc.ackedIDs[c] {
@@ -950,7 +1120,7 @@ func (n *Node) recordAcksLocked(now clock.Stamp) {
 			if n.inc.ackedIDs[a] || n.inc.ackPending[a] {
 				continue
 			}
-			b, err := deliver.AckBody(a)
+			b, err := deliver.AckBodyRefs(a, n.ackRefsLocked(a))
 			if err != nil {
 				continue
 			}
