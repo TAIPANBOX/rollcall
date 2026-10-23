@@ -238,6 +238,8 @@ jobs:
   # call the gate names as made at start must kill the daemon by SIGSYS, and the whole profile
   # must let it start, serve the control socket, bind UDP and TCP 7432, start a node after
   # rollcall init, route a heartbeat to a static peer and stop cleanly (tools/seccomp-run/prove.sh).
+  # The configuration is laid out as on OpenWrt 25.12: network and system root's alone (0600), so
+  # the daemon, run unprivileged, starts only from the snapshot root writes (rollcall snapshot).
   # Both runner types are free for a public repository. linux/arm runs on the arm64 runner only
   # where its CPU and kernel execute AArch32; the job reports NOT RUN where they do not. mips has
   # no runner and is proven from the sources only.

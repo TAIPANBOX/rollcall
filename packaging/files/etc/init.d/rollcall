@@ -14,7 +14,7 @@ EXTRA_COMMANDS="firewall"
 EXTRA_HELP="	firewall	Rebuild the firewall rules that open the rollcall port to the peer zones"
 
 start_service() {
-	local icmp
+	local icmp out
 	config_load rollcall
 	config_get_bool icmp main icmp 0
 
@@ -30,6 +30,14 @@ start_service() {
 	mkdir -p /tmp/rollcall
 	chown rollcall:rollcall /tmp/rollcall
 	chmod 0700 /tmp/rollcall
+	# The daemon never reads /etc/config/network, system or firewall: on OpenWrt 25.12 network and
+	# system are root's alone (0600) and may hold PPPoE passwords and WireGuard private keys. Root
+	# writes what the daemon needs from them (the zones, their devices, which zones face the
+	# internet, the time zone) to /var/run/rollcall/snapshot.json, root:rollcall 0640, before every
+	# start. When that fails, the CLI removes the old snapshot and the daemon refuses to start.
+	if ! out=$("$CLI" snapshot 2>&1); then
+		rollcall_warn "$out"
+	fi
 
 	procd_open_instance
 	procd_set_param command "$DAEMON" -config /etc/config/rollcall -state /etc/rollcall -run /tmp/rollcall
@@ -38,8 +46,10 @@ start_service() {
 	procd_set_param no_new_privs 1
 	procd_set_param seccomp /etc/seccomp/rollcall.json
 	procd_set_param respawn
-	# The daemon reads these at start; reload_service restarts it when one of them changed.
-	procd_set_param file /etc/config/rollcall /etc/config/firewall /etc/config/network /etc/config/system
+	# The daemon reads these at start; reload_service restarts it when one of them changed. The
+	# snapshot changes when a zone, its devices or the time zone do, and not when the firewall
+	# command rewrites the firewall file unchanged.
+	procd_set_param file /etc/config/rollcall /var/run/rollcall/snapshot.json
 	procd_set_param stdout 1
 	procd_set_param stderr 1
 	# CAP_NET_RAW is granted only for ICMP probes. Without the option the daemon holds no capability.
@@ -51,7 +61,9 @@ start_service() {
 	# only the procd_add_jail_mount_rw paths below are writable (security section 7).
 	procd_add_jail rollcall log procfs sysfs ronly requirejail
 	procd_add_jail_mount_rw /etc/rollcall /tmp/rollcall /var/run/rollcall
-	procd_add_jail_mount /etc/config/rollcall /etc/config/firewall /etc/config/system /etc/config/network /etc/openwrt_release /etc/ssl/certs /usr/share/zoneinfo
+	# Read-only. Never /etc/config/network, system or firewall, nor a directory holding them: the
+	# snapshot in /var/run/rollcall carries all the daemon takes from them.
+	procd_add_jail_mount /etc/config/rollcall /etc/openwrt_release /etc/ssl/certs /usr/share/zoneinfo
 	# DNS for api.telegram.org and probe host names. /etc/resolv.conf links to /tmp/resolv.conf,
 	# which boot links to /tmp/resolv.conf.d/resolv.conf.auto and dnsmasq may replace with its own
 	# file. All three are mounted read-only, so the name resolves however ujail stages the link.
@@ -68,6 +80,7 @@ service_triggers() {
 reload_service() {
 	firewall
 	/etc/init.d/firewall reload >/dev/null 2>&1 || true
+	# start runs start_service, which writes the snapshot again before procd compares the files.
 	start
 }
 

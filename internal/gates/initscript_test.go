@@ -35,6 +35,16 @@ var controlDirConst = regexp.MustCompile(`ControlDirPath\s*=\s*"([^"]+)"`)
 // all three: whichever way ujail stages /etc/resolv.conf, the file it names is there.
 var jailResolver = []string{"/etc/resolv.conf", "/tmp/resolv.conf", "/tmp/resolv.conf.d"}
 
+// jailForbidden are the configuration files the jail must never carry. On OpenWrt 25.12 network
+// and system are mode 0600 root and may hold PPPoE passwords and WireGuard private keys; the
+// daemon takes what it needs from them, and from the firewall file, through the snapshot root
+// writes (rollcall snapshot), so none of the three, nor a directory holding them, is mounted.
+var jailForbidden = []string{"/etc/config/network", "/etc/config/system", "/etc/config/firewall"}
+
+// snapshotCall is the service file's call that writes the snapshot, which must come before the
+// instance is opened: without it the daemon refuses every start.
+var snapshotCall = regexp.MustCompile(`(^|[\s;(!])("\$CLI"|\$CLI|/usr/bin/rollcall)\s+snapshot(\s|$)`)
+
 // TestInitScriptHardening reads the service file and requires the hardening that every rollcall
 // process runs with (invariant 13): its own user, no_new_privs, the seccomp profile and a jail
 // with requirejail, so the daemon never starts unsandboxed. It also refuses ubus, which the
@@ -115,6 +125,7 @@ func initScriptProblems(text string) []string {
 	present := map[string]bool{}
 	jailed, readOnly := false, false
 	roMounts := map[string]bool{}
+	snapshotAt, openAt := -1, -1
 	// One entry per open if block: true when the block's condition tests the icmp option.
 	var ifStack []bool
 	inICMP := func() bool {
@@ -126,10 +137,28 @@ func initScriptProblems(text string) []string {
 		return false
 	}
 
-	for _, raw := range strings.Split(text, "\n") {
+	for n, raw := range strings.Split(text, "\n") {
 		line := strings.TrimSpace(raw)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
+		}
+		if snapshotAt < 0 && snapshotCall.MatchString(line) {
+			snapshotAt = n
+		}
+		if openAt < 0 && line == "procd_open_instance" {
+			openAt = n
+		}
+		if strings.HasPrefix(line, "procd_add_jail_mount ") || strings.HasPrefix(line, "procd_add_jail_mount_rw ") {
+			for _, p := range strings.Fields(line)[1:] {
+				if held := jailHolds(p); held != "" {
+					what := p
+					if strings.TrimSuffix(p, "/") != held {
+						what += ", which holds " + held
+					}
+					problems = append(problems, "the jail mounts "+what+": the daemon must not see the network, system or firewall "+
+						"configuration (network and system are root's alone on OpenWrt 25.12 and may hold secrets); it reads the snapshot instead")
+				}
+			}
 		}
 		if strings.Contains(line, "ubus") {
 			problems = append(problems, "uses ubus, which rollcall never touches: "+line)
@@ -178,7 +207,24 @@ func initScriptProblems(text string) []string {
 	if !readOnly {
 		problems = append(problems, "no 'ronly' on the procd_add_jail rollcall line: the jail's root would be writable (security section 7)")
 	}
+	switch {
+	case openAt < 0:
+		problems = append(problems, "no procd_open_instance line")
+	case snapshotAt < 0 || snapshotAt > openAt:
+		problems = append(problems, "the snapshot is not written (\"$CLI\" snapshot) before procd_open_instance: the daemon reads only the snapshot, so it would refuse every start")
+	}
 	return problems
+}
+
+// jailHolds returns the forbidden file a jail mount path is or contains, or "".
+func jailHolds(p string) string {
+	clean := strings.TrimSuffix(p, "/")
+	for _, f := range jailForbidden {
+		if clean == f || clean == "" || strings.HasPrefix(f, clean+"/") {
+			return f
+		}
+	}
+	return ""
 }
 
 // hasWord reports whether word appears as a whitespace-separated field of line.
@@ -314,6 +360,62 @@ func init() {
 				})
 			},
 			outcome: wantPass,
+		},
+		toothCase{
+			// The defect the lab found: network and system are root's alone on 25.12.
+			name: "initscript_network_mounted", gate: "TestInitScriptHardening",
+			plant: func(t *testing.T, dst string) {
+				editCopy(t, dst, initScriptRel, func(s string) string {
+					return strings.Replace(s, "procd_add_jail_mount /etc/config/rollcall ", "procd_add_jail_mount /etc/config/rollcall /etc/config/network ", 1)
+				})
+			},
+			outcome: wantFail, expect: "mounts /etc/config/network",
+		},
+		toothCase{
+			name: "initscript_system_mounted", gate: "TestInitScriptHardening",
+			plant: func(t *testing.T, dst string) {
+				editCopy(t, dst, initScriptRel, func(s string) string {
+					return strings.Replace(s, "procd_add_jail_mount /etc/config/rollcall ", "procd_add_jail_mount /etc/config/rollcall /etc/config/system ", 1)
+				})
+			},
+			outcome: wantFail, expect: "mounts /etc/config/system",
+		},
+		toothCase{
+			name: "initscript_config_dir_mounted", gate: "TestInitScriptHardening",
+			plant: func(t *testing.T, dst string) {
+				editCopy(t, dst, initScriptRel, func(s string) string {
+					return strings.Replace(s, "procd_add_jail_mount /etc/config/rollcall ", "procd_add_jail_mount /etc/config/ ", 1)
+				})
+			},
+			outcome: wantFail, expect: "mounts /etc/config/, which holds /etc/config/network",
+		},
+		toothCase{
+			name: "initscript_etc_mounted_rw", gate: "TestInitScriptHardening",
+			plant: func(t *testing.T, dst string) {
+				editCopy(t, dst, initScriptRel, func(s string) string {
+					return strings.Replace(s, "procd_add_jail_mount_rw /etc/rollcall ", "procd_add_jail_mount_rw /etc /etc/rollcall ", 1)
+				})
+			},
+			outcome: wantFail, expect: "mounts /etc, which holds",
+		},
+		toothCase{
+			name: "initscript_snapshot_not_written", gate: "TestInitScriptHardening",
+			plant: func(t *testing.T, dst string) {
+				editCopy(t, dst, initScriptRel, func(s string) string {
+					return strings.Replace(s, `"$CLI" snapshot`, `"$CLI" version`, 1)
+				})
+			},
+			outcome: wantFail, expect: "snapshot is not written",
+		},
+		toothCase{
+			name: "initscript_snapshot_after_instance", gate: "TestInitScriptHardening",
+			plant: func(t *testing.T, dst string) {
+				editCopy(t, dst, initScriptRel, func(s string) string {
+					s = strings.Replace(s, `"$CLI" snapshot`, `"$CLI" version`, 1)
+					return strings.Replace(s, "\tprocd_close_instance\n", "\tprocd_close_instance\n\t\"$CLI\" snapshot\n", 1)
+				})
+			},
+			outcome: wantFail, expect: "snapshot is not written",
 		},
 		toothCase{
 			name: "initscript_no_file", gate: "TestInitScriptHardening",

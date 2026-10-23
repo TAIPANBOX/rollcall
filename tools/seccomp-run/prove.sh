@@ -8,6 +8,9 @@
 #   tools/seccomp-run/prove.sh <openwrt-arch> <goarch> [optional]
 #
 # What it does, in order:
+#   0. the configuration laid out as on an OpenWrt 25.12 router: network and system root's alone
+#      (0600, network holding a PPPoE password), which the daemon cannot read and must not; root
+#      writes the snapshot of the facts it needs (rollcall snapshot), root-owned, mode 0640;
 #   1. teeth: for each call the gate TestSeccompRuntimeSetPerArch names as made at start, the
 #      profile without that call must kill the daemon by SIGSYS within 15 s;
 #   2. the daemon under the whole profile, as user runner: the filter in force (Seccomp 2,
@@ -109,14 +112,33 @@ config zone
 	list device '$dev'
 	list device 'lo'
 EOF
-: >"$WORK/config/network"
+printf "config interface 'dsl'\n\toption proto 'pppoe'\n\toption password 'CANARY-123:abc'\n" >"$WORK/config/network"
 printf "config system\n\toption zonename 'UTC'\n" >"$WORK/config/system"
+
+# On OpenWrt 25.12 /etc/config/network and /etc/config/system are mode 0600 root: the daemon,
+# which runs as runner here and as rollcall on a router, can neither read them nor may it.
+sudo chown root:root "$WORK/config/network" "$WORK/config/system"
+sudo chmod 0600 "$WORK/config/network" "$WORK/config/system"
+if cat "$WORK/config/network" >/dev/null 2>&1; then
+	fail "the harness user can read the root-only network file, so this is not the router's layout"
+fi
 
 # The directories the init script makes: the control directory and the state, owned by the user
 # the daemon runs as, mode 0700.
 me=$(id -un)
 sudo rm -rf /etc/rollcall /var/run/rollcall
 sudo install -d -o "$me" -g "$(id -gn)" -m 0700 /etc/rollcall /var/run/rollcall
+
+# 0. What the init script does before every start: root writes the snapshot of the firewall,
+# network and system facts into the control directory, owned by root and the directory's group.
+SNAP=/var/run/rollcall/snapshot.json
+sudo "$BIN/rollcall" snapshot --config "$WORK/config/rollcall" || fail "rollcall snapshot, run as root, failed"
+snapst=$(sudo stat -c '%u %a' "$SNAP")
+[ "$snapst" = "0 640" ] || fail "the snapshot is owner and mode '$snapst', not root's with mode 0640"
+if sudo grep -q CANARY "$SNAP"; then
+	fail "the snapshot carries the network file's PPPoE password"
+fi
+note "snapshot: written by root, mode 0640, none of the root-only network file's secrets in it"
 
 # 1. Teeth: each call named as made at start, left out, must kill the daemon by SIGSYS.
 drops="prctl eventfd2 epoll_pwait"
@@ -253,6 +275,8 @@ tcp=$(ss -H -ltn "sport = :7432" | wc -l)
 [ "$udp" -ge 1 ] && [ "$tcp" -ge 1 ] || fail "port 7432 not bound (udp $udp, tcp $tcp sockets)"
 
 sudo "$BIN/rollcall" notify clock-synced >/dev/null 2>&1 || true
+# The interface hotplug writes the snapshot again while the daemon runs; the rename is atomic.
+sudo "$BIN/rollcall" snapshot --config "$WORK/config/rollcall" >/dev/null || fail "rollcall snapshot failed while the daemon ran"
 while [ $(($(date +%s) - START)) -lt 30 ]; do
 	alive || died "while running"
 	sleep 1
@@ -276,4 +300,4 @@ fi
 echo "--- daemon log"
 cat "$WORK/daemon.log"
 kill "$PEER" 2>/dev/null || true
-note "PASS: $ran s under the $OWRT_ARCH profile (filter in force, control socket served, UDP and TCP 7432 bound, group created and node started, a heartbeat routed to a static peer, discovery on $dev), stopped with status 0"
+note "PASS: $ran s under the $OWRT_ARCH profile (filter in force, control socket served, UDP and TCP 7432 bound, group created and node started, a heartbeat routed to a static peer, discovery on $dev, network and system root-only and read through the snapshot alone), stopped with status 0"

@@ -10,8 +10,8 @@ and the generator that writes one profile per architecture. `scripts/mkipk.sh` a
 | Path | Purpose |
 |---|---|
 | `/usr/bin/rollcalld`, `/usr/bin/rollcall` | daemon and CLI (built by the Makefile) |
-| `/etc/init.d/rollcall` | procd service: user `rollcall`, `no_new_privs`, seccomp, jail, control directory |
-| `/etc/hotplug.d/iface/50-rollcall` | forwards interface events to `rollcall notify iface`, in the background |
+| `/etc/init.d/rollcall` | procd service: user `rollcall`, `no_new_privs`, seccomp, jail, control directory, and the snapshot written as root before each start |
+| `/etc/hotplug.d/iface/50-rollcall` | forwards interface events to `rollcall notify iface` and writes the snapshot again (`rollcall snapshot`), both in the background |
 | `/etc/hotplug.d/ntp/50-rollcall` | tells the daemon the clock is synchronised (`rollcall notify clock-synced`), in the background |
 | `/etc/config/rollcall` | site configuration; kept across upgrades |
 | `/etc/uci-defaults/90-rollcall` | builds the firewall rules at first boot and after an upgrade (`/etc/init.d/rollcall firewall`) |
@@ -116,7 +116,7 @@ the init script sets, and reads the path from `ControlDirPath` in `cmd/rollcalld
 One builder writes the rules: `/etc/init.d/rollcall firewall`. The postinst and
 `uci-defaults/90-rollcall` run it at install, and `reload_service` runs it again whenever the
 rollcall or firewall configuration changes (`procd_add_reload_trigger rollcall firewall`), then
-reloads the firewall and restarts the daemon when one of its configuration files changed
+reloads the firewall and restarts the daemon when `/etc/config/rollcall` or the snapshot changed
 (`procd_set_param file`). It reads the configuration through `uci` alone and removes every rule
 an earlier run wrote (`firewall.rollcall_N`, and `firewall.rollcall` of earlier versions).
 
@@ -150,7 +150,11 @@ interface a few milliseconds apart may reach the daemon in the opposite order.
 `procd_add_jail rollcall log procfs sysfs ronly requirejail`: `requirejail` makes procd refuse
 to start the daemon without the jail, and `ronly` remounts the jail's root read-only (`ujail -o`),
 so the only writable paths are the `procd_add_jail_mount_rw` ones: `/etc/rollcall`,
-`/tmp/rollcall` and `/var/run/rollcall`. The word `ronly` is the one `_procd_add_jail` in
+`/tmp/rollcall` and `/var/run/rollcall`. Read-only, the jail carries `/etc/config/rollcall`,
+`/etc/openwrt_release`, `/etc/ssl/certs`, `/usr/share/zoneinfo` and the three resolver paths
+below, and never `/etc/config/network`, `/etc/config/system` or `/etc/config/firewall`, nor a
+directory holding them (next section). The gate `TestInitScriptHardening` refuses a jail mount
+that is or holds one of them. The word `ronly` is the one `_procd_add_jail` in
 OpenWrt's `procd.sh` accepts (read on openwrt/openwrt main, 2026-10-23); that the root is in fact
 read-only is proven only by the lab run, by a write outside those paths failing inside the jail.
 
@@ -164,6 +168,57 @@ listed twice (procd `jail/fs.c` and `jail/jail.c`, read on openwrt/procd master,
 With dnsmasq the file names 127.0.0.1 and stays right; on a router without dnsmasq, a change of
 the upstream DNS servers reaches the daemon at its next start. Proven only by the lab run:
 a Telegram message or a probe by host name from inside the jail.
+
+## The snapshot: what the daemon takes from network, firewall and system
+
+On OpenWrt 25.12 `/etc/config/network` and `/etc/config/system` are mode 0600 root: network may
+hold PPPoE passwords and WireGuard private keys. The daemon runs as `rollcall` and may not read
+them, so it never does. Root parses them with the daemon's own parser (`internal/config`) and
+writes only what the daemon uses to `/var/run/rollcall/snapshot.json`:
+
+| Field | From | Used for |
+|---|---|---|
+| `zones[].name`, `zones[].devices` | firewall zones (`network`, `device`) and the network interfaces they name | the devices the daemon listens on, and the check that each peer zone exists and has a device |
+| `zones[].external` | firewall `masq`, `masq6`, and the networks `wan`, `wan6`, `wwan` | refusing a zone that faces the internet without static peers |
+| `tz`, `tz_source` | system `zonename` (UTC when there is none) | the times in messages and status |
+| `sources` | the size and modification time of network and system, the SHA-256 of firewall | refusing a snapshot older than those files |
+
+Nothing else of those files reaches it: no option value of network but device names, and no
+hostname (the CLI takes the router name from the kernel). A zone whose name is outside
+`[A-Za-z0-9_-]` is left out, as the firewall rule builder gives it no rule. `/etc/config/rollcall`
+holds no secret (the parser refuses any option it does not know, and the ntfy URL may carry no
+user, password or query) and stays mode 0644, read by the daemon itself.
+
+- Written by `rollcall snapshot`, as root: by the init script before every start (and so at
+  `reload_service`), and by the interface hotplug on every event, so a daemon procd respawns
+  after a network change reads the facts as they are. It parses the three files, writes a new
+  file beside the old one with `O_EXCL` (a link planted in the directory is never followed),
+  sets mode 0640 and owner root with the directory's group (rollcall), syncs and renames it over
+  the old one. It refuses a run directory that is a link. When the files cannot be described, it
+  removes the old snapshot, so the daemon refuses to start rather than run on stale facts. A
+  line of network or system it cannot parse is reported by its number, never its text.
+- Why root:rollcall 0640 and not rollcall-owned 0600: the facts are root's statement about files
+  the daemon may not read, so root keeps the file; the group bit lets the daemon read it and
+  nobody else. The directory is the daemon's (it creates the control socket there), so the
+  daemon could still replace the file; that gains it nothing it did not have, and the CLI never
+  follows anything it could plant.
+- Read by `rollcalld -snapshot` (default `/var/run/rollcall/snapshot.json`) before anything
+  else: a regular file, not writable by group or others, at most 64 KiB, one JSON object with
+  no unknown field, version 1, at most 32 zones of at most 64 devices, every zone name, device
+  name and the time zone checked, zones and devices in strict order. Missing, malformed or stale,
+  the daemon logs `refusing to start without a current snapshot ...` and exits; it never falls
+  back to the files.
+- Stale: the daemon refuses a snapshot when network or system has another size or time, the
+  firewall file other content, or a missing system file appeared. Inside the jail the daemon
+  sees none of the three, so it cannot compare there: freshness on a router rests on the root
+  side writing the snapshot before each start, at each reload and on each interface event. A
+  change of the time zone alone (`/etc/init.d/system reload`) reaches the snapshot at the next
+  start, reload or interface event.
+- Proof that runs: the CI job `seccomp` makes network and system root's with mode 0600 (network
+  holding a password), has root write the snapshot, and runs the daemon as an unprivileged user
+  under the real seccomp filter; before this change the daemon stopped there with `open
+  .../network: permission denied`, as on the lab routers. Not proven until the next lab run: the
+  snapshot written by procd's init script on a router, and the daemon inside ujail reading it.
 
 ## Other status
 

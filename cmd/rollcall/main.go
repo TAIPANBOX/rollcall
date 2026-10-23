@@ -15,10 +15,12 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/TAIPANBOX/rollcall/internal/config"
 	"github.com/TAIPANBOX/rollcall/internal/control"
 	"github.com/TAIPANBOX/rollcall/internal/pairing"
 	"github.com/TAIPANBOX/rollcall/internal/roster"
@@ -77,6 +79,10 @@ State:
   rollcall status [--json]
   rollcall notify going-down | clock-synced | iface <action> <interface> | uplink <interface>
       what the init script and hotplug tell rollcalld
+  rollcall snapshot [--config <file>]
+      as root: write what rollcalld needs from the firewall, network and system
+      files beside the configuration (the zones, their devices, the time zone) to
+      /var/run/rollcall/snapshot.json; the init script and hotplug run it
   rollcall version
 
 The router name defaults to the hostname. Names are 1 to 32 characters from
@@ -95,21 +101,23 @@ type reply struct {
 
 // cli is one run of the command. Its fields are what tests replace.
 type cli struct {
-	stdin      io.Reader
-	stdout     io.Writer
-	stderr     io.Writer
-	getenv     func(string) string
-	call       func(ctx context.Context, cmd string, args ...string) ([]byte, error)
-	stateDir   string
-	configPath string
-	hostname   func() (string, error)
+	stdin        io.Reader
+	stdout       io.Writer
+	stderr       io.Writer
+	getenv       func(string) string
+	call         func(ctx context.Context, cmd string, args ...string) ([]byte, error)
+	stateDir     string
+	configPath   string
+	snapshotPath string
+	hostname     func() (string, error)
 }
 
 func main() {
 	c := &cli{
 		stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr, getenv: os.Getenv,
 		call:     control.Client(ControlSocketPath).CallContext,
-		stateDir: defaultStateDir, configPath: defaultConfigPath, hostname: os.Hostname,
+		stateDir: defaultStateDir, configPath: defaultConfigPath, snapshotPath: config.SnapshotPath,
+		hostname: os.Hostname,
 	}
 	os.Exit(c.run(os.Args[1:]))
 }
@@ -157,6 +165,8 @@ func (c *cli) run(args []string) int {
 		err = c.adminCmd(rest)
 	case "notify":
 		err = c.notify(rest)
+	case "snapshot":
+		err = c.snapshot(rest)
 	default:
 		err = badUsage("unknown command; see rollcall help")
 	}
@@ -570,4 +580,40 @@ func (c *cli) notify(args []string) error {
 		return c.admin(p.json, "notify", w...)
 	}
 	return badUsage("rollcall notify going-down | clock-synced | iface <action> <interface> | uplink <interface>")
+}
+
+// snapshot writes, as root, the facts rollcalld takes from /etc/config/firewall, network and
+// system (security section 7): network and system are root's alone on OpenWrt 25.12 and may
+// hold secrets, so the daemon reads this snapshot instead and never those files. The parsing
+// is internal/config's, the same the daemon used to do. When the files cannot be described, the
+// old snapshot is removed, so the daemon refuses to start rather than run on stale facts.
+func (c *cli) snapshot(args []string) error {
+	p, err := parse(args, nil, []string{"--config"})
+	if err != nil {
+		return err
+	}
+	if err := p.noWords(); err != nil {
+		return err
+	}
+	cfgPath := c.configPath
+	if v, ok := p.opts["--config"]; ok {
+		cfgPath = v
+	}
+	dir := filepath.Dir(cfgPath)
+	s, err := config.Facts(filepath.Join(dir, "firewall"), filepath.Join(dir, "system"), filepath.Join(dir, "network"))
+	if err == nil {
+		err = config.WriteSnapshot(c.snapshotPath, s)
+	}
+	if err != nil {
+		if rmErr := config.RemoveSnapshot(c.snapshotPath); rmErr != nil {
+			return fmt.Errorf("%w; and the old snapshot could not be removed: %v", err, rmErr)
+		}
+		return fmt.Errorf("%w; no snapshot is left, so rollcalld will not start until this is fixed", err)
+	}
+	if p.json {
+		c.printJSON(reply{OK: true, Message: "Snapshot written to " + c.snapshotPath + "."})
+	} else {
+		fmt.Fprintf(c.stdout, "Snapshot written to %s.\n", c.snapshotPath)
+	}
+	return nil
 }

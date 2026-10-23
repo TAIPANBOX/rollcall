@@ -3,10 +3,13 @@
 //	rollcalld -config /etc/config/rollcall -state /etc/rollcall -run /tmp/rollcall \
 //	          -control /var/run/rollcall/control.sock
 //
-// It reads /etc/config/rollcall and, beside it, the firewall, system and
-// network files; listens on the devices of the peer zones only; serves the
-// control socket for the CLI; and runs the node once a second. SIGTERM and
-// SIGINT stop it cleanly. It never runs a command and never talks to ubus.
+// It reads /etc/config/rollcall, and the firewall zones, their devices and
+// the time zone from the snapshot root writes before it starts (rollcall
+// snapshot): never /etc/config/network, system or firewall, which may be
+// root's alone and hold secrets. It listens on the devices of the peer zones
+// only; serves the control socket for the CLI; and runs the node once a
+// second. SIGTERM and SIGINT stop it cleanly. It never runs a command and
+// never talks to ubus.
 package main
 
 import (
@@ -54,7 +57,8 @@ const tickEvery = time.Second
 
 func main() {
 	var f flags
-	flag.StringVar(&f.config, "config", "/etc/config/rollcall", "rollcall configuration; firewall, system and network are read from the same directory")
+	flag.StringVar(&f.config, "config", "/etc/config/rollcall", "rollcall configuration")
+	flag.StringVar(&f.snapshot, "snapshot", config.SnapshotPath, "the facts root takes from the firewall, network and system files beside -config (rollcall snapshot)")
 	flag.StringVar(&f.state, "state", "/etc/rollcall", "state directory (identity, roster, keys, history)")
 	flag.StringVar(&f.run, "run", "/tmp/rollcall", "run-time directory")
 	flag.StringVar(&f.control, "control", ControlSocketPath, "control socket")
@@ -78,14 +82,31 @@ func main() {
 }
 
 type flags struct {
-	config, state, run, control string
+	config, state, run, control, snapshot string
+}
+
+// loadConfig reads the configuration the daemon runs with: the rollcall file,
+// and the snapshot for everything from the firewall, network and system files.
+// A snapshot that is missing, malformed or stale stops the start (fail closed);
+// the daemon never reads those files instead, since on OpenWrt 25.12 network
+// and system are root's alone and may hold PPPoE passwords and WireGuard keys.
+func loadConfig(f flags) (config.Config, map[string][]string, error) {
+	s, err := config.ReadSnapshot(f.snapshot, filepath.Dir(f.config))
+	if err != nil {
+		return config.Config{}, nil, fmt.Errorf("refusing to start without a current snapshot of the firewall, network and system configuration: %w; "+
+			"/etc/init.d/rollcall writes it as root before each start (rollcall snapshot), and rollcalld never reads those files itself", err)
+	}
+	cfg, zones, err := config.LoadWithSnapshot(f.config, s)
+	if err != nil {
+		return config.Config{}, nil, fmt.Errorf("configuration: %w", err)
+	}
+	return cfg, zones, nil
 }
 
 func run(ctx context.Context, f flags) error {
-	dir := filepath.Dir(f.config)
-	cfg, zones, err := config.Load(f.config, filepath.Join(dir, "firewall"), filepath.Join(dir, "system"), filepath.Join(dir, "network"))
+	cfg, zones, err := loadConfig(f)
 	if err != nil {
-		return fmt.Errorf("configuration: %w", err)
+		return err
 	}
 	devices := peerDevices(zones)
 

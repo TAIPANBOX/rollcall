@@ -65,7 +65,7 @@ const (
 type Options struct {
 	StateDir string
 	Config   config.Config
-	Devices  []string // the network devices of the peer zones, from config.Load
+	Devices  []string // the network devices of the peer zones, from config.LoadWithSnapshot
 	Net      node.Net
 	Clock    node.Clock
 	Boot     ids.BootID // the kernel's boot ID; zero when it could not be read

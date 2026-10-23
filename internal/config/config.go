@@ -32,7 +32,6 @@ package config
 import (
 	"errors"
 	"fmt"
-	"io/fs"
 	"net"
 	"net/netip"
 	"net/url"
@@ -93,7 +92,10 @@ type Config struct {
 
 // Load reads the four files and returns the validated configuration and the
 // network devices of each peer zone. The map holds exactly the peer zones,
-// so a caller cannot listen in any other zone by mistake.
+// so a caller cannot listen in any other zone by mistake. It is Facts and
+// LoadWithSnapshot in one: the daemon, which may not read the firewall,
+// network and system files, does the second half from the snapshot root
+// wrote with the first (snapshot.go).
 //
 // A firewall zone names netifd interfaces (option network, list network),
 // and devices directly (list device); /etc/config/network maps each
@@ -103,36 +105,11 @@ type Config struct {
 // devices (tun+) are skipped. A missing system file, or one without a
 // zonename, gives UTC.
 func Load(rollcallPath, firewallPath, systemPath, networkPath string) (Config, map[string][]string, error) {
-	rc, err := parseFile(rollcallPath)
+	s, err := Facts(firewallPath, systemPath, networkPath)
 	if err != nil {
 		return Config{}, nil, err
 	}
-	fw, err := parseFile(firewallPath)
-	if err != nil {
-		return Config{}, nil, err
-	}
-	nw, err := parseFile(networkPath)
-	if err != nil {
-		return Config{}, nil, err
-	}
-	cfg, err := fromSections(rc)
-	if err != nil {
-		return Config{}, nil, fmt.Errorf("%s: %w", rollcallPath, err)
-	}
-	cfg.TZ, cfg.TZSource, err = timeZone(systemPath)
-	if err != nil {
-		return Config{}, nil, err
-	}
-	cfg.zones = zoneDevices(fw, nw)
-	cfg.external = externalZones(fw)
-	if err := cfg.Validate(); err != nil {
-		return Config{}, nil, fmt.Errorf("%s: %w", rollcallPath, err)
-	}
-	peer := make(map[string][]string, len(cfg.PeerZones))
-	for _, z := range cfg.PeerZones {
-		peer[z] = slices.Clone(cfg.zones[z])
-	}
-	return cfg, peer, nil
+	return LoadWithSnapshot(rollcallPath, s)
 }
 
 func parseFile(path string) ([]Section, error) {
@@ -283,16 +260,9 @@ func parseBool(v string) (bool, error) {
 	return false, fmt.Errorf("%q is not a boolean (use 1 or 0)", v)
 }
 
-// timeZone reads the zonename of the first system section. uci writes
-// spaces where the zone database has underscores.
-func timeZone(path string) (tz, source string, err error) {
-	secs, err := parseFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return "UTC", TZDefault, nil
-	}
-	if err != nil {
-		return "", "", err
-	}
+// tzOf reads the zonename of the first system section of the system file at
+// path. uci writes spaces where the zone database has underscores.
+func tzOf(secs []Section, path string) (tz, source string, err error) {
 	for _, s := range secs {
 		if s.Type != "system" {
 			continue
