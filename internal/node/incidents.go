@@ -894,12 +894,6 @@ func (n *Node) renderLocked(inc events.Incident) string {
 	if r := n.inc.byID[inc.ID]; r != nil && !r.single && len(n.rosters) > 0 {
 		f.Confirmed, f.Of = n.confirmations(r.events)
 	}
-	if r := n.inc.byID[inc.ID]; r != nil && !slices.Contains(inc.Events, events.MemberSilent) && ownStart(r.events) {
-		// deliver tells an absence from its start when the incident holds
-		// the silence that began it; a router's own account of its return
-		// carries that start itself, and Start is it (events.Incident).
-		inc.Events = append(slices.Clone(inc.Events), events.MemberSilent)
-	}
 	if r := n.inc.byID[inc.ID]; r != nil && slices.Contains(inc.Events, events.Upgraded) {
 		for _, e := range r.events {
 			if e.Type != events.Upgraded {

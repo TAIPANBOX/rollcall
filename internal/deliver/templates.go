@@ -134,9 +134,12 @@ type Change struct {
 //
 // It says what happened from the incident's types, Start and End, and names
 // from f. An absence is told from its cause's return: the incident's span runs
-// from Start to End, and its start is known only when the incident holds the
+// from Start to End, and its start is known when the incident holds the
 // MemberSilent (the node pairs a return with the silence before it by merging
-// the two incidents, from Incident.Refs). Link changes are told for the site,
+// the two incidents) or says that Start is when the absence began
+// (Incident.Began, which Coalesce also sets when a cause's own account of its
+// return gives Start from its Since). Otherwise only the return is told.
+// Link changes are told for the site,
 // with the members that saw them. An incident whose times are approximate,
 // or whose span the clocks cannot measure exactly, says so.
 //
@@ -187,7 +190,7 @@ func (m *message) describe(inc events.Incident) (string, []string) {
 		if n := min(max(inc.Causes, 0), len(inc.Members)); n > 0 {
 			who = m.names(inc.Members[:n])
 		}
-		return m.absence(kind, has(inc.Events, events.MemberSilent), who, inc), nil
+		return m.absence(kind, inc.Began || has(inc.Events, events.MemberSilent), who, inc), nil
 	}
 	seen := m.seenBy(inc.Witnesses)
 	at := m.at(inc.Start.Wall)

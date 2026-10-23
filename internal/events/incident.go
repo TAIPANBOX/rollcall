@@ -42,6 +42,12 @@ type Incident struct {
 	// that cause is in the incident: then Start is the earliest such start.
 	// clock.Duration(Start, End) is the incident's length.
 	Start, End clock.Stamp
+	// Began is true when the incident knows when the absence it reports
+	// began: it holds the silence of a cause, or a cause's own account of
+	// its return that gives its start (Event.Since), so Start is that start.
+	// Otherwise the start of an absence is unknown and Start is only its
+	// earliest event. It is not part of the ID.
+	Began bool
 	// Members are hex member IDs: first the causes, the members whose
 	// absence (silent, back, rebooted, upgraded, link lost) the incident
 	// reports, in ID order; then every other member the events are about, in
@@ -533,6 +539,7 @@ func (g *group) incident() Incident {
 			inc.Events = append(inc.Events, e.Type)
 		}
 		untrusted = untrusted || !e.At.Trusted
+		inc.Began = inc.Began || it.span || e.Type == MemberSilent
 		if it.span && !silent[e.Subject] {
 			// Nobody here saw this cause go: its own start is the start.
 			untrusted = untrusted || !e.Since.Trusted

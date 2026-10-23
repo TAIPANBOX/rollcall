@@ -176,6 +176,9 @@ func (n *Node) restoreIncidentLocked(s incState, now clock.Stamp) {
 	if len(id) != 16 || n.inc.byID[id] != nil {
 		return
 	}
+	// A file written before Incident.Began existed: the incident knew its
+	// start when it held an own account that gave it.
+	s.Inc.Began = s.Inc.Began || ownStart(s.Events) || slices.Contains(s.Inc.Events, events.MemberSilent)
 	r := &incRec{inc: s.Inc, events: s.Events, components: s.Components, paired: s.Paired, single: s.Single, queuedAt: s.QueuedAt}
 	n.inc.recent = append(n.inc.recent, r)
 	if over := len(n.inc.recent) - keepIncidents; over > 0 {
