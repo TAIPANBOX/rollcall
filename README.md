@@ -90,7 +90,7 @@ bot.
 
 ## Install
 
-![Install as it is today: build, install, create the group, add the others, roles, the token, bind the chat, check](docs/install-flow.svg)
+![Install: trust the signed feed, apk add, create the group, add the others, roles, the token, bind the chat, check](docs/install-flow.svg)
 
 OpenWrt 25.12 with apk on each router, and a bot token from @BotFather that no other program
 uses. Only `aarch64_cortex-a53` has run on a router; the other targets build and pass the tests.
