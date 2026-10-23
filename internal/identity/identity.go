@@ -352,13 +352,22 @@ func checkDir(dir string) error {
 
 // readFile returns the content of dir/name after checking dir with
 // checkDir, and that the file it opened is a regular file that group and
-// others have no permission for. A file over max bytes is ErrCorrupt.
+// others have no permission for. A symbolic link, a FIFO or a device in its
+// place is ErrCorrupt, refused without a read that could block on it. A file
+// over max bytes is ErrCorrupt.
 func readFile(dir, name string, max int) ([]byte, error) {
 	if err := checkDir(dir); err != nil {
 		return nil, err
 	}
 	path := filepath.Join(dir, name)
-	f, err := os.Open(path)
+	li, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("identity: %w", err)
+	}
+	if !li.Mode().IsRegular() {
+		return nil, fmt.Errorf("%w: %s is not a regular file", ErrCorrupt, path)
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|readOpenFlags, 0)
 	if err != nil {
 		return nil, fmt.Errorf("identity: %w", err)
 	}
@@ -367,8 +376,8 @@ func readFile(dir, name string, max int) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("identity: %w", err)
 	}
-	if !fi.Mode().IsRegular() {
-		return nil, fmt.Errorf("%w: %s is not a regular file", ErrCorrupt, path)
+	if !fi.Mode().IsRegular() || !os.SameFile(li, fi) {
+		return nil, fmt.Errorf("%w: %s was replaced while it was being opened", ErrCorrupt, path)
 	}
 	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
 		return nil, fmt.Errorf("%w: %s has mode %04o; group and others must have no access", ErrPermissions, path, perm)
