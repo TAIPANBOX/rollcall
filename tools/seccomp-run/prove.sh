@@ -14,7 +14,9 @@
 #      NoNewPrivs 1), the control socket served (rollcall status), the UDP and TCP port bound,
 #      a group created with rollcall init and the node started from it, a heartbeat received by
 #      a static peer on 127.0.0.2 (so the rtnetlink route lookup ran and picked the lo socket),
-#      several 5 s socket reconcile passes, alive for 30 s or more;
+#      discovery running on the default-route device (its group socket on ff02::114 bound, no
+#      discovery error for it in the status) after init and again after several 5 s socket
+#      reconcile passes, alive for 30 s or more;
 #   3. rollcall notify going-down and SIGTERM: the daemon must stop with status 0.
 # With "optional", a loader this machine cannot execute (AArch32 on an arm64 runner without it)
 # is reported as NOT RUN and the script exits 0. Any other failure fails.
@@ -158,6 +160,32 @@ START=$(date +%s)
 
 alive() { kill -0 "$PID" 2>/dev/null; }
 
+# discovery_err prints the discovery error a status (JSON, $1) reports for the default-route
+# device, or nothing when discovery runs there. The status lists only the devices where it cannot
+# run, so a status without the list at all fails rather than reading as "no error".
+discovery_err() {
+	printf '%s' "$1" | python3 -c '
+import json, sys
+st = json.load(sys.stdin)
+if not isinstance(st.get("discovery"), list):
+    sys.exit("the status has no discovery list")
+for e in st["discovery"]:
+    if e.get("interface") == sys.argv[1]:
+        print(e.get("error") or "listed without an error text")
+' "$dev" 2>&1
+}
+
+# check_discovery fails unless discovery runs on the default-route device, which carries an IPv6
+# link-local address on every runner: the group socket on ff02::114 must be bound there.
+check_discovery() {
+	local derr
+	derr=$(discovery_err "$2") || fail "cannot read discovery from the status $1: $derr"
+	[ -z "$derr" ] || fail "discovery does not run on $dev $1: $derr"
+	echo "discovery runs on $dev $1 (group socket on ff02::114 bound)"
+}
+ip -6 -o addr show dev "$dev" scope link | grep -q 'inet6 fe80' ||
+	fail "$dev has no IPv6 link-local address, so discovery cannot be proven on this runner"
+
 # died reports the daemon's end with its log and the kernel's seccomp records. A daemon still
 # running (only a check failed) is killed first, so the wait cannot hang.
 died() {
@@ -205,6 +233,7 @@ for _ in $(seq 1 30); do
 done
 printf '%s' "$status" | grep -Eq '"initialised": ?true' || fail "the node did not start within 30 s of init: $status"
 echo "status after init: $status"
+check_discovery "after init" "$status"
 
 # A heartbeat to the static peer: the route lookup ran under the filter and chose the lo socket,
 # so the datagram comes from 127.0.0.1:7432.
@@ -230,6 +259,8 @@ while [ $(($(date +%s) - START)) -lt 30 ]; do
 done
 alive || died "while running"
 ran=$(($(date +%s) - START))
+status=$(sudo "$BIN/rollcall" status --json) || died "or did not answer rollcall status after $ran s"
+check_discovery "after $ran s of passes" "$status"
 
 # 3. A clean stop, still under the filter.
 sudo "$BIN/rollcall" notify going-down >/dev/null 2>&1 || true
@@ -245,4 +276,4 @@ fi
 echo "--- daemon log"
 cat "$WORK/daemon.log"
 kill "$PEER" 2>/dev/null || true
-note "PASS: $ran s under the $OWRT_ARCH profile (filter in force, control socket served, UDP and TCP 7432 bound, group created and node started, a heartbeat routed to a static peer), stopped with status 0"
+note "PASS: $ran s under the $OWRT_ARCH profile (filter in force, control socket served, UDP and TCP 7432 bound, group created and node started, a heartbeat routed to a static peer, discovery on $dev), stopped with status 0"

@@ -240,8 +240,9 @@ func (t *Transport) bindUnicastLocked(k sockKey) error {
 	ll := isLinkLocal(k.addr)
 
 	// A link-local socket is where multicast leaves from, so its outgoing
-	// interface is pinned as well.
-	plan := &bindPlan{iface: k.iface, ifindex: k.ifindex, txIface: ll}
+	// interface is pinned as well. An IPv6 socket shares its port with the
+	// group socket of its device (bindGroupLocked).
+	plan := &bindPlan{iface: k.iface, ifindex: k.ifindex, txIface: ll, share: k.addr.Is6()}
 	lc := net.ListenConfig{Control: plan.control}
 	pc, err := lc.ListenPacket(context.Background(), network, ap.String())
 	if err != nil {
@@ -266,9 +267,11 @@ func (t *Transport) bindUnicastLocked(k sockKey) error {
 // bindGroupLocked binds the discovery group on k.iface and joins it on
 // k.ifindex. The socket shares the port with the other interfaces' group
 // sockets (SO_REUSEADDR), and receives only what arrives on the interfaces it
-// joined. t.mu is held.
+// joined. Go binds a group address as the wildcard [::] (golang.org/issue/2349),
+// which Linux refuses beside the IPv6 unicast sockets of the same port and
+// device unless they share the port too (sharePort). t.mu is held.
 func (t *Transport) bindGroupLocked(k sockKey) error {
-	plan := &bindPlan{iface: k.iface, ifindex: k.ifindex, join: true, reuse: true}
+	plan := &bindPlan{iface: k.iface, ifindex: k.ifindex, join: true, reuse: true, share: true}
 	lc := net.ListenConfig{Control: plan.control}
 	ap := netip.AddrPortFrom(k.addr, uint16(t.port))
 	pc, err := lc.ListenPacket(context.Background(), "udp6", ap.String())
@@ -288,6 +291,7 @@ type bindPlan struct {
 	ifindex int
 	join    bool // join the discovery group on ifindex
 	reuse   bool // SO_REUSEADDR, so one group socket per interface can share the port
+	share   bool // sharePort: the group socket and the IPv6 unicast sockets of its device share the port
 	txIface bool // pin the outgoing multicast interface
 	pinned  bool // result: SO_BINDTODEVICE was accepted
 }
@@ -298,6 +302,9 @@ func (p *bindPlan) control(_, _ string, c syscall.RawConn) error {
 		sock := int(fd)
 		if p.reuse {
 			opErr = syscall.SetsockoptInt(sock, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
+		}
+		if opErr == nil && p.share {
+			opErr = sharePort(sock)
 		}
 		if opErr == nil && p.join {
 			opErr = joinGroupFn(sock, p.ifindex)
