@@ -217,8 +217,8 @@ func TestAbsenceSpansSweep(t *testing.T) {
 				where[ref] = i
 				mine = append(mine, byRef[ref])
 			}
-			if inc.ID != wantID(mine...) {
-				t.Fatalf("seed %d incident %d: ID %s, want %s", seed, i, inc.ID, wantID(mine...))
+			if inc.ID != wantIncidentID(mine...) {
+				t.Fatalf("seed %d incident %d: ID %s, want %s", seed, i, inc.ID, wantIncidentID(mine...))
 			}
 			if inc.Start.Wall.After(inc.End.Wall) {
 				t.Fatalf("seed %d incident %d: starts %v after it ends %v", seed, i, inc.Start.Wall, inc.End.Wall)

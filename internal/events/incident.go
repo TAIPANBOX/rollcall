@@ -29,7 +29,11 @@ const idDomain = "rollcall/v1 incident\x00"
 // Incident is what one message reports: the events that share one cause.
 type Incident struct {
 	// ID is 16 lowercase hex digits fixed by the incident's events alone, so
-	// two members that coalesce the same events give the same ID.
+	// two members that coalesce the same events give the same ID. When the
+	// incident holds members' own accounts of their return (Own), it is
+	// fixed by those alone: members that hold the same own accounts and
+	// different records of others about the same absence give the same ID,
+	// and an acknowledgement of either covers both.
 	ID string
 	// Start and End are the stamps of the first and the last event, with
 	// Wall placed, in UTC, on the corrected clock of their witness's boot
@@ -168,7 +172,8 @@ func roleOf(e Event) role {
 //
 // Approximate and the ID are described on Incident. The ID is the first 8
 // bytes, in hex, of SHA-256 over "rollcall/v1 incident\x00" and the
-// incident's event records in byte order; a record is ref (32) | subject
+// incident's event records in byte order, only the records of its own
+// accounts when it holds any; a record is ref (32) | subject
 // (16) | witness (16) | boot (16) | wall seconds since 1970 (int64) | wall
 // nanoseconds (uint32) | monotonic nanoseconds (int64) | trusted (1 byte) |
 // type length (uint32) | type, integers big-endian. Detail and Since are not
@@ -501,6 +506,7 @@ func (g *group) incident() Incident {
 	seen := map[Type]bool{}
 	untrusted := false
 	recs := make([][]byte, 0, len(items))
+	var ownRecs [][]byte
 	for _, it := range items {
 		e := it.ev
 		members[e.Subject] = true
@@ -520,6 +526,12 @@ func (g *group) incident() Incident {
 		}
 		inc.Refs = append(inc.Refs, e.Ref)
 		recs = append(recs, it.rec)
+		if Own(e) {
+			ownRecs = append(ownRecs, it.rec)
+		}
+	}
+	if len(ownRecs) > 0 {
+		recs = ownRecs
 	}
 
 	causes := map[ids.MemberID]bool{}

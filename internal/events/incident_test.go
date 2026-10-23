@@ -115,6 +115,21 @@ func refsOf(evs ...Event) []ids.Hash {
 // ref (32) | subject (16) | witness (16) | boot (16) | wall seconds since 1970
 // (int64) | wall nanoseconds (uint32) | mono nanoseconds (int64) | trusted (1
 // byte, 0 or 1) | length of the type (uint32) | type; integers big-endian.
+// wantIncidentID is the ID of the incident made of evs: over its own
+// accounts when it holds any, else over all of them.
+func wantIncidentID(evs ...Event) string {
+	var own []Event
+	for _, e := range evs {
+		if Own(e) {
+			own = append(own, e)
+		}
+	}
+	if len(own) > 0 {
+		return wantID(own...)
+	}
+	return wantID(evs...)
+}
+
 func wantID(evs ...Event) string {
 	var recs [][]byte
 	for _, e := range evs {
@@ -914,6 +929,20 @@ func TestIncidentID(t *testing.T) {
 		}
 	})
 
+	t.Run("a member's own account names the incident", func(t *testing.T) {
+		// Two routers that hold the member's own account of its return
+		// and different guesses of others about it make one incident ID,
+		// so an acknowledgement of either covers both.
+		f := &fixture{}
+		own := f.ev(RebootPlanned, kitchen.id, kitchen, 0)
+		silence := f.ev(MemberSilent, kitchen.id, ap2, -time.Second)
+		guess := f.ev(RebootUnplanned, kitchen.id, ap3, time.Second)
+		a, b := one(t, []Event{own, silence}), one(t, []Event{own, guess, silence})
+		if a.ID != wantID(own) || b.ID != a.ID {
+			t.Errorf("IDs %s and %s; want both %s, fixed by the own account", a.ID, b.ID, wantID(own))
+		}
+	})
+
 	t.Run("an unrelated incident in the batch does not change it", func(t *testing.T) {
 		f := &fixture{}
 		e1, e2 := f.ev(MemberSilent, x, ap2, 0), f.ev(MemberSilent, x, ap3, time.Second)
@@ -1067,8 +1096,8 @@ func TestCoalesceSweep(t *testing.T) {
 				seen[ref]++
 				mine = append(mine, byRef[ref])
 			}
-			if inc.ID != wantID(mine...) {
-				t.Fatalf("%s: ID %s, want %s", where, inc.ID, wantID(mine...))
+			if inc.ID != wantIncidentID(mine...) {
+				t.Fatalf("%s: ID %s, want %s", where, inc.ID, wantIncidentID(mine...))
 			}
 			span, spanApprox := clock.Duration(inc.Start, inc.End)
 			if span > window {

@@ -278,9 +278,10 @@ func (n *Node) incidentsLocked(now clock.Stamp) {
 	for _, r := range n.inc.evs {
 		switch {
 		case r.assigned:
-		case !r.single && distrusted[r.ev.Witness]:
-			// Proven to show different histories: its word is left out
-			// (witness.go).
+		case !r.single && r.origin != (ids.MemberID{}) && r.seq >= distrusted[r.origin] && distrusted[r.origin] > 0:
+			// Recorded where its chain forked or after: its word differs
+			// between the routers that saw its different faces, and is left
+			// out (witness.go).
 			r.assigned = true
 		case r.single:
 			r.assigned = true
@@ -325,17 +326,16 @@ func (n *Node) incidentsLocked(now clock.Stamp) {
 	}
 }
 
-// distrustedLocked returns the members proven suspicious: a fork of their
-// chain in the log, or an alarm this node raised about them.
-func (n *Node) distrustedLocked() map[ids.MemberID]bool {
-	out := map[ids.MemberID]bool{}
+// distrustedLocked returns, for every member whose chain forked in the log,
+// the sequence number of the fork: its entries from there on differ
+// between the routers that saw its different faces.
+func (n *Node) distrustedLocked() map[ids.MemberID]uint64 {
+	out := map[ids.MemberID]uint64{}
 	for _, p := range n.log.Forks() {
-		out[p.A.Origin] = true
+		if p.A.Origin != n.id.ID {
+			out[p.A.Origin] = p.A.Seq
+		}
 	}
-	for id := range n.rec.suspicious {
-		out[id] = true
-	}
-	delete(out, n.id.ID)
 	return out
 }
 
@@ -395,7 +395,9 @@ func (n *Node) ackedLocked(id string, by ids.MemberID) {
 // eligible meanwhile (it may have been sending), the wait after that
 // heartbeat is handover instead: that member stops within a tick of hearing
 // it, and the wait keeps the two members' messages the delivery grace apart
-// and lets the other's acknowledgements arrive.
+// and lets the other's acknowledgements arrive. A member heard again (a
+// partition healed, a router came back) starts the wait over: it may have
+// been sending on its side, and the views must meet again.
 
 // handover is the wait after the announcing heartbeat when another member
 // may have been sending.
@@ -403,10 +405,11 @@ const handover = deliver.Grace + 2*time.Second
 
 // senderTurn is this node's turn as the sender.
 type senderTurn struct {
-	on        bool          // the node is the sender in its own view
-	announced bool          // a heartbeat with its fresh Telegram call went out since
-	at        time.Duration // when it went out
-	handover  bool          // another member was eligible meanwhile
+	on        bool                  // the node is the sender in its own view
+	announced bool                  // a heartbeat with its fresh Telegram call went out since
+	at        time.Duration         // when it went out
+	handover  bool                  // another member was eligible meanwhile
+	heard     map[ids.MemberID]bool // the members heard at the last look
 }
 
 // turnLocked returns the sender the queue is to act on: sender, unless it
@@ -417,8 +420,18 @@ func (n *Node) turnLocked(sender ids.MemberID, now clock.Stamp) ids.MemberID {
 		return sender
 	}
 	t := &n.turn
-	t.on = true
-	if _, other := elect.Sender(n.othersLocked(), now.Wall); other {
+	others := n.othersLocked()
+	heard := map[ids.MemberID]bool{}
+	for _, v := range others {
+		if !v.Silent {
+			heard[v.ID] = true
+			if t.on && !t.heard[v.ID] {
+				t.announced = false // heard again: the views must meet again
+			}
+		}
+	}
+	t.on, t.heard = true, heard
+	if _, other := elect.Sender(others, now.Wall); other {
 		t.handover = true
 	}
 	wait := n.cfg.Heartbeat

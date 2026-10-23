@@ -48,10 +48,10 @@ import (
 // whose ID is fixed by the forked member alone for a fork (members may find
 // different proofs of one equivocation) and by the proof for a falsehood,
 // so every member that raises it raises the same incident and the group
-// sends it once. Once a member is proven suspicious, its events are left
-// out of the incidents still to be made (incidentsLocked): routers that saw
-// its different faces hold different events of it, and would otherwise
-// make different incidents of one cause. The node also
+// sends it once. Once a member's chain is proven forked, its events from the
+// fork on are left out of the incidents still to be made (incidentsLocked):
+// routers that saw its different faces hold different events of it there,
+// and would otherwise make different incidents of one cause. The node also
 // records the alarm in its own chain, as an event of type fork whose Detail
 // names the proof ("proof": "fork" or "falsehood", "a" and "b" the entry
 // hashes, "a_seq" and "b_seq" their positions). A member that reads such an
