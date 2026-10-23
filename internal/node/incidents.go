@@ -71,6 +71,10 @@ type incRec struct {
 	paired     bool
 	single     bool // an incident of its own: no count of confirmations
 	queuedAt   time.Time
+	// held is set once the sender began holding the incident back for its
+	// end (heldLocked), at heldAt; RAM only.
+	held   bool
+	heldAt time.Duration
 }
 
 type incidents struct {
@@ -659,6 +663,7 @@ type senderTurn struct {
 // turnLocked returns the sender the queue is to act on: sender, unless it
 // is this node and its turn has not begun yet, as the doc above says.
 func (n *Node) turnLocked(sender ids.MemberID, now clock.Stamp) ids.MemberID {
+	n.queue.Hold(n.heldLocked(now))
 	if n.goingDown {
 		return ids.MemberID{}
 	}
@@ -687,9 +692,6 @@ func (n *Node) turnLocked(sender ids.MemberID, now clock.Stamp) ids.MemberID {
 	t.on, t.heard = true, heard
 	if _, other := elect.Sender(others, now.Wall); other {
 		t.handover = true
-	}
-	if n.endPendingLocked() {
-		return ids.MemberID{}
 	}
 	wait := n.cfg.Heartbeat
 	if t.handover {
@@ -739,32 +741,63 @@ func (n *Node) othersLocked() []elect.View {
 // returns are the types that end a member's absence.
 var returns = []events.Type{events.RebootUnplanned, events.RebootPlanned, events.Upgraded, events.LinkLost, events.MemberBack}
 
-// endPendingLocked reports whether an incident that reports only the start
-// of something (a silence, an internet or WAN loss) and was not sent yet
-// has its end recorded and not yet settled: the sender holds back until the
-// end joins it, so both go out as one message (D5).
-func (n *Node) endPendingLocked() bool {
-	has := func(i events.Incident, t events.Type) bool { return slices.Contains(i.Events, t) }
+// maxHold bounds how long the sender holds back one incident for its end
+// (heldLocked), from the first moment it held it. A true end is taken into
+// an incident settle after the node first saw it, and pairs with the start
+// at the next tick; the incident it makes is ready only once every event in
+// it has waited settle, so a companion record seen up to settle after the
+// end delays it by as much again. Two settles cover both. An end that takes
+// longer either waits on something else (a guess at a return that waits for
+// its member's own account, up to ownWait) or never joins at all (a
+// compromised member that writes a return every few seconds): then the start
+// goes out alone, and its end, if it comes, as a message of its own.
+const maxHold = 2 * settle
+
+// heldLocked returns the incidents the sender holds back now: each one that
+// reports only the start of something (a silence, an internet or WAN loss),
+// was not sent yet, and has its end recorded and not yet settled, so that
+// both go out as one message (D5). Each is held at most maxHold from the
+// first moment it was, once (N2): ends that keep arriving and never join
+// cannot hold it longer, and they never hold any other incident.
+func (n *Node) heldLocked(now clock.Stamp) []string {
+	var out []string
 	for _, r := range n.inc.recent {
-		if r.paired || r.single || n.deliveredLocked(r.inc.ID) {
+		if !n.endPendingLocked(r) {
 			continue
 		}
-		var ends func(e events.Event) bool
-		switch inc := r.inc; {
-		case inc.Causes == 1 && has(inc, events.MemberSilent) && !slices.ContainsFunc(returns, func(t events.Type) bool { return has(inc, t) }):
-			x := inc.Members[0]
-			ends = func(e events.Event) bool { return e.Subject.String() == x && slices.Contains(returns, e.Type) }
-		case inc.Causes == 0 && has(inc, events.InternetLost) && !has(inc, events.InternetRestored):
-			ends = func(e events.Event) bool { return e.Type == events.InternetRestored }
-		case inc.Causes == 0 && has(inc, events.WanDown) && !has(inc, events.WanUp):
-			ends = func(e events.Event) bool { return e.Type == events.WanUp }
-		default:
-			continue
+		if !r.held {
+			r.held, r.heldAt = true, now.Mono
 		}
-		for _, e := range n.inc.evs {
-			if !e.assigned && !e.single && ends(e.ev) {
-				return true
-			}
+		if now.Mono-r.heldAt < maxHold {
+			out = append(out, r.inc.ID)
+		}
+	}
+	return out
+}
+
+// endPendingLocked reports whether r reports only the start of something
+// (a silence, an internet or WAN loss), was not sent yet, and has its end
+// recorded and not yet settled.
+func (n *Node) endPendingLocked(r *incRec) bool {
+	has := func(i events.Incident, t events.Type) bool { return slices.Contains(i.Events, t) }
+	if r.paired || r.single || n.deliveredLocked(r.inc.ID) {
+		return false
+	}
+	var ends func(e events.Event) bool
+	switch inc := r.inc; {
+	case inc.Causes == 1 && has(inc, events.MemberSilent) && !slices.ContainsFunc(returns, func(t events.Type) bool { return has(inc, t) }):
+		x := inc.Members[0]
+		ends = func(e events.Event) bool { return e.Subject.String() == x && slices.Contains(returns, e.Type) }
+	case inc.Causes == 0 && has(inc, events.InternetLost) && !has(inc, events.InternetRestored):
+		ends = func(e events.Event) bool { return e.Type == events.InternetRestored }
+	case inc.Causes == 0 && has(inc, events.WanDown) && !has(inc, events.WanUp):
+		ends = func(e events.Event) bool { return e.Type == events.WanUp }
+	default:
+		return false
+	}
+	for _, e := range n.inc.evs {
+		if !e.assigned && !e.single && ends(e.ev) {
+			return true
 		}
 	}
 	return false

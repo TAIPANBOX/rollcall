@@ -37,6 +37,13 @@
 // BlockedRetry until a send succeeds; after ErrTLS, and after any other
 // failure, it tries again after Spacing. Status says what stops delivery.
 //
+// # Holding back
+//
+// The caller may hold back named incidents (Hold): they stay queued and are
+// not due, whoever sends, until a later Hold leaves them out. The node holds
+// back an incident whose end is about to join it, so both go out as one
+// message, and bounds that hold itself. Every other incident stays due.
+//
 // # Time
 //
 // Every method takes now from the caller and never reads the clock. A now
@@ -161,6 +168,7 @@ type Queue struct {
 	done      map[string]struct{}
 	doneOrder []string // done in the order learnt, to forget the oldest
 	dropped   int
+	held      map[string]bool // incidents held back (Hold)
 
 	seen    bool
 	now     time.Time // the latest now seen
@@ -230,6 +238,21 @@ func (q *Queue) Ack(id string, by ids.MemberID) {
 	defer q.mu.Unlock()
 	q.finish(id)
 	q.unrecorded = slices.DeleteFunc(q.unrecorded, func(s sent) bool { return s.id == id && s.by == by })
+}
+
+// Hold holds back the incidents named in ids, and only them: until the next
+// Hold, Due and Deliver pass over them as if they were not due, and every
+// other incident is due as before. A nil or empty ids holds nothing back.
+func (q *Queue) Hold(ids []string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.held == nil {
+		q.held = map[string]bool{}
+	}
+	clear(q.held)
+	for _, id := range ids {
+		q.held[id] = true
+	}
 }
 
 // Due returns copies of the incidents self is to send at now, oldest first,
@@ -383,9 +406,13 @@ func (q *Queue) track(self, sender ids.MemberID, now time.Time) bool {
 	return is
 }
 
-// isDue reports whether the sender sends it at now: it reached the sender
-// while it was the sender, or it has been queued for Grace.
+// isDue reports whether the sender sends it at now: it is not held back,
+// and it reached the sender while it was the sender, or it has been queued
+// for Grace.
 func (q *Queue) isDue(it *item, now time.Time) bool {
+	if q.held[it.inc.ID] {
+		return false
+	}
 	return !it.added.Before(q.since) || now.Sub(it.added) >= Grace
 }
 
