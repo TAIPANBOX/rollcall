@@ -30,9 +30,9 @@ var knownDefects = map[string]string{
 	"D5": "after an outage the sender becomes eligible (its ping succeeds) before the restore has settled, so the queued " +
 		"'internet lost at 09:01' goes out alone and 20 s later 'internet was down from 09:01 to 09:06 (5 min)': two " +
 		"messages where one is wanted (TestSingleRouterGroup, TestNobodyReachesTelegram20Min)",
-	"D7": "alarms do not survive a restart: a fork proof found less than a minute before a power cut is lost (forks.json not " +
-		"flushed), and an alarm not yet delivered when its router restarts is never queued again, because its own alarm " +
-		"record, read back, marks it raised; so the equivocator shows up, or its alarm never reaches the chat (sweep I3)",
+	"D7": "a router that was off or restarting when a fork alarm was raised, and comes back after the alarm was sent, " +
+		"never proves the fork itself and shows the equivocator up (sweep I3: seeds 15 and 124 after c8e9642; before it, " +
+		"undelivered alarms and proofs were lost with a restart)",
 	"D8": "the chat tells a silence 45 to 55 s after a power cut (detection at 30 s, then the 20 s coalescing settle); " +
 		"the bound is 30 s of detection and 15 s (TestPowerLossReported)",
 	"D9": "a router whose own link was cut records every other router silent; once the link is back the chat gets 'r01, r02 " +
@@ -45,9 +45,6 @@ var knownDefects = map[string]string{
 	"D18": "a planned reboot is told as unexpected when one observer missed the single 'going down' heartbeat (packet loss, " +
 		"a partition): the incident holds both kinds and the message takes the unplanned one, though the router's own boot " +
 		"record says planned (sweep I6)",
-	"D19": "incidents not yet delivered are lost when the senders restart: a node loads every stored event as settled " +
-		"history, not news, so an incident queued while Telegram or the internet was out, and not sent before the sender " +
-		"restarted, is never queued again; a power cut of the whole site during an outage never reaches the chat (sweep I1)",
 }
 
 // strict reports whether known defects fail rather than skip.
