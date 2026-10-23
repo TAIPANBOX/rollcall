@@ -277,18 +277,42 @@ func (n *Node) alarmIn(e history.Entry, b EventBody, now clock.Stamp) {
 			return
 		}
 		n.inc.forkAt(b.Subject, seq)
-		if n.inc.alarmed[forkAlarmID(b.Subject)] {
+		if n.inc.alarmed[forkAlarmID(b.Subject)] || len(n.inc.forkChecks) >= keepPending {
 			return
 		}
 		// Check it here: the member that recorded it answers with both
-		// entries, and Append finds the fork.
-		n.planFetch(e.Origin, b.Subject, seq, seq)
+		// entries, and Append finds the fork. A fetch that fails (the
+		// member cannot be reached now) is tried again (checkForksLocked).
+		n.inc.forkChecks = append(n.inc.forkChecks, forkCheck{by: e.Origin, subject: b.Subject, seq: seq, until: now.Mono + pendingFor})
+		n.checkForksLocked(now)
 	case "falsehood":
 		if n.inc.alarmed[alarmID("falsehood", a, h)] || len(n.inc.pending) >= keepPending {
 			return
 		}
 		n.inc.pending = append(n.inc.pending, pendingAlarm{by: e.Origin, body: b, until: now.Mono + pendingFor})
 		n.checkPendingLocked(now)
+	}
+}
+
+// forkCheck is another member's fork alarm this node has not checked yet.
+type forkCheck struct {
+	by, subject ids.MemberID
+	seq         uint64
+	next, until time.Duration
+}
+
+// checkForksLocked asks, at most every retryEvery, the members whose fork
+// alarms are unchecked for the entries of the proof, until this node holds
+// the fork itself or the check expires (D7).
+func (n *Node) checkForksLocked(now clock.Stamp) {
+	n.inc.forkChecks = slices.DeleteFunc(n.inc.forkChecks, func(c forkCheck) bool {
+		return n.inc.alarmed[forkAlarmID(c.subject)] || now.Mono > c.until
+	})
+	for i := range n.inc.forkChecks {
+		if c := &n.inc.forkChecks[i]; now.Mono >= c.next {
+			c.next = now.Mono + retryEvery
+			n.planFetch(c.by, c.subject, c.seq, c.seq)
+		}
 	}
 }
 

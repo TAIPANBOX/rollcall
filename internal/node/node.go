@@ -1178,6 +1178,7 @@ func (n *Node) tickLocked(now clock.Stamp) {
 	}
 	n.reconcileLocked(now)
 	n.checkPendingLocked(now)
+	n.checkForksLocked(now)
 	n.checkWaitingLocked(now)
 	n.incidentsLocked(now)
 	_ = n.flusher.Tick(now.Wall)

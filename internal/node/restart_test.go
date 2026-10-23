@@ -66,3 +66,29 @@ func TestAlarmSurvivesRestart(t *testing.T) {
 		t.Fatalf("after the restart r01 sees r03 %q, want suspicious", st)
 	}
 }
+
+// TestForkAlarmCheckRetried (D7): a router reads another router's fork
+// alarm while it cannot reach that router; it checks the proof again until
+// it can, and then holds it and marks the member suspicious.
+func TestForkAlarmCheckRetried(t *testing.T) {
+	g := newGroup(t, setup{n: 3, running: []bool{true, true, false}, senders: map[int]int{0: 1}})
+	a, b := g.nodes[0], g.nodes[1]
+	c := g.ids[2]
+	g.run(10 * sec)
+	g.split([]int{0}, []int{1}, true)
+	e1, _ := NewBoot(c, history.Head{}, BootBody{Boot: Boot{ID: bootN(2, 1), Seq: 1}, Version: "24.10.4"})
+	e2, _ := NewBoot(c, history.Head{}, BootBody{Boot: Boot{ID: bootN(2, 1), Seq: 1}, Version: "24.10.5"})
+	inject(a, e1)
+	inject(b, e1, e2)
+	if len(alarms(b, "fork")) != 1 {
+		t.Fatal("r02 did not record the fork alarm: the case did not happen")
+	}
+	// r01 reads r02's chain, the alarm in it, while it cannot reach r02.
+	inject(a, with(b, func() []history.Entry { return b.log.Range(b.id.ID, 1, b.log.Head(b.id.ID).Seq) })...)
+	g.run(10 * sec)
+	g.split([]int{0}, []int{1}, false)
+	g.run(time.Minute)
+	if st := stateOf(a.Status(), "r03"); st != "suspicious" {
+		t.Fatalf("r01 sees r03 %q after it could reach r02 again, want suspicious", st)
+	}
+}

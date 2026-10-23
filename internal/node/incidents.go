@@ -81,6 +81,7 @@ type incidents struct {
 	alarmed    map[string]bool         // alarm incident IDs raised, one per proof
 	witnessed  map[ids.Hash]bool       // events this node has stated a view on
 	pending    []pendingAlarm          // falsehood alarms of others, not yet checkable
+	forkChecks []forkCheck             // fork alarms of others, not yet checked
 	waiting    []pendingUpdate         // updates whose claims have not arrived yet
 	updates    map[ids.Hash]bool       // corrections whose update was recorded
 	boots      map[ids.BootID]bool     // the boots a boot record in the log names
