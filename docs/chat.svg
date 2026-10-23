@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="636" viewBox="0 0 760 636" role="img" aria-label="The Telegram chat during the lab run of 2026-10-23: one line when the internet was down for three minutes, one when beryl2 rebooted unexpectedly, one when flint2 rebooted as planned">
+<defs>
+  <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#4493f8"/></linearGradient>
+</defs>
+<style>
+  .m{opacity:0;animation:show 12s ease-in-out infinite}
+  @keyframes show{0%{opacity:0}4%,92%{opacity:1}97%,100%{opacity:0}}
+  .b0{animation-delay:0s}.b1{animation-delay:2.4s}.b2{animation-delay:4.8s}.b3{animation-delay:7.2s}
+  @media (prefers-reduced-motion:reduce){.m{opacity:1;animation:none}}
+</style>
+<rect width="760" height="636" fill="#0e1621"/>
+<rect width="760" height="4" fill="url(#accent)"/>
+<rect x="0" y="4" width="760" height="74" fill="#17212b"/>
+<circle cx="52" cy="41" r="22" fill="#5288c1"/>
+<text x="52" y="48" font-family="ui-sans-serif,system-ui,sans-serif" font-size="20" fill="#e6edf3" font-weight="600" text-anchor="middle">R</text>
+<text x="88" y="37" font-family="ui-sans-serif,system-ui,sans-serif" font-size="17" fill="#e6edf3" font-weight="600">your bot</text>
+<text x="88" y="58" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" fill="#6d8296">bot, private chat bound with one code</text>
+
+<g class="m b0">
+  <text x="28" y="112" font-family="ui-sans-serif,system-ui,sans-serif" font-size="12" fill="#2dd4bf">flint2's route to the internet removed for three minutes</text>
+  <rect x="28" y="122" width="440" height="86" rx="14" fill="#182533"/>
+  <text x="44" y="148" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">home: internet was down from 18:07 to 18:10</text>
+  <text x="44" y="170" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">(3 min), confirmed by 0 of 2. Seen by flint2.</text>
+  <text x="44" y="192" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">Times are approximate.</text>
+</g>
+
+<g class="m b1">
+  <text x="28" y="250" font-family="ui-sans-serif,system-ui,sans-serif" font-size="12" fill="#2dd4bf">beryl2 forced to reboot, with no clean shutdown</text>
+  <rect x="28" y="260" width="440" height="86" rx="14" fill="#182533"/>
+  <text x="44" y="286" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">home: beryl2 rebooted unexpectedly at 18:11,</text>
+  <text x="44" y="308" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">back after 44 s, confirmed by 0 of 2.</text>
+  <text x="44" y="330" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">Times are approximate.</text>
+</g>
+
+<g class="m b2">
+  <text x="28" y="388" font-family="ui-sans-serif,system-ui,sans-serif" font-size="12" fill="#2dd4bf">flint2 rebooted with a clean shutdown, at 18:16</text>
+  <rect x="28" y="398" width="440" height="64" rx="14" fill="#182533"/>
+  <text x="44" y="424" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">home: flint2 rebooted as planned at 18:16,</text>
+  <text x="44" y="446" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">back after 45 s, confirmed by 1 of 2.</text>
+</g>
+
+<g class="m b3">
+  <rect x="28" y="494" width="560" height="58" rx="12" fill="#0f1520" stroke="#30363d"/>
+  <text x="46" y="518" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" fill="#9aa7b8">One message for each incident, and nothing in between:</text>
+  <text x="46" y="538" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" fill="#9aa7b8">heartbeats never reach the chat.</text>
+</g>
+
+<text x="28" y="590" font-family="ui-sans-serif,system-ui,sans-serif" font-size="12" fill="#69788b">Lines as the chat received them in the lab run of 2026-10-23: Flint 2 and two Beryl AX,</text>
+<text x="28" y="608" font-family="ui-sans-serif,system-ui,sans-serif" font-size="12" fill="#69788b">OpenWrt 25.12.5. The wording is that day's and may change before a release.</text>
+</svg>

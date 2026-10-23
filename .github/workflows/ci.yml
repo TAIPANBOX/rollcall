@@ -1,0 +1,334 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  gates:
+    name: format, vet, test, gates and vulnerabilities
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed for:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Verify modules
+        run: go mod verify
+
+      - name: Build with the release flags
+        run: CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=ci" -o "$RUNNER_TEMP/" ./cmd/...
+
+      - name: Test with the race detector and coverage profile
+        run: go test -race -coverprofile=coverage.out ./...
+
+      - name: Simulator sweep, 200 seeds
+        run: ROLLCALL_SEEDS=200 go test ./internal/sim/ -run 'TestSweep' -timeout 15m
+
+      - name: Coverage is not below the committed baseline
+        run: ROLLCALL_COVERAGE=1 go test ./internal/gates -run TestCoverageNotBelowBaseline -v
+
+      - name: Vulnerability check
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+  # Two builds of one commit must be byte-identical. Each build has its own step, its own
+  # build cache and its own output directory, and -trimpath keeps the checkout path out.
+  reproducible:
+    name: linux/arm64 builds are byte-identical
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build linux/arm64, first time
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/first"
+          for cmd in rollcalld rollcall; do
+            GOCACHE="$RUNNER_TEMP/cache-first" CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+              go build -trimpath -buildvcs=false -ldflags "-s -w -X main.version=ci" \
+              -o "$RUNNER_TEMP/first/$cmd" "./cmd/$cmd"
+          done
+
+      - name: Build linux/arm64, second time, with an empty cache
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/second"
+          for cmd in rollcalld rollcall; do
+            GOCACHE="$RUNNER_TEMP/cache-second" CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+              go build -trimpath -buildvcs=false -ldflags "-s -w -X main.version=ci" \
+              -o "$RUNNER_TEMP/second/$cmd" "./cmd/$cmd"
+          done
+
+      - name: Compare the sha256 of both builds
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP"
+          sha256sum first/rollcalld first/rollcall second/rollcalld second/rollcall
+          for cmd in rollcalld rollcall; do
+            a=$(sha256sum "first/$cmd" | cut -d' ' -f1)
+            b=$(sha256sum "second/$cmd" | cut -d' ' -f1)
+            if [ "$a" != "$b" ]; then
+              echo "$cmd differs between the two builds"
+              exit 1
+            fi
+          done
+
+  # The mutation score is recorded, not gated: --threshold-efficacy 0 never fails a package,
+  # and the job is continue-on-error until a threshold is agreed. The 80 percent target in the
+  # plan is not enforced here. gremlins is pinned to an exact release and run only in CI.
+  # The job runs on a manual dispatch and on a tag push, not on every push or pull request.
+  mutation:
+    name: mutation score (reported, not gating)
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Run gremlins v0.6.0 on the core packages
+        run: |
+          set -u
+          mkdir -p mutation
+          for p in sig wire replay epoch roster pairing history elect deliver node; do
+            go run github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0 unleash \
+              --threshold-efficacy 0 --output "mutation/$p.json" "./internal/$p" \
+              > "mutation/$p.txt" 2>&1
+            echo "$p: exit $?" >> mutation/exit-codes.txt
+          done
+
+      - name: Put the scores on the run page
+        if: always()
+        run: |
+          {
+            echo "### gremlins (reported, not gating)"
+            for f in mutation/*.txt; do
+              echo "- $(basename "$f" .txt): $(grep -i -m1 'efficacy' "$f" || echo 'no efficacy line; see the artifact')"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the scores
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mutation-scores
+          path: mutation/
+          if-no-files-found: warn
+
+  # The Linux half of the packaging. mkipk takes its GNU tar branch here (macOS has bsdtar),
+  # and mkapk runs apk-tools v3 from the digest-pinned alpine image. Both run on every push, so
+  # a packaging break shows before a tag is cut.
+  packaging:
+    name: packages build and contain the right files
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build the x86_64 release set with a test version
+        run: make release VERSION=0.0.0-ci TARGETS=x86_64
+
+      - name: The ipk and the apk contain what the router needs
+        run: |
+          set -eu
+          cd dist/release
+          shasum -a 256 -c SHA256SUMS
+          ipk=rollcall_0.0.0-ci_x86_64.ipk
+          tar -xzf "$ipk" -C "$RUNNER_TEMP"
+          tar -tzf "$RUNNER_TEMP/data.tar.gz" | sort > "$RUNNER_TEMP/got"
+          for f in ./usr/bin/rollcalld ./usr/bin/rollcall ./etc/init.d/rollcall \
+                   ./etc/config/rollcall ./etc/seccomp/rollcall.json ./lib/upgrade/keep.d/rollcall \
+                   ./etc/capabilities/rollcall.json ./etc/capabilities/rollcall-none.json; do
+            grep -qx "$f" "$RUNNER_TEMP/got" || { echo "missing from the ipk: $f"; exit 1; }
+          done
+          tar -xzf "$RUNNER_TEMP/control.tar.gz" -C "$RUNNER_TEMP"
+          grep -qx /etc/config/rollcall "$RUNNER_TEMP/conffiles" || { echo "config is not a conffile"; exit 1; }
+          apk=rollcall-0.0.0_pre0-r1-x86_64.apk
+          docker run --rm -v "$PWD:/work" -w /work \
+            alpine@sha256:020dfcbaaf4cc1078bf2d9c7ba31a8466e334061dcd2f248001d68f79e52c000 \
+            apk adbdump "$apk" > "$RUNNER_TEMP/adbdump.txt"
+          grep -q 'name: etc/seccomp' "$RUNNER_TEMP/adbdump.txt" || { echo "apk lacks the seccomp profile"; exit 1; }
+          # The empty capability set of every start without ICMP probes: without it ujail refuses to start.
+          grep -q 'name: rollcall-none.json' "$RUNNER_TEMP/adbdump.txt" || { echo "apk lacks the empty capabilities file"; exit 1; }
+
+      # procd runs /etc/init.d/rollcall as root and hotplug runs /usr/bin/rollcall as root, so an
+      # entry any other account owns lets that account gain root. The gate reads every header of
+      # the three tars of each .ipk and, through apk's own listing, every acl of each .apk.
+      - name: Every entry of every package is owned by root (uid 0, gid 0)
+        run: |
+          set -eu
+          mkdir -p dist/adbdump
+          for apk in dist/release/*.apk; do
+            name=$(basename "$apk")
+            docker run --rm -v "$PWD/dist/release:/work:ro" -w /work \
+              alpine@sha256:020dfcbaaf4cc1078bf2d9c7ba31a8466e334061dcd2f248001d68f79e52c000 \
+              apk adbdump "$name" > "dist/adbdump/$name.txt"
+          done
+          ROLLCALL_PACKAGES=1 go test ./internal/gates -run '^TestPackagesOwnedByRoot$' -count=1 -v
+
+      - name: The owner check fails on a real package with a nobody-owned file (teeth)
+        run: |
+          set -eu
+          t="$RUNNER_TEMP/owners-teeth"
+          rm -rf "$t" && mkdir -p "$t/dist/release" "$t/dist/adbdump"
+          cp dist/release/*.ipk "$t/dist/release/"
+          docker run --rm -v "$t/dist:/d" \
+            alpine@sha256:020dfcbaaf4cc1078bf2d9c7ba31a8466e334061dcd2f248001d68f79e52c000 sh -c '
+              set -e
+              mkdir -p /tree/usr/bin && echo planted > /tree/usr/bin/planted
+              chown 65534:65534 /tree/usr/bin/planted
+              apk mkpkg --info name:planted --info version:1-r1 --files /tree --output /d/release/planted-1-r1.apk
+              apk adbdump /d/release/planted-1-r1.apk > /d/adbdump/planted-1-r1.apk.txt'
+          if ROLLCALL_PACKAGES=1 ROLLCALL_REPO_ROOT="$t" go test ./internal/gates -run '^TestPackagesOwnedByRoot$' -count=1 -v > "$t/out.txt" 2>&1; then
+            cat "$t/out.txt"
+            echo "the owner check passed a package with a nobody-owned file"
+            exit 1
+          fi
+          grep -q 'usr/bin/planted: user nobody' "$t/out.txt" || { cat "$t/out.txt"; echo "the owner check failed, but not on the planted file"; exit 1; }
+          echo "the owner check fails on the planted nobody-owned file, as it must"
+
+  # rollcalld started directly, as procd starts it on a router, with no loader: it installs its own
+  # seccomp filter (internal/sandbox) from the shipped list of its architecture, because procd
+  # cannot filter a statically linked program. The job requires that filter in force on every
+  # thread (Seccomp 2, NoNewPrivs 1, one filter more than the harness) and the daemon to start,
+  # serve the control socket, bind UDP and TCP 7432, start a node after rollcall init, route a
+  # heartbeat to a static peer, run discovery and stop cleanly; then daemons built with one call
+  # left out of the list must be killed by SIGSYS (tools/seccomp-run/prove.sh). Before that, the
+  # sandbox tests re-execute a child that installs the filter and makes a forbidden call, on the
+  # main thread and on a second one (TSYNC), on this runner's kernel.
+  # The configuration is laid out as on OpenWrt 25.12: network and system root's alone (0600), so
+  # the daemon, run unprivileged, starts only from the snapshot root writes (rollcall snapshot).
+  # Both runner types are free for a public repository. linux/arm runs on the arm64 runner only
+  # where its CPU and kernel execute AArch32; the job reports NOT RUN where they do not. mips has
+  # no runner and is proven from the sources only.
+  seccomp:
+    name: seccomp profile runs the daemon (${{ matrix.openwrt }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - openwrt: x86_64
+            goarch: amd64
+            runner: ubuntu-latest
+            optional: ""
+          - openwrt: aarch64_cortex-a53
+            goarch: arm64
+            runner: ubuntu-24.04-arm
+            optional: ""
+          - openwrt: arm_cortex-a7
+            goarch: arm
+            runner: ubuntu-24.04-arm
+            optional: optional
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Sandbox tests on this runner's kernel
+        run: go test ./internal/sandbox -count=1 -v
+
+      - name: Run rollcalld with its own filter
+        env:
+          OPENWRT_ARCH: ${{ matrix.openwrt }}
+          RUN_GOARCH: ${{ matrix.goarch }}
+          OPTIONAL: ${{ matrix.optional }}
+        run: tools/seccomp-run/prove.sh "$OPENWRT_ARCH" "$RUN_GOARCH" "$OPTIONAL"
+
+  # The apk packages a lab run installs on its routers (docs/lab/runbook.md, step 1), built only
+  # when the workflow is run by hand, so no developer machine needs Docker or apk-tools v3. They
+  # carry a test version and are unsigned: the runbook installs them with --allow-untrusted on lab
+  # routers only.
+  lab-packages:
+    name: apk packages for the lab (manual runs only)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build the rollcall and LuCI apk packages for aarch64_cortex-a53
+        # The version grows with each run (0.0.0-rcN, apk 0.0.0_rcN), so apk add on a router that
+        # holds an earlier lab build upgrades it instead of keeping the installed one.
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          set -eu
+          make apk luci VERSION="0.0.0-rc$RUN_NUMBER" TARGETS=aarch64_cortex-a53
+          find dist/pkg -name '*.apk' -exec sha256sum {} +
+
+      - name: Keep the packages for the lab run
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lab-packages
+          path: dist/pkg/**/*.apk
+          if-no-files-found: error
+          retention-days: 7

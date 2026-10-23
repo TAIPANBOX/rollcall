@@ -1,0 +1,410 @@
+// Command rollcalld is the rollcall daemon.
+//
+//	rollcalld -config /etc/config/rollcall -state /etc/rollcall -run /var/run/rollcalld \
+//	          -control /var/run/rollcall/control.sock
+//
+// It reads /etc/config/rollcall, and the firewall zones, their devices and
+// the time zone from the snapshot root writes before it starts (rollcall
+// snapshot): never /etc/config/network, system or firewall, which may be
+// root's alone and hold secrets. It listens on the devices of the peer zones
+// only; serves the control socket for the CLI; and runs the node once a
+// second. SIGTERM and SIGINT stop it cleanly. It never runs a command and
+// never talks to ubus. Before any of that it installs its own seccomp filter
+// (internal/sandbox), from the list the package ships for its architecture.
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"log"
+	"maps"
+	"net"
+	"net/netip"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"runtime"
+	"slices"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"time"
+	_ "time/tzdata" // the router has no zoneinfo package; the zone comes from /etc/config/system
+
+	"github.com/TAIPANBOX/rollcall/cmd/rollcalld/daemon"
+	"github.com/TAIPANBOX/rollcall/internal/channel"
+	"github.com/TAIPANBOX/rollcall/internal/config"
+	"github.com/TAIPANBOX/rollcall/internal/control"
+	"github.com/TAIPANBOX/rollcall/internal/host"
+	"github.com/TAIPANBOX/rollcall/internal/ids"
+	"github.com/TAIPANBOX/rollcall/internal/node"
+	"github.com/TAIPANBOX/rollcall/internal/probe"
+	"github.com/TAIPANBOX/rollcall/internal/sandbox"
+	"github.com/TAIPANBOX/rollcall/internal/transport"
+)
+
+// version is set at build time with -ldflags "-X main.version=<tag>".
+var version = "dev"
+
+// The control socket (packaging/README.md); cmd/rollcall names the same.
+const (
+	ControlDirPath    = "/var/run/rollcall"
+	ControlSocketPath = "/var/run/rollcall/control.sock"
+)
+
+const tickEvery = time.Second
+
+func main() {
+	var f flags
+	flag.StringVar(&f.config, "config", "/etc/config/rollcall", "rollcall configuration")
+	flag.StringVar(&f.snapshot, "snapshot", config.SnapshotPath, "the facts root takes from the firewall, network and system files beside -config (rollcall snapshot)")
+	flag.StringVar(&f.state, "state", "/etc/rollcall", "state directory (identity, roster, keys, history)")
+	flag.StringVar(&f.run, "run", "/var/run/rollcalld", "run-time directory")
+	flag.StringVar(&f.control, "control", ControlSocketPath, "control socket")
+	showVersion := flag.Bool("version", false, "print the version and exit")
+	flag.Parse()
+	if *showVersion {
+		fmt.Println("rollcalld", version)
+		return
+	}
+	if flag.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "rollcalld: unexpected arguments")
+		os.Exit(2)
+	}
+	log.SetFlags(0)
+	// The seccomp filter goes on here, before anything else the daemon does: until now only the
+	// Go runtime's start, package initialisation (none of rollcall's packages has an init
+	// function or a variable that opens anything) and the command line have run, and none of
+	// them opens a file or a socket. Everything that does (the snapshot and configuration, the
+	// state directory, the listeners, the control socket, Telegram, the probes) is in run, so it
+	// all runs filtered, and the list holds every call it makes (internal/gates
+	// TestSeccompRuntimeSetPerArch). The calls made only before this point are free of the
+	// filter. procd cannot install it: it applies a profile through LD_PRELOAD, which a static
+	// binary never loads. A daemon that cannot filter itself does not run (security spec 1.5,
+	// 4.10); off Linux, a developer build, there is nothing to install.
+	if n, err := sandbox.Confine(); err != nil {
+		log.Printf("rollcalld: refusing to run without its seccomp filter: %v", err)
+		os.Exit(1)
+	} else if n > 0 {
+		log.Printf("rollcalld: seccomp filter installed on every thread: %d system calls of linux/%s allowed, any other ends the process", n, runtime.GOARCH)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+	if err := run(ctx, f); err != nil {
+		log.Printf("rollcalld: %v", err)
+		os.Exit(1)
+	}
+}
+
+type flags struct {
+	config, state, run, control, snapshot string
+}
+
+// loadConfig reads the configuration the daemon runs with: the rollcall file,
+// and the snapshot for everything from the firewall, network and system files.
+// A snapshot that is missing, malformed or stale stops the start (fail closed);
+// the daemon never reads those files instead, since on OpenWrt 25.12 network
+// and system are root's alone and may hold PPPoE passwords and WireGuard keys.
+func loadConfig(f flags) (config.Config, map[string][]string, error) {
+	s, err := config.ReadSnapshot(f.snapshot, filepath.Dir(f.config))
+	if err != nil {
+		return config.Config{}, nil, fmt.Errorf("refusing to start without a current snapshot of the firewall, network and system configuration: %w; "+
+			"/etc/init.d/rollcall writes it as root before each start (rollcall snapshot), and rollcalld never reads those files itself", err)
+	}
+	cfg, zones, err := config.LoadWithSnapshot(f.config, s)
+	if err != nil {
+		return config.Config{}, nil, fmt.Errorf("configuration: %w", err)
+	}
+	return cfg, zones, nil
+}
+
+func run(ctx context.Context, f flags) error {
+	cfg, zones, err := loadConfig(f)
+	if err != nil {
+		return err
+	}
+	devices := peerDevices(zones)
+
+	// The filter main installed must be in force before anything listens:
+	// sandboxGate reads it back from the kernel. rollcalld ships for Linux
+	// only; elsewhere there is no seccomp or no_new_privs to check, and the
+	// binary is a developer build. Nothing in UCI or on the command line turns
+	// the check off.
+	if runtime.GOOS == "linux" {
+		if err := sandboxGate("/"); err != nil {
+			return fmt.Errorf("%w; start rollcalld through /etc/init.d/rollcall", err)
+		}
+	}
+	if err := os.MkdirAll(f.run, 0o700); err != nil {
+		return err
+	}
+
+	boot, err := host.BootID()
+	if err != nil {
+		log.Printf("rollcalld: no boot ID from the kernel, so a restart looks like a reboot to the peers: %v", err)
+		boot = ids.BootID{}
+	}
+	release, _ := host.OpenWrtVersion()
+
+	// The transport's TCP gate needs the daemon, and the daemon the
+	// transport: the gate refuses until the daemon exists.
+	var d atomic.Pointer[daemon.Daemon]
+	auth := func(frame []byte) bool {
+		if dd := d.Load(); dd != nil {
+			return dd.Authenticate(frame)
+		}
+		return false
+	}
+	tr, err := openPeers(cfg.Port, devices, auth)
+	if err != nil {
+		return err
+	}
+	log.Printf("rollcalld %s: listening on port %d on %s; SO_BINDTODEVICE applied: %v",
+		version, cfg.Port, strings.Join(devices, ", "), tr.BoundToDevice())
+	devs := tr.Devices()
+	for _, line := range deviceNotes(nil, devs) {
+		log.Print(line)
+	}
+
+	dd, err := daemon.New(daemon.Options{
+		StateDir: f.state, Config: cfg, Devices: devices, Net: tr, Clock: daemon.SystemClock("/"),
+		Boot: boot, Versions: [2]string{release, version},
+		TelegramURL: channel.TelegramBaseURL, HTTP: channel.GuardedClient([]string{"api.telegram.org"}),
+		Discovery: func() map[string]error { return discoveryWith(transport.Discovery(devices), tr.Devices()) },
+		Sandbox:   func() node.SandboxStatus { s, _ := daemon.ReadSandbox("/"); return s },
+		Addrs:     func() []netip.Addr { return deviceAddrs(devices) },
+	})
+	if err != nil {
+		tr.Close()
+		return err
+	}
+	defer dd.Close()
+	d.Store(dd)
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	wg.Go(func() {
+		if err := tr.Serve(ctx, dd.HandlePacket, dd.HandleStream); err != nil {
+			errs <- fmt.Errorf("transport: %w", err)
+		}
+	})
+	wg.Go(func() {
+		if err := control.Serve(ctx, f.control, refreshOnIface(dd.Handle, tr.Refresh), control.WithSecrets(dd.Secrets)); err != nil {
+			errs <- err
+		}
+	})
+	wg.Go(func() { watchHost(ctx, dd, cfg) })
+
+	t := time.NewTicker(tickEvery)
+	defer t.Stop()
+	var failed error
+	flooded := false
+loop:
+	for {
+		select {
+		case <-ctx.Done():
+			break loop
+		case failed = <-errs:
+			break loop
+		case <-t.C:
+			dd.Step()
+			now := tr.Devices()
+			for _, line := range deviceNotes(devs, now) {
+				log.Print(line)
+			}
+			devs = now
+			if f := tr.UnderFlood(); f != flooded {
+				log.Print(floodNote(flooded, f, tr.Counters()))
+				flooded = f
+			}
+		}
+	}
+	cancel()
+	wg.Wait()
+	if failed != nil {
+		return failed
+	}
+	log.Printf("rollcalld: stopped")
+	return nil
+}
+
+// sandboxGate decides whether the daemon may listen (security spec 1.5,
+// 4.10, 14.2): the kernel must report, in root's proc/self/status ("/" on a
+// router), no_new_privs set (NoNewPrivs: 1) and seccomp in filter mode
+// (Seccomp: 2), which the filter main installs (sandbox.Confine) gives.
+// Anything else refuses, an unreadable status included: a daemon that cannot
+// show its sandbox does not run in a weaker mode. The jail is reported in
+// status but not decided here: it has no kernel flag to read.
+func sandboxGate(root string) error {
+	b, err := os.ReadFile(filepath.Join(root, "proc", "self", "status"))
+	if err != nil {
+		return fmt.Errorf("refusing to listen: the sandbox cannot be checked: %w", err)
+	}
+	var noNewPrivs, seccomp string
+	for line := range strings.Lines(string(b)) {
+		k, v, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		switch k {
+		case "NoNewPrivs":
+			noNewPrivs = strings.TrimSpace(v)
+		case "Seccomp":
+			seccomp = strings.TrimSpace(v)
+		}
+	}
+	switch {
+	case noNewPrivs != "1":
+		return fmt.Errorf("refusing to listen: no_new_privs is not set (NoNewPrivs: %q)", noNewPrivs)
+	case seccomp != "2":
+		return fmt.Errorf("refusing to listen: seccomp is not in filter mode (Seccomp: %q)", seccomp)
+	}
+	return nil
+}
+
+// openPeers opens the transport on the devices of the peer zones. It binds
+// what they carry now and follows them from then on: a device that does not
+// exist yet (wg0 not up), an address still in duplicate address detection, or
+// one that failed it, is reported in status and the log and tried again on
+// every pass, and stops none of the others.
+func openPeers(port int, devices []string, auth func([]byte) bool) (*transport.Transport, error) {
+	if len(devices) == 0 {
+		return nil, errors.New("the peer zones have no network devices")
+	}
+	tr, err := transport.Open(port, devices, auth)
+	if err != nil {
+		return nil, fmt.Errorf("listening on the peer zones: %w", err)
+	}
+	return tr, nil
+}
+
+// refreshOnIface passes each control command to h; after an interface event
+// from hotplug (rollcall notify iface ...) it also asks the transport for a
+// pass over the peer-zone devices, so an address that came or went, or a
+// device netifd recreated, is bound again at once.
+func refreshOnIface(h control.Handler, refresh func()) control.Handler {
+	return func(cmd string, args []string, uid uint32) ([]byte, error) {
+		out, err := h(cmd, args, uid)
+		if cmd == "notify" && len(args) > 0 && args[0] == "iface" {
+			refresh()
+		}
+		return out, err
+	}
+}
+
+// discoveryWith adds to disc, the discovery state of each device, what the
+// transport could not bind there, so status shows a peer-zone device that is
+// not listened on. A device whose lookup already failed keeps that one error.
+func discoveryWith(disc map[string]error, devs map[string]transport.DeviceStatus) map[string]error {
+	for name, st := range devs {
+		switch cur := disc[name]; {
+		case st.Err == nil:
+		case cur == nil:
+			disc[name] = st.Err
+		case errors.Is(cur, transport.ErrNoLinkLocal):
+			disc[name] = errors.Join(cur, st.Err)
+		}
+	}
+	return disc
+}
+
+// deviceNotes are the log lines for what changed on the peer-zone devices
+// since prev: one when a device cannot be listened on (or fully), and one
+// when it is listened on again.
+func deviceNotes(prev, cur map[string]transport.DeviceStatus) []string {
+	var out []string
+	for _, name := range slices.Sorted(maps.Keys(cur)) {
+		was, now := errText(prev[name].Err), errText(cur[name].Err)
+		if was == now && prev != nil {
+			continue
+		}
+		if now != "" {
+			out = append(out, fmt.Sprintf("rollcalld: %s: %s; tried again every %s and on each interface event", name, now, transport.ReconcileEvery))
+			continue
+		}
+		var addrs []string
+		for _, a := range cur[name].Addrs {
+			addrs = append(addrs, a.String())
+		}
+		out = append(out, fmt.Sprintf("rollcalld: %s: listening on %s", name, strings.Join(addrs, ", ")))
+	}
+	return out
+}
+
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return strings.ReplaceAll(err.Error(), "\n", "; ")
+}
+
+// watchHost runs the internet probe and the default-route watch.
+func watchHost(ctx context.Context, d *daemon.Daemon, cfg config.Config) {
+	h := &daemon.Host{D: d, Routes: &host.RouteWatch{},
+		Probe: &probe.Prober{Probe: daemon.InternetProbe(cfg.ProbeTargets, cfg.ICMP, probe.TCP, probe.ICMP)}}
+	t := time.NewTicker(tickEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			h.Tick(now)
+		}
+	}
+}
+
+// peerDevices is every device of every peer zone, once, sorted.
+func peerDevices(zones map[string][]string) []string {
+	var out []string
+	for _, devs := range zones {
+		out = append(out, devs...)
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+// deviceAddrs lists the addresses of the devices, for invite.
+func deviceAddrs(devices []string) []netip.Addr {
+	var out []netip.Addr
+	for _, dev := range devices {
+		ifi, err := net.InterfaceByName(dev)
+		if err != nil {
+			continue
+		}
+		addrs, err := ifi.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			if n, ok := a.(*net.IPNet); ok {
+				if ip, ok := netip.AddrFromSlice(n.IP); ok {
+					out = append(out, ip.Unmap())
+				}
+			}
+		}
+	}
+	return out
+}
+
+// floodNote is the log line when the transport's flood signal changes, and
+// "" while it holds. The flood is local: it reaches the log and status, never
+// the chat (security spec 5.2).
+func floodNote(was, now bool, c transport.Counters) string {
+	switch {
+	case now && !was:
+		return fmt.Sprintf("rollcalld: under flood: the peer zones carry more than the transport admits; "+
+			"UDP dropped so far: %d failing authentication from unknown addresses, %d over one address's rate, "+
+			"%d over the rate of known addresses, %d over the rate of checks for unknown ones, %d oversize; "+
+			"TCP refused so far: %d over one address's slots, %d with every slot taken, %d without a first frame in time, %d failing authentication",
+			c.Unverified, c.SourceLimited, c.KnownLimited, c.UnknownLimited, c.Oversize, c.ConnsSource, c.ConnsFull, c.PreAuth, c.AuthFailed)
+	case was && !now:
+		return "rollcalld: the flood on the peer zones has stopped"
+	}
+	return ""
+}

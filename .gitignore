@@ -14,3 +14,4 @@ coverage.out
 *.secret
 secrets/
 keys/
+.DS_Store

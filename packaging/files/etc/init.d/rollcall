@@ -1,0 +1,254 @@
+#!/bin/sh /etc/rc.common
+# rollcall: watches the routers of one site and reports incidents to the chat.
+# The daemon runs as its own user, with no_new_privs, in a jail, and installs its own seccomp
+# allow-list at start. It never talks to ubus: interface events arrive through hotplug and the CLI.
+
+USE_PROCD=1
+START=95
+STOP=05
+
+DAEMON=/usr/bin/rollcalld
+CLI=/usr/bin/rollcall
+
+EXTRA_COMMANDS="firewall"
+EXTRA_HELP="	firewall	Rebuild the firewall rules that open the rollcall port to the peer zones"
+
+start_service() {
+	local icmp out
+	config_load rollcall
+	config_get_bool icmp main icmp 0
+
+	# The control socket lives in its own directory, made here as root before the jail is built.
+	# The daemon runs as rollcall and creates control.sock in it, so rollcall owns it. Nobody else
+	# may write to it: internal/control refuses a directory that group or others can write without
+	# the sticky bit. Root, which runs the CLI from hotplug and LuCI, reaches the socket anyway.
+	# The path is the constant ControlDirPath in packaging/README.md.
+	mkdir -p /var/run/rollcall
+	chown rollcall:rollcall /var/run/rollcall
+	chmod 0700 /var/run/rollcall
+	# The run-time directory (-run) is mounted into the jail too, so it must exist first. It lives
+	# under /var/run (/tmp/run, root's alone), never under /tmp, where anyone could plant a symbolic
+	# link for root's chown to follow.
+	mkdir -p /var/run/rollcalld
+	chown rollcall:rollcall /var/run/rollcalld
+	chmod 0700 /var/run/rollcalld
+	# The daemon never reads /etc/config/network, system or firewall: on OpenWrt 25.12 network and
+	# system are root's alone (0600) and may hold PPPoE passwords and WireGuard private keys. Root
+	# writes what the daemon needs from them (the zones, their devices, which zones face the
+	# internet, the time zone) to /var/run/rollcall/snapshot.json, root:rollcall 0640, before every
+	# start. When that fails, the CLI removes the old snapshot and the daemon refuses to start.
+	if ! out=$("$CLI" snapshot 2>&1); then
+		rollcall_warn "$out"
+	fi
+
+	procd_open_instance
+	procd_set_param command "$DAEMON" -config /etc/config/rollcall -state /etc/rollcall -run /var/run/rollcalld
+	procd_set_param user rollcall
+	procd_set_param group rollcall
+	procd_set_param no_new_privs 1
+	# No procd_set_param seccomp: procd applies a profile through LD_PRELOAD of
+	# /lib/libpreload-seccomp.so, which the statically linked rollcalld never loads, so it filtered
+	# nothing (Seccomp 0 on OpenWrt 25.12.5). rollcalld installs the filter itself, from the same
+	# list as /etc/seccomp/rollcall.json, before it opens any file or socket, on every thread, and
+	# refuses to run when it cannot; it then refuses to listen unless the kernel shows it in force.
+	procd_set_param respawn
+	# The daemon reads these at start; reload_service restarts it when one of them changed. The
+	# snapshot changes when a zone, its devices or the time zone do, and not when the firewall
+	# command rewrites the firewall file unchanged.
+	procd_set_param file /etc/config/rollcall /var/run/rollcall/snapshot.json
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	# CAP_NET_RAW is granted only for ICMP probes. Without the option the daemon holds no
+	# capability in any set, the bounding set included: without a file ujail sets none of them,
+	# and the setuid to rollcall empties the others but leaves the bounding set full. The empty
+	# file names all five sets, because ujail of procd 2026.03 reads an absent one as every
+	# capability. rollcalld cannot empty the bounding set itself: that needs CAP_SETPCAP.
+	if [ "$icmp" = 1 ]; then
+		procd_set_param capabilities /etc/capabilities/rollcall.json
+	else
+		procd_set_param capabilities /etc/capabilities/rollcall-none.json
+	fi
+	# procfs and sysfs: the daemon reads its boot ID, its own sandbox state, the routes and the
+	# interface state from /proc and /sys. ronly remounts the jail's root read-only (ujail -o), so
+	# only the procd_add_jail_mount_rw paths below are writable (security section 7).
+	procd_add_jail rollcall log procfs sysfs ronly requirejail
+	procd_add_jail_mount_rw /etc/rollcall /var/run/rollcalld /var/run/rollcall
+	# Read-only. Never /etc/config/network, system or firewall, nor a directory holding them: the
+	# snapshot in /var/run/rollcall carries all the daemon takes from them.
+	procd_add_jail_mount /etc/config/rollcall /etc/openwrt_release /etc/ssl/certs /usr/share/zoneinfo
+	# DNS for api.telegram.org and probe host names. /etc/resolv.conf links to /tmp/resolv.conf,
+	# which boot links to /tmp/resolv.conf.d/resolv.conf.auto and dnsmasq may replace with its own
+	# file. All three are mounted read-only, so the name resolves however ujail stages the link.
+	procd_add_jail_mount /etc/resolv.conf /tmp/resolv.conf /tmp/resolv.conf.d
+	procd_close_instance
+}
+
+service_triggers() {
+	# A change of the rollcall or firewall configuration (LuCI apply, reload_config) runs
+	# reload_service: the firewall rules follow the peer zones, the port and the static peers.
+	procd_add_reload_trigger rollcall firewall
+}
+
+reload_service() {
+	firewall
+	/etc/init.d/firewall reload >/dev/null 2>&1 || true
+	# start runs start_service, which writes the snapshot again before procd compares the files.
+	start
+}
+
+# firewall rebuilds the firewall rules that open the rollcall port. It is the only rule builder:
+# uci-defaults and postinst run it at install, reload_service after a change. It reads the
+# configuration through uci alone and removes every rule an earlier run wrote first.
+#
+# One rule per peer zone (no peer_zone: lan, the daemon's default), UDP and TCP to option port
+# (default 7432). A zone that faces the internet, as internal/config decides it (masq or masq6
+# set to anything but an off value, or the zone is or holds the network wan, wan6 or wwan), is
+# opened only to the addresses of the static peers, one rule per address family, and gets no
+# rule at all without a static peer. An unknown zone, a bad port or no rollcall section gives no
+# rule, and says why.
+firewall() {
+	local port zones zone peer addr kind v4= v6= n=0 i=1
+	set -f
+	uci -q delete firewall.rollcall
+	while uci -q get "firewall.rollcall_$i" >/dev/null; do
+		uci -q delete "firewall.rollcall_$i"
+		i=$((i + 1))
+	done
+	if ! uci -q get 'rollcall.@rollcall[0]' >/dev/null; then
+		rollcall_warn "no rollcall section in /etc/config/rollcall: no firewall rule"
+	elif ! port=$(rollcall_port); then
+		rollcall_warn "option port is not a number from 1024 to 65535: no firewall rule"
+	else
+		zones=$(uci -q get 'rollcall.@rollcall[0].peer_zone')
+		[ -n "$zones" ] || zones=lan
+		for peer in $(uci -q get 'rollcall.@rollcall[0].peer'); do
+			addr=$(rollcall_peer_addr "$peer")
+			case $addr in
+			'') rollcall_warn "static peer '$peer' is not an address: left out of the firewall rule" ;;
+			*:*) v6="$v6 $addr" ;;
+			*) v4="$v4 $addr" ;;
+			esac
+		done
+		for zone in $zones; do
+			case $zone in
+			'' | *[!A-Za-z0-9_-]*)
+				rollcall_warn "peer zone '$zone' is not a zone name: no rule"
+				continue
+				;;
+			esac
+			kind=$(rollcall_zone_kind "$zone")
+			case $kind in
+			internal) rollcall_rule "$zone" ;;
+			external)
+				if [ -z "$v4$v6" ]; then
+					rollcall_warn "peer zone '$zone' faces the internet and there is no static peer: no rule"
+					continue
+				fi
+				[ -z "$v4" ] || rollcall_rule "$zone" ipv4 "$v4"
+				[ -z "$v6" ] || rollcall_rule "$zone" ipv6 "$v6"
+				;;
+			*) rollcall_warn "peer zone '$zone' is not a zone of /etc/config/firewall: no rule" ;;
+			esac
+		done
+	fi
+	uci commit firewall
+	set +f
+}
+
+# rollcall_rule writes rule number n: the zone, and for a zone facing the internet the address
+# family and the static peers' addresses of that family.
+rollcall_rule() {
+	local s a
+	n=$((n + 1))
+	s=firewall.rollcall_$n
+	uci set "$s=rule"
+	uci set "$s.name=Allow-rollcall-$1${2:+-$2}"
+	uci set "$s.src=$1"
+	uci add_list "$s.proto=udp"
+	uci add_list "$s.proto=tcp"
+	uci set "$s.dest_port=$port"
+	uci set "$s.target=ACCEPT"
+	[ -n "$2" ] || return 0
+	uci set "$s.family=$2"
+	for a in $3; do
+		uci add_list "$s.src_ip=$a"
+	done
+}
+
+# rollcall_port prints option port without leading zeros, or fails when it is not a number from
+# 1024 to 65535 (the daemon refuses to start then, so nothing is opened).
+rollcall_port() {
+	local p
+	p=$(uci -q get 'rollcall.@rollcall[0].port') || p=7432
+	p=${p#"${p%%[!0]*}"}
+	case $p in
+	[1-9][0-9][0-9][0-9] | [1-9][0-9][0-9][0-9][0-9]) ;;
+	*) return 1 ;;
+	esac
+	[ "$p" -ge 1024 ] && [ "$p" -le 65535 ] || return 1
+	echo "$p"
+}
+
+# rollcall_peer_addr prints the address of a static peer written as IP, IP:port or [IPv6]:port,
+# without the zone of a link-local address, or nothing when it is not an address.
+rollcall_peer_addr() {
+	local a=$1
+	case $a in
+	\[*\]:*)
+		a=${a#\[}
+		a=${a%%\]*}
+		;;
+	*:*:*) ;;
+	*:*) a=${a%:*} ;;
+	esac
+	a=${a%%\%*}
+	case $a in
+	'' | *[!0-9A-Fa-f:.]*) return 0 ;;
+	esac
+	echo "$a"
+}
+
+# rollcall_zone_kind prints external for a firewall zone that faces the internet, internal for
+# any other zone, and nothing for a name no zone has. Every zone section with the name counts.
+rollcall_zone_kind() {
+	local i=0 found= ext= name v net
+	case $1 in
+	wan | wan6 | wwan) ext=1 ;;
+	esac
+	while uci -q get "firewall.@zone[$i]" >/dev/null; do
+		name=$(uci -q get "firewall.@zone[$i].name")
+		if [ "$name" = "$1" ]; then
+			found=1
+			for v in masq masq6; do
+				v=$(uci -q get "firewall.@zone[$i].$v") || continue
+				case $v in
+				0 | no | off | false | disabled) ;;
+				*) ext=1 ;;
+				esac
+			done
+			for net in $(uci -q get "firewall.@zone[$i].network"); do
+				case $net in
+				wan | wan6 | wwan) ext=1 ;;
+				esac
+			done
+		fi
+		i=$((i + 1))
+	done
+	[ -n "$found" ] || return 0
+	if [ -n "$ext" ]; then
+		echo external
+	else
+		echo internal
+	fi
+}
+
+rollcall_warn() {
+	echo "rollcall: $*" >&2
+	logger -t rollcall -p daemon.warn "$*" 2>/dev/null || true
+}
+
+shutdown() {
+	# Tell the peers this router is going down on purpose, before the instance stops.
+	"$CLI" notify going-down || true
+	stop
+}

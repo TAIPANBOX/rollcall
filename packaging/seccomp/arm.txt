@@ -1,0 +1,21 @@
+# 32-bit ARM (EABI) only: the legacy names that the 32-bit ABI uses where the 64-bit names do not
+# exist, and the 32-bit runtime's own calls: mmap2 (runtime·mmap; EABI has no mmap), brk
+# (runtime/malloc.go sbrk0 at start), open (runtime·open for getHugePageSize at start),
+# futex_time64 (runtime/os_linux32.go, every futex on kernels from 5.1), fstat64 and fstatat64
+# (os.File.Stat, os.Stat, os.Lstat) and the 32-bit uid calls. Written from the Go sources and the
+# x/sys tables; proven on ARM hardware only by the lab run.
+_llseek
+brk
+clock_gettime64
+fcntl64
+fstat64
+fstatat64
+futex_time64
+getegid32
+geteuid32
+getgid32
+getuid32
+mmap2
+open
+sigreturn
+ugetrlimit

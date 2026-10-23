@@ -1,0 +1,83 @@
+# System calls every rollcall profile allows, on every family (aarch64, amd64, arm, mips).
+# rollcalld embeds these lists and installs its own filter from them at start (internal/sandbox);
+# generate.sh writes the same names as /etc/seccomp/rollcall.json for the package.
+# One name per line; a name must exist on all four families (TestSeccompNamesExistPerArch checks it
+# against golang.org/x/sys), or it belongs in a family list. TestSeccompRuntimeSetPerArch names the
+# calls the Go 1.27 runtime, the standard library and the daemon make, each with the source that
+# makes it; among them prctl (runtime/set_vma_name_linux.go, PR_SET_VMA on every new mapping where
+# the kernel names mappings) and eventfd2 (runtime/netpoll_epoll.go, at the first file opened).
+# restart_syscall: the kernel resumes an interrupted sleep through it. No execve: the filter goes
+# on after the daemon was started, and the daemon never runs a program. The CI seccomp job runs
+# the daemon with its own filter on amd64 and aarch64; arm and mips are proven only from the sources.
+accept4
+bind
+clock_gettime
+clock_nanosleep
+clone
+clone3
+close
+connect
+dup3
+epoll_create1
+epoll_ctl
+epoll_pwait
+eventfd2
+exit
+exit_group
+faccessat
+fchmod
+fchmodat
+fcntl
+fdatasync
+fstat
+fsync
+ftruncate
+futex
+getdents64
+getegid
+geteuid
+getgid
+getpeername
+getpid
+getrandom
+getsockname
+getsockopt
+gettid
+getuid
+ioctl
+listen
+lseek
+madvise
+mkdirat
+mprotect
+munmap
+nanosleep
+openat
+pipe2
+prctl
+pread64
+prlimit64
+pwrite64
+read
+readlinkat
+recvfrom
+recvmsg
+renameat
+renameat2
+restart_syscall
+rt_sigaction
+rt_sigprocmask
+rt_sigreturn
+sched_getaffinity
+sched_yield
+sendmsg
+sendto
+setsockopt
+shutdown
+sigaltstack
+socket
+tgkill
+uname
+unlinkat
+write
+writev

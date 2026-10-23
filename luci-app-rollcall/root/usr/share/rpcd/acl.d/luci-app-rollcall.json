@@ -1,0 +1,39 @@
+{
+	"luci-app-rollcall": {
+		"description": "Read rollcall status: members, roles, sender, recent reports, sandbox and storage state",
+		"read": {
+			"file": {
+				"/usr/bin/rollcall status --json": [ "exec" ]
+			}
+		}
+	},
+
+	"luci-app-rollcall-admin": {
+		"description": "Change the rollcall group: invite, remove, roles, rotate, Telegram token and chat, admin takeover",
+		"read": {
+			"comment": "the admin page also reads the status, so the admin group carries the same read entry",
+			"file": {
+				"/usr/bin/rollcall status --json": [ "exec" ]
+			}
+		},
+		"write": {
+			"comment": "each entry is one exact command form. Options come before --, and a router name or, for invite, an address, the only glob, comes last after --; the CLI accepts exactly one word there and checks it (the roster name rule, or one IP address another router can reach). Recovery is not here: it is CLI-only, as root on the router.",
+			"file": {
+				"/usr/bin/rollcall invite --json": [ "exec" ],
+				"/usr/bin/rollcall invite --json --sender": [ "exec" ],
+				"/usr/bin/rollcall invite --json -- *": [ "exec" ],
+				"/usr/bin/rollcall invite --json --sender -- *": [ "exec" ],
+				"/usr/bin/rollcall remove --json -- *": [ "exec" ],
+				"/usr/bin/rollcall rotate --json": [ "exec" ],
+				"/usr/bin/rollcall set-token --json": [ "exec" ],
+				"/usr/bin/rollcall bind-telegram --json": [ "exec" ],
+				"/usr/bin/rollcall roles --json sender -- *": [ "exec" ],
+				"/usr/bin/rollcall roles --json primary -- *": [ "exec" ],
+				"/usr/bin/rollcall roles --json backup -- *": [ "exec" ],
+				"/usr/bin/rollcall roles --json none -- *": [ "exec" ],
+				"/usr/bin/rollcall admin takeover --json": [ "exec" ],
+				"/usr/bin/rollcall admin confirm --json": [ "exec" ]
+			}
+		}
+	}
+}

@@ -13,6 +13,9 @@ marks a fact read from the named primary source on 2026-10-22; everything else i
   should not.
 - `@decided 2026-10-22`: one primary admin router and one optional backup admin
   router, chosen by the owner; the admin list is extensible later (section 6.1).
+- `@decided 2026-10-22`: when a split leaves two diverging rosters, the branch started
+  with the higher authority wins (recovery key, then primary, then backup), and the
+  changes of the losing branch are announced in the chat as undone (section 6.1).
 - `@decided 2026-10-22`: history is a chain, not a list ordered by time, so that no
   router can overwrite another's data; routers that were down add their own part and
   check what was recorded without them (sections 5.7 to 5.9). v1 carries the
@@ -172,10 +175,44 @@ first frame must pass AEAD or the connection is closed.
   signing; an HPKE `MLKEM768X25519` key pair for receiving key material (hybrid, so a
   recording of today's pairing traffic stays safe against a future quantum computer).
 - Group epoch key: 32 random bytes created by the acting admin (6.1); packet keys derived with
-  HKDF-SHA256 with a fixed label. Rotation: on member removal, on `rollcall rotate`,
-  and every 30 days. During a switch the previous epoch is accepted for 60 seconds.
+  HKDF-SHA256 with a fixed label. Rotation: when a member is added or removed, on
+  `rollcall rotate`, and every 30 days. During a switch the previous epoch is accepted
+  for 60 seconds.
 - Epoch keys are delivered to each member sealed with HPKE to that member's receive
   key and signed by the acting admin.
+- **Every epoch key is bound to the roster it was issued under**: the delivery carries
+  that roster's version and hash, the key's sequence number within that version and
+  the issuing admin's place in that roster (primary or backup), all inside what the
+  admin signs. Keys are ordered by that binding, never by the epoch id on the wire: a
+  higher roster version first, then a higher sequence number, then the primary's key
+  before the backup's. The sequence number starts again at 1 with every roster version
+  and stops at 1023; at that cap rotation fails until the roster changes, so an admin
+  that pushes it there blocks rotation only until the owner removes it. The epoch id
+  in the packet header is 32 bits of a SHA-256 over the binding, the sequence number
+  and the admin's place, so two admins on the two sides of a split never issue the
+  same id.
+- A member takes a delivered key only when it fits its roster: bound to its current
+  roster, or to an earlier roster of its chain after which no member was removed,
+  and signed by an admin whose place the key carries. Of two fitting keys it keeps
+  the newer; a current key that no longer fits is replaced by a fitting one whatever
+  the order. A key bound to a roster the member does not hold yet is kept aside and
+  used only to fetch that roster from the admin who sent it; it is taken once the
+  roster is. A key bound to a roster that lost a member since is refused. So a removed
+  router never gets a key the rest of the group uses: the admin that signs the
+  removal rotates at once, the acting admin rotates whenever its own key stops
+  fitting (a removal signed elsewhere, by the recovery key for instance, or a split
+  that healed in favour of the other branch), and a key the backup made on its side
+  of a split, before the primary removed someone on the other side, does not fit the
+  roster that wins. Other roster changes (roles, admins, a takeover) keep the key, so
+  the two sides of a split that changed only roles still share a key when it heals.
+  (Refined during implementation on 2026-10-23: this replaces epoch ids ordered as
+  (sequence << 2) | authority, under which a removed admin could exhaust the sequence
+  and a backup's key could outrank the primary's after a split.)
+- A member that missed a switch for longer than the 60 s overlap still takes the new
+  key: the delivery is sealed under the key it last used, and the admin reads its
+  acknowledgement under that same key. A split during which both sides rotate (a
+  removal on each side, or the 30-day rotation) and that outlasts the overlap leaves
+  the two sides without a common key; they do not join again by themselves.
 
 ### 5.6 Roster
 
@@ -322,11 +359,36 @@ boot sequences raise a `duplicate_identity` alert.
   So a compromised backup cannot take over while the primary is alive and reachable.
   A takeover is provisional: if the former primary comes back, it restores itself as
   primary with the next roster version (announced in the chat), unless the owner has
-  confirmed the takeover as root on the backup or has used the recovery code. A
-  backup cannot keep the role by cutting the primary off for ten minutes.
+  confirmed the takeover or has used the recovery code. A confirmation made as root on
+  the backup takes effect only after a day: a member accepts it only when it has itself
+  heard nothing from the replaced primary for at least 24 hours, so a primary that
+  returns within that day still restores itself and the pending confirmation lapses.
+  The backup holds a confirmation made earlier and announces it once its own day of
+  silence has passed. A backup therefore cannot keep the role by cutting the primary
+  off for ten minutes: it would have to cut it off from every member for a whole day
+  while the takeover stands announced in the chat. The recovery code confirms at once.
+  A takeover and its confirmation signed together in one roster version wait for the
+  same day. A member counts the day from its own start at the latest, so a restart
+  starts it again; the backup keeps a held confirmation on flash, and the CLI says it
+  is held. A lapse is never told in the chat. The replaced
+  primary itself takes the confirmation of its replacement when it comes back, as it
+  takes the takeover.
+  @decided 2026-10-23: a confirmation by root on the backup waits for a day of silence
+  from the replaced primary; a confirmation that needs the recovery code was weighed and
+  not chosen, because it adds an owner step and puts the recovery code to routine use.
 - **Conflicts.** If the network splits and both sides change the roster, after healing
-  the higher version wins; at the same version the higher authority wins: recovery
-  key, then primary, then backup.
+  the branch whose first roster after the split was signed with the higher authority
+  wins: recovery key, then primary, then backup, judged against the last roster both
+  sides shared. A branch belongs to whoever started it, so a branch the primary started
+  keeps the primary's rank even when a backup it appointed on that side signs its later
+  rosters. At equal authority the branch whose newest roster has the higher version
+  wins, then the lower hash of that newest roster. Authority comes first so that a
+  compromised backup cannot win by making many changes during the split. Changes from
+  the branch that lost are not dropped silently: the chat gets one message listing what
+  was undone and which router made it, so a person can repeat what was wanted.
+  (Refined during implementation on 2026-10-22; the first draft ranked the version
+  first. Refined again on 2026-10-23: the version is read from each branch's newest
+  roster, since the first rosters of two branches always share one version.)
 - **Visibility.** Every roster change, role change and takeover is announced in the
   chat with the name of the router that signed it ("ap-office removed by admin
   gateway"). If an admin router is taken over by an attacker, its changes are seen at
@@ -342,10 +404,11 @@ boot sequences raise a `duplicate_identity` alert.
 | Control | Mechanism | Source / note |
 |---|---|---|
 | Own user | `procd_set_param user rollcall` (and group) | `@source` procd.sh supports `user`, `group` |
-| No privilege gain | `no_new_privs` | `@source` procd.sh |
+| No privilege gain | `no_new_privs`, set by procd and again by the daemon before it installs its filter | `@source` procd.sh |
 | No capabilities | empty capability set; ICMP probes are off by default (DNS and TCP 443 probes need none); enabling ICMP adds `CAP_NET_RAW` only | `@source` procd.sh supports `capabilities` |
-| System call allow-list | seccomp profile shipped with the package; `procd-seccomp` is a hard dependency (about 90 KiB) | `@source` 24.10 index |
-| Sandbox | ujail: read-only root, writable only `/etc/rollcall` and `/tmp/rollcall`; `procd-ujail` is a hard dependency (about 110 KiB) | `@source` procd.sh `_procd_add_jail`, 24.10 index |
+| System call allow-list | the daemon installs its own seccomp filter at start, from the per-architecture list the package ships: right after the command line and before it opens any file or socket, `no_new_privs`, then a classic BPF program (a call of another architecture killed, the listed calls allowed, any other kills the process) installed with `SECCOMP_FILTER_FLAG_TSYNC` on every thread; it refuses to run when that fails and to listen unless the kernel shows `Seccomp: 2`. The same lists produce `/etc/seccomp/rollcall.json`, a readable record that procd does not load; a gate keeps both equal per target. procd's `seccomp` parameter is not used: procd applies it through `LD_PRELOAD=/lib/libpreload-seccomp.so`, which a statically linked program never loads. `procd-seccomp` stays a hard dependency (section 14) | lab run 2026-10-23: under procd's parameter the daemon read `Seccomp: 0` on 25.12.5 |
+| Sandbox | ujail: read-only root, writable only `/etc/rollcall`, `/var/run/rollcalld` and `/var/run/rollcall`; read-only `/etc/config/rollcall`, the release file, certificates, zone data and resolver files; never `/etc/config/network`, `system` or `firewall`, nor a directory holding them; `procd-ujail` is a hard dependency (about 110 KiB) | `@source` procd.sh `_procd_add_jail`, 24.10 index |
+| Root-only configuration | network and system are mode 0600 root on 25.12 and may hold PPPoE passwords and WireGuard private keys, so the daemon never reads them: root (`rollcall snapshot`, run by the init script before each start and by the interface hotplug) parses network, firewall and system and writes only the zones, their devices, which zones face the internet and the time zone to `/var/run/rollcall/snapshot.json`, root:rollcall 0640; the daemon refuses to start when the snapshot is missing, malformed or older than those files, and never falls back to them | lab run 2026-10-23: the daemon could not open network on 25.12.5 |
 | ubus | ACL `/usr/share/acl.d/rollcall.json`: listen to `network.interface` events, call read-only `network.interface` status and `system` info, nothing else | `@source` ubusd_acl.c reads `/usr/share/acl.d` with user, access, listen, send |
 | Files | `/etc/rollcall/` 0700 owned by `rollcall`; key files 0600. Secrets never in UCI, so `uci show` and LuCI never see them | |
 | Control socket | `/var/run/rollcall.sock`, 0660 root:rollcall; `SO_PEERCRED`: only uid 0 may run admin commands; hooks run as root | |
@@ -469,8 +532,11 @@ gets a case in `scripts/gates-have-teeth.sh`. Mutation testing (T3) covers 2, 3,
 10. Telegram requests carry no parse mode (test).
 11. A member without the `sender` role never holds the token (pairing test).
 12. Missing or corrupt keys stop the listener (test).
-13. The service file sets the user, `no_new_privs`, seccomp and the jail (gate on the
-    init script) and the router run proves it (lab run).
+13. The service file sets the user, `no_new_privs` and the jail (gate on the init script);
+    the daemon installs its own seccomp filter, from the list the package ships, before it
+    opens any file or socket, on every thread, and does not run without it (gates on the list
+    and on `main`, tests that a forbidden call kills the process); the router run proves it
+    (lab run).
 14. A roster has exactly one primary, at most `MaxAdmins` admins and exactly one
     recovery key; any other shape is rejected (test and mutant).
 15. A takeover is accepted only by a member that has not heard the primary for 10
@@ -511,5 +577,10 @@ gets a case in `scripts/gates-have-teeth.sh`. Mutation testing (T3) covers 2, 3,
    warns that a backup file is as sensitive as a password, and rotation is one click.
 2. The sandbox packages (`procd-seccomp`, `procd-ujail`) are hard dependencies; a
    target that cannot run them is not shipped.
+   `@claude 2026-10-23`, beside the decision and not changing it: procd-seccomp cannot filter
+   rollcalld, which is statically linked (procd applies a profile through `LD_PRELOAD`), so the
+   daemon installs its own filter (section 7) and the init script no longer asks procd for one.
+   The dependency stays as decided; nothing of rollcall uses it now, and dropping it would be a
+   decision of its own.
 3. Admin recovery: an optional backup admin router plus the offline recovery code
    (section 6.1).

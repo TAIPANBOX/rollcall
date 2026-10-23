@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="580" viewBox="0 0 1280 580" role="img" aria-label="Install as it is today: build the packages, install them on every router, create the group on the first router, add the others with a join code, set the roles, give a sender the bot token on standard input, bind the chat, then check the sandbox">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0a0e16"/><stop offset="1" stop-color="#0d1117"/></linearGradient>
+  <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#4493f8"/></linearGradient>
+  <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#161b22" stroke-width="1"/></pattern>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#4493f8"/></marker>
+</defs>
+<rect width="1280" height="580" fill="url(#bg)"/><rect width="1280" height="580" fill="url(#grid)" opacity="0.5"/>
+<rect width="1280" height="4" fill="url(#accent)"/>
+<style>@keyframes flow{to{stroke-dashoffset:-24}}.flow{stroke-dasharray:8 4;animation:flow 1.2s linear infinite}@media (prefers-reduced-motion:reduce){.flow{animation:none}}</style>
+<text x="48" y="58" font-family="ui-sans-serif,system-ui,sans-serif" font-size="26" fill="#e6edf3" font-weight="600">Install, as it is today</text>
+<text x="48" y="84" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#69788b">Not released, no package feed. Every step below ran on three routers on 2026-10-23. Secrets go in on standard input only.</text>
+
+<!-- row 1 -->
+<rect x="48" y="116" width="266" height="176" rx="10" fill="#0f1520" stroke="#30363d"/>
+<rect x="48" y="116" width="4" height="176" rx="2" fill="#2dd4bf"/>
+<text x="70" y="150" font-family="ui-sans-serif,system-ui,sans-serif" font-size="17" fill="#e6edf3" font-weight="600">1  Build the packages</text>
+<text x="70" y="182" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">make apk luci</text>
+<text x="70" y="204" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">or CI job lab-packages</text>
+<text x="70" y="270" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="#e3b341">unsigned: test routers</text>
+<path class="flow" d="M318,204 L346,204" stroke="#4493f8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+<rect x="352" y="116" width="266" height="176" rx="10" fill="#0f1520" stroke="#30363d"/>
+<rect x="352" y="116" width="4" height="176" rx="2" fill="#2dd4bf"/>
+<text x="374" y="150" font-family="ui-sans-serif,system-ui,sans-serif" font-size="17" fill="#e6edf3" font-weight="600">2  Install</text>
+<text x="374" y="182" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">apk add, every router</text>
+<text x="374" y="204" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">pulls procd-ujail</text>
+<text x="374" y="270" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="#3fb950">every file owned by root</text>
+<path class="flow" d="M622,204 L650,204" stroke="#4493f8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+<rect x="656" y="116" width="266" height="176" rx="10" fill="#0f1520" stroke="#30363d"/>
+<rect x="656" y="116" width="4" height="176" rx="2" fill="#2dd4bf"/>
+<text x="678" y="150" font-family="ui-sans-serif,system-ui,sans-serif" font-size="17" fill="#e6edf3" font-weight="600">3  Create the group</text>
+<text x="678" y="182" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">rollcall init</text>
+<text x="678" y="204" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">first router: primary</text>
+<text x="678" y="270" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="#e3b341">recovery code: once, paper</text>
+<path class="flow" d="M926,204 L954,204" stroke="#4493f8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+<rect x="960" y="116" width="266" height="176" rx="10" fill="#0f1520" stroke="#30363d"/>
+<rect x="960" y="116" width="4" height="176" rx="2" fill="#2dd4bf"/>
+<text x="982" y="150" font-family="ui-sans-serif,system-ui,sans-serif" font-size="17" fill="#e6edf3" font-weight="600">4  Add the others</text>
+<text x="982" y="182" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">invite on the admin</text>
+<text x="982" y="204" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">join on the new router</text>
+<text x="982" y="226" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">one use, 10 minutes</text>
+<text x="982" y="270" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="#3fb950">code on stdin, not argv</text>
+
+<!-- from row 1 to row 2 -->
+<path class="flow" d="M1093,296 L1093,316 L181,316 L181,334" stroke="#4493f8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+<!-- row 2 -->
+<rect x="48" y="340" width="266" height="176" rx="10" fill="#0f1520" stroke="#30363d"/>
+<rect x="48" y="340" width="4" height="176" rx="2" fill="#2dd4bf"/>
+<text x="70" y="374" font-family="ui-sans-serif,system-ui,sans-serif" font-size="17" fill="#e6edf3" font-weight="600">5  Roles</text>
+<text x="70" y="406" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">a backup admin</text>
+<text x="70" y="428" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">one or more senders</text>
+<text x="70" y="494" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="#3fb950">each change announced</text>
+<path class="flow" d="M318,428 L346,428" stroke="#4493f8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+<rect x="352" y="340" width="266" height="176" rx="10" fill="#0f1520" stroke="#30363d"/>
+<rect x="352" y="340" width="4" height="176" rx="2" fill="#2dd4bf"/>
+<text x="374" y="374" font-family="ui-sans-serif,system-ui,sans-serif" font-size="17" fill="#e6edf3" font-weight="600">6  The bot token</text>
+<text x="374" y="406" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">set-token, on a sender</text>
+<text x="374" y="428" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">stdin, then environment</text>
+<text x="374" y="494" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="#3fb950">never on a command line</text>
+<path class="flow" d="M622,428 L650,428" stroke="#4493f8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+<rect x="656" y="340" width="266" height="176" rx="10" fill="#0f1520" stroke="#30363d"/>
+<rect x="656" y="340" width="4" height="176" rx="2" fill="#2dd4bf"/>
+<text x="678" y="374" font-family="ui-sans-serif,system-ui,sans-serif" font-size="17" fill="#e6edf3" font-weight="600">7  Bind the chat</text>
+<text x="678" y="406" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">bind-telegram: a code</text>
+<text x="678" y="428" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">you send it to the bot</text>
+<text x="678" y="494" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="#3fb950">private chat, 10 minutes</text>
+<path class="flow" d="M926,428 L954,428" stroke="#4493f8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+<rect x="960" y="340" width="266" height="176" rx="10" fill="#0f1520" stroke="#2dd4bf" stroke-opacity="0.7"/>
+<rect x="960" y="340" width="4" height="176" rx="2" fill="#3fb950"/>
+<text x="982" y="374" font-family="ui-sans-serif,system-ui,sans-serif" font-size="17" fill="#e6edf3" font-weight="600">Check it</text>
+<text x="982" y="406" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">NoNewPrivs 1</text>
+<text x="982" y="428" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">Seccomp 2, every thread</text>
+<text x="982" y="450" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">uid 1660</text>
+<text x="982" y="494" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="#3fb950">rollcall status</text>
+
+<text x="48" y="552" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" fill="#69788b">The same steps as commands: the README; for an AI agent, with a check after each step: docs/agent-install.md.</text>
+</svg>

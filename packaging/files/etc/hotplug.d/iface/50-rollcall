@@ -1,0 +1,17 @@
+#!/bin/sh
+# netifd runs this on every interface event. The CLI forwards the event to the daemon, so
+# rollcall never talks to ubus, and, as root, writes the snapshot of the firewall, network and
+# system facts again, so a daemon procd respawns after a network change reads them as they are.
+# Hotplug must never block netifd: each call runs in the background, detached from hotplug's
+# output, under a 5 s limit where busybox has timeout (the CLI has its own 10 s limit besides),
+# and every failure is quiet.
+[ -n "$ACTION" ] && [ -n "$INTERFACE" ] || exit 0
+[ -x /usr/bin/rollcall ] || exit 0
+if command -v timeout >/dev/null 2>&1; then
+	timeout 5 /usr/bin/rollcall snapshot >/dev/null 2>&1 </dev/null &
+	timeout 5 /usr/bin/rollcall notify iface "$ACTION" "$INTERFACE" >/dev/null 2>&1 </dev/null &
+else
+	/usr/bin/rollcall snapshot >/dev/null 2>&1 </dev/null &
+	/usr/bin/rollcall notify iface "$ACTION" "$INTERFACE" >/dev/null 2>&1 </dev/null &
+fi
+exit 0

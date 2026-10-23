@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="340" viewBox="0 0 1280 340" role="img" aria-label="rollcall: the routers of one OpenWrt site watch each other, and the one still online tells you">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#0a0e16"/><stop offset="0.55" stop-color="#0d1117"/><stop offset="1" stop-color="#101826"/>
+  </linearGradient>
+  <linearGradient id="wordmark" x1="0" y1="0" x2="1" y2="0">
+    <stop offset="0" stop-color="#2dd4bf"/><stop offset="0.5" stop-color="#4493f8"/><stop offset="1" stop-color="#8b7cf6"/>
+  </linearGradient>
+  <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+    <stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#4493f8"/>
+  </linearGradient>
+  <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+    <path d="M 32 0 L 0 0 0 32" fill="none" stroke="#161b22" stroke-width="1"/>
+  </pattern>
+  <radialGradient id="halo" cx="0.22" cy="0.42" r="0.6">
+    <stop offset="0" stop-color="#2dd4bf" stop-opacity="0.16"/><stop offset="1" stop-color="#2dd4bf" stop-opacity="0"/>
+  </radialGradient>
+  <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+    <feGaussianBlur stdDeviation="6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+  </filter>
+</defs>
+<style>
+  .ring{fill:none;stroke:#2dd4bf;stroke-width:2;opacity:0;transform-box:fill-box;transform-origin:center;animation:ring 5s ease-out infinite}
+  .r2{animation-delay:1.66s}.r3{animation-delay:3.33s}
+  @keyframes ring{0%{opacity:.7;transform:scale(.4)}70%{opacity:0;transform:scale(1.5)}100%{opacity:0;transform:scale(1.5)}}
+  @media (prefers-reduced-motion:reduce){.ring{animation:none;opacity:0}}
+</style>
+
+<rect width="1280" height="340" fill="url(#bg)"/>
+<rect width="1280" height="340" fill="url(#grid)" opacity="0.6"/>
+<rect width="1280" height="340" fill="url(#halo)"/>
+<rect width="1280" height="4" fill="url(#accent)"/>
+
+<!-- three routers in a triangle, joined by their heartbeat links -->
+<g transform="translate(1120,170)">
+  <g stroke="#283341" stroke-width="2">
+    <line x1="-52" y1="-56" x2="52" y2="-56"/>
+    <line x1="-60" y1="-44" x2="-8" y2="48"/>
+    <line x1="60" y1="-44" x2="8" y2="48"/>
+  </g>
+  <circle class="ring" cx="-70" cy="-60" r="26"/>
+  <circle class="ring r2" cx="70" cy="-60" r="26"/>
+  <circle class="ring r3" cx="0" cy="62" r="26"/>
+  <g filter="url(#glow)">
+    <rect x="-98" y="-78" width="56" height="36" rx="8" fill="#141a23" stroke="#2dd4bf" stroke-width="2"/>
+    <rect x="42" y="-78" width="56" height="36" rx="8" fill="#141a23" stroke="#2dd4bf" stroke-width="2"/>
+    <rect x="-28" y="44" width="56" height="36" rx="8" fill="#141a23" stroke="#4493f8" stroke-width="2"/>
+  </g>
+  <circle cx="-80" cy="-60" r="4" fill="#3fb950"/><circle cx="-62" cy="-60" r="4" fill="#2dd4bf"/>
+  <circle cx="60" cy="-60" r="4" fill="#3fb950"/><circle cx="78" cy="-60" r="4" fill="#2dd4bf"/>
+  <circle cx="-10" cy="62" r="4" fill="#3fb950"/><circle cx="8" cy="62" r="4" fill="#4493f8"/>
+</g>
+
+<!-- wordmark -->
+<text x="72" y="136" font-family="ui-sans-serif,system-ui,Segoe UI,Roboto,sans-serif" font-size="66" font-weight="700" letter-spacing="-1.5" fill="url(#wordmark)">rollcall</text>
+
+<text x="74" y="178" font-family="ui-sans-serif,system-ui,sans-serif" font-size="19" fill="#e6edf3">Routers of one site watch each other. <tspan font-weight="600" fill="#2dd4bf">The one still online tells you.</tspan></text>
+<text x="74" y="206" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#69788b">A Go service for OpenWrt: signed heartbeats over the LAN, one Telegram line per incident.</text>
+
+<!-- three facts -->
+<g transform="translate(72,240)">
+  <rect x="0" y="0" width="290" height="62" rx="10" fill="#141a23" stroke="#1b2331"/>
+  <text x="18" y="26" font-family="ui-sans-serif,system-ui,sans-serif" font-size="11" letter-spacing="0.6" fill="#69788b">TRIED ON</text>
+  <text x="18" y="48" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#e6edf3">three routers, 25.12.5</text>
+
+  <rect x="310" y="0" width="290" height="62" rx="10" fill="#141a23" stroke="#1b2331"/>
+  <text x="328" y="26" font-family="ui-sans-serif,system-ui,sans-serif" font-size="11" letter-spacing="0.6" fill="#69788b">RUNS UNDER</text>
+  <text x="328" y="48" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#e6edf3">its own seccomp filter</text>
+
+  <rect x="620" y="0" width="290" height="62" rx="10" fill="#141a23" stroke="#1b2331"/>
+  <text x="638" y="26" font-family="ui-sans-serif,system-ui,sans-serif" font-size="11" letter-spacing="0.6" fill="#69788b">STATUS</text>
+  <text x="638" y="48" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#e3b341">not released yet</text>
+</g>
+</svg>
