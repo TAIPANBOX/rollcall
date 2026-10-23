@@ -30,9 +30,6 @@ var knownDefects = map[string]string{
 	"D5": "after an outage the sender becomes eligible (its ping succeeds) before the restore has settled, so the queued " +
 		"'internet lost at 09:01' goes out alone and 20 s later 'internet was down from 09:01 to 09:06 (5 min)': two " +
 		"messages where one is wanted (TestSingleRouterGroup, TestNobodyReachesTelegram20Min)",
-	"D7": "a router that was off or restarting when a fork alarm was raised, and comes back after the alarm was sent, " +
-		"never proves the fork itself and shows the equivocator up (sweep I3: seeds 15 and 124 after c8e9642; before it, " +
-		"undelivered alarms and proofs were lost with a restart)",
 	"D8": "the chat tells a silence 45 to 55 s after a power cut (detection at 30 s, then the 20 s coalescing settle); " +
 		"the bound is 30 s of detection and 15 s (TestPowerLossReported)",
 	"D9": "a router whose own link was cut records every other router silent; once the link is back the chat gets 'r01, r02 " +
@@ -40,8 +37,6 @@ var knownDefects = map[string]string{
 	"D14": "a router that restarts while a peer is away forgets the peer (its last boot and version live in RAM only): it " +
 		"reports the peer silent from its own start, a second message for an absence already told, and tells the peer's " +
 		"return as 'went silent ..., back after' counted from its own start, never as the reboot or upgrade it was (sweep I2)",
-	"D16": "a fork stays hidden when a peer's branch is shorter: heads are compared only when the peer's head is at or past " +
-		"the node's own, so an equivocator that shows some routers a shorter, different chain is never caught (sweep I3)",
 	"D18": "a planned reboot is told as unexpected when one observer missed the single 'going down' heartbeat (packet loss, " +
 		"a partition): the incident holds both kinds and the message takes the unplanned one, though the router's own boot " +
 		"record says planned (sweep I6)",
