@@ -78,6 +78,45 @@ func TestAckNamesWhatItTold(t *testing.T) {
 	}
 }
 
+// TestAckBeforeOwnIncident (Q4, seed 553): the other sender's
+// acknowledgement reaches this router before it made its own incident of
+// the same silence (it was catching up after a restart): the incident it
+// makes is told already and is not queued.
+func TestAckBeforeOwnIncident(t *testing.T) {
+	g := newGroup(t, setup{n: 4, running: []bool{true, true, false, false}, senders: map[int]int{0: 2, 2: 1}})
+	a, x := g.nodes[0], g.ids[1].ID
+	g.run(40 * sec)
+	g.chat.setDown(true)
+	g.stop(1)
+	cut := AtOf(g.clk.stampNow())
+	last := Boot{ID: bootN(1, 1), Seq: 1}
+	g.run(25 * sec)
+	inject(a, forge(t, g.ids[3], history.Head{}, EventBody{Subject: x, Type: events.MemberSilent, Last: last, At: shift(cut, sec)})...)
+	recorded := func() bool {
+		return slices.ContainsFunc(ownEntries(a, history.KindEvent), func(e history.Entry) bool {
+			b, err := DecodeEvent(e)
+			return err == nil && b.Type == events.MemberSilent && b.Subject == x
+		})
+	}
+	for i := 0; i < 15 && !recorded(); i++ {
+		g.run(sec)
+	}
+	mine := eventOfType(t, a, events.MemberSilent, x)
+	inject(a, otherSendersAck(t, a, g.ids[2], history.Head{}, EventBody{Subject: x, Type: events.MemberSilent, Last: last, At: shift(cut, 2*sec)}, mine)...)
+	if held := with(a, func() bool {
+		return slices.ContainsFunc(a.inc.recent, func(r *incRec) bool { return slices.Contains(r.inc.Members, x.String()) })
+	}); held {
+		t.Fatal("r01 made its incident before the acknowledgement arrived: the case did not happen")
+	}
+	g.run(20 * sec)
+	g.chat.setDown(false)
+	g.run(time.Minute)
+	t.Logf("chat:\n%s", strings.Join(g.chat.all(), "\n"))
+	if n := len(g.chat.messages("r02 stopped answering")); n != 0 {
+		t.Fatalf("r01 told r02's silence %d times after r03 had told it", n)
+	}
+}
+
 // TestAckOfOneMemberStillSendsTheOther (Q4): two routers went down
 // together, one incident here; another sender told only one of them. The
 // other's silence was not told, so the incident still goes out.
