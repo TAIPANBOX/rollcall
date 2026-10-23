@@ -278,7 +278,7 @@ func (s *site) join(admin, r *router) {
 	if r.d == nil {
 		r.start()
 	}
-	r.must("", "join", rep.JoinCode)
+	r.must(rep.JoinCode+"\n", "join")
 	s.run(time.Second)
 }
 
@@ -364,7 +364,8 @@ func TestCLIUsage(t *testing.T) {
 	for _, want := range []string{
 		"rollcall init [--json] [--name <router>] [--site <site>]",
 		"rollcall invite [--json] [--sender] [--address <ip>]",
-		"rollcall join [--json] [--name <router>] <join code>",
+		"rollcall join [--json] [--name <router>]",
+		"never from the command line",
 		"rollcall remove [--json] -- <router>",
 		"rollcall roles [--json] sender|primary|backup|none -- <router>",
 		"rollcall rotate [--json]",
@@ -562,6 +563,73 @@ func TestInviteArgv(t *testing.T) {
 		}
 		if !strings.HasPrefix(o.String(), `{"ok":false,"error":`) {
 			t.Errorf("%q printed %q, want the failure reply", args, o.String())
+		}
+	}
+}
+
+// TestJoinReadsCodeFromStdin: join reads the join code from standard input,
+// as admin recover reads the recovery code, and refuses one on the command
+// line without sending it: /proc/<pid>/cmdline shows the arguments to every
+// process on the router while the join runs (threat A6).
+func TestJoinReadsCodeFromStdin(t *testing.T) {
+	admin, err := identity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inv pairing.Inviter
+	code, err := inv.Open(tStart, netip.MustParseAddrPort("192.0.2.1:7432"), admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := code.String()
+	spaced := strings.Join(strings.Split(text, "-"), " - ")
+	for _, tc := range []struct {
+		name, stdin string
+		args        []string
+		call        []string
+	}{
+		{"a line on standard input", text + "\n", []string{"join", "--json", "--name", "beryl1"}, []string{"join", text, "beryl1"}},
+		{"without a newline", text, []string{"join"}, []string{"join", text, "gw"}},
+		{"with spaces between its groups", "  " + spaced + "\r\n", []string{"join", "--name", "beryl1"}, []string{"join", text, "beryl1"}},
+	} {
+		rec := &recorder{}
+		var o, e bytes.Buffer
+		c := rec.cli(&o, &e, nil)
+		c.stdin = strings.NewReader(tc.stdin)
+		if code := c.run(tc.args); code != 0 || len(rec.calls) != 1 || !slices.Equal(rec.calls[0], tc.call) {
+			t.Errorf("%s: exit %d, calls %q, stderr %q", tc.name, code, rec.calls, e.String())
+		}
+		if strings.Contains(o.String()+e.String(), text) {
+			t.Errorf("%s: the output repeats the code", tc.name)
+		}
+	}
+	for _, tc := range []struct {
+		name, stdin string
+		args        []string
+		says        string
+	}{
+		{"the code on the command line", "", []string{"join", "--json", text}, "standard input"},
+		{"the code on the command line beside standard input", text + "\n", []string{"join", "--name", "beryl1", text}, "standard input"},
+		{"the code after --", text + "\n", []string{"join", "--", text}, "standard input"},
+		{"nothing on standard input", "", []string{"join", "--json"}, "no join code"},
+		{"too much on standard input", strings.Repeat("A", maxStdinCode+1), []string{"join"}, "more than a join code"},
+		{"not a code", "hello\n", []string{"join"}, "typo"},
+		{"an invalid name", text + "\n", []string{"join", "--name", "Kitchen"}, "not a valid router name"},
+	} {
+		rec := &recorder{}
+		var o, e bytes.Buffer
+		c := rec.cli(&o, &e, nil)
+		c.stdin = strings.NewReader(tc.stdin)
+		code := c.run(tc.args)
+		if code == 0 || len(rec.calls) != 0 {
+			t.Errorf("%s: exit %d, calls %q; want a refusal and no call", tc.name, code, rec.calls)
+			continue
+		}
+		if !strings.Contains(o.String()+e.String(), tc.says) {
+			t.Errorf("%s: %q %q, want it to say %q", tc.name, o.String(), e.String(), tc.says)
+		}
+		if strings.Contains(o.String()+e.String(), text) {
+			t.Errorf("%s: the output repeats the code", tc.name)
 		}
 	}
 }
@@ -1199,7 +1267,12 @@ func TestRunbookCommandsParse(t *testing.T) {
 		rec := &recorder{}
 		var o, e bytes.Buffer
 		cl := rec.cli(&o, &e, map[string]string{tokenEnv: canary})
+		// What the runbook pipes in: the join code to join, the recovery
+		// code to admin recover.
 		cl.stdin = strings.NewReader(formatRecoveryCode(bytes.Repeat([]byte{1}, 32)))
+		if strings.HasPrefix(c, "join") {
+			cl.stdin = strings.NewReader(code.String() + "\n")
+		}
 		cl.stateDir = filepath.Join(t.TempDir(), "state")
 		cl.configPath = filepath.Join(t.TempDir(), "none")
 		if code := cl.run(strings.Fields(c)); code != 0 {

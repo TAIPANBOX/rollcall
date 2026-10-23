@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -40,7 +41,8 @@ const (
 	// Each control command has a time limit; status is what LuCI polls.
 	callTimeout   = 10 * time.Second
 	statusTimeout = 2 * time.Second
-	// maxStdinCode bounds what admin recover reads from standard input.
+	// maxStdinCode bounds what admin recover and join read from standard
+	// input.
 	maxStdinCode = 1024
 )
 
@@ -53,8 +55,9 @@ Setting up:
       open a join window for 10 minutes and print the join code; the address
       (the one the new router reaches this router at) may also come last,
       alone after --, as LuCI gives it
-  rollcall join [--json] [--name <router>] <join code>
-      join the group with the code from rollcall invite
+  rollcall join [--json] [--name <router>]
+      join the group with the code from rollcall invite, read from standard
+      input (paste it when asked, or pipe it in), never from the command line
 
 Members and roles, on an admin router (the name always comes last, after --):
   rollcall remove [--json] -- <router>
@@ -373,24 +376,57 @@ func bootstrapAddr(s string) (netip.Addr, error) {
 	return a, nil
 }
 
+// join reads the join code from standard input, never from the command
+// line: /proc/<pid>/cmdline shows the arguments to every process on the
+// router for as long as the join runs, and the code lets one router into
+// the group (security design, threat A6). A code on the command line is
+// refused before anything is sent.
 func (c *cli) join(args []string) error {
 	p, err := parse(args, nil, []string{"--name"})
 	if err != nil {
 		return err
 	}
-	if p.sep || len(p.words) == 0 {
-		return badUsage("rollcall join [--json] [--name <router>] <join code>")
-	}
-	// A code typed with spaces between its groups arrives as several words.
-	code, err := pairing.ParseCode(strings.Join(p.words, ""))
-	if err != nil {
-		return err
+	if len(p.words) > 0 || p.sep {
+		return badUsage("rollcall join reads the join code from standard input, not from the command line, where any process on this router can read it; run rollcall join and paste the code")
 	}
 	name, err := c.routerName(p.opts["--name"])
 	if err != nil {
 		return err
 	}
+	line, err := c.stdinLine("Join code")
+	if err != nil {
+		return err
+	}
+	// A code copied with spaces or line breaks between its groups still
+	// reads.
+	code, err := pairing.ParseCode(strings.Join(strings.Fields(line), ""))
+	if err != nil {
+		return err
+	}
 	return c.admin(p.json, "join", code.String(), name)
+}
+
+// stdinLine reads one line from standard input, at most maxStdinCode bytes,
+// and asks for it by what when standard input is a terminal. Errors never
+// repeat what was read.
+func (c *cli) stdinLine(what string) (string, error) {
+	if f, ok := c.stdin.(*os.File); ok {
+		if fi, err := f.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
+			fmt.Fprintf(c.stderr, "%s: ", what)
+		}
+	}
+	lower := strings.ToLower(what)
+	r := bufio.NewReader(io.LimitReader(c.stdin, maxStdinCode+1))
+	line, err := r.ReadString('\n')
+	switch {
+	case err != nil && !errors.Is(err, io.EOF):
+		return "", fmt.Errorf("reading the %s: %w", lower, err)
+	case len(line) > maxStdinCode:
+		return "", fmt.Errorf("standard input holds more than a %s", lower)
+	case strings.TrimSpace(line) == "":
+		return "", fmt.Errorf("no %s on standard input", lower)
+	}
+	return line, nil
 }
 
 // routerName is the name given, or else the hostname, checked with the

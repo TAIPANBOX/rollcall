@@ -135,7 +135,7 @@ function showResult(title, result) {
 		body.push(alertBox('error', [ T(text(result.error, _('Failed.'))) ]));
 	}
 	if (result.join_code) {
-		body.push(E('p', {}, [ _('Join code. It works once, for 10 minutes. Enter it on the new router with rollcall join. It is shown only here.') ]));
+		body.push(E('p', {}, [ _('Join code. It works once, for 10 minutes. On the new router, run rollcall join and paste it when asked; it is read from standard input, never from the command line. It is shown only here.') ]));
 		body.push(E('p', {}, [ E('code', {}, [ T(result.join_code) ]) ]));
 	}
 	if (result.bind_code) {

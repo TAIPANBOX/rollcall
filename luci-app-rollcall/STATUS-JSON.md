@@ -224,6 +224,8 @@ Optional keys on success:
 
 - `join_code` (`invite` only): the one-time join code. It works once, for 10
   minutes. The page shows it in a dialog to the admin and keeps it nowhere.
+  `rollcall join` on the new router reads it from standard input, never from
+  its command line, which every process on that router can read.
 - `bind_code` (`bind-telegram` only): the code the owner sends to the bot in a
   private chat within 10 minutes. Shown in a dialog, kept nowhere.
 
