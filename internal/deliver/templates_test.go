@@ -13,6 +13,7 @@ import (
 	"github.com/TAIPANBOX/rollcall/internal/clock"
 	"github.com/TAIPANBOX/rollcall/internal/events"
 	"github.com/TAIPANBOX/rollcall/internal/ids"
+	"github.com/TAIPANBOX/rollcall/internal/roster"
 )
 
 // member returns a test member ID; n orders them.
@@ -184,6 +185,48 @@ func TestRenderRosterChanged(t *testing.T) {
 	got = Render(inc, "Home", cet, Facts{})
 	if want := "Home: the group changed at 09:30."; got != want {
 		t.Errorf("Render = %q, want %q", got, want)
+	}
+}
+
+// TestRenderRoleChanges (U2): a change of roles says which role a member
+// gained or lost, in an announcement and in the list of undone changes,
+// plain text and short; a role this version does not know is not repeated.
+func TestRenderRoleChanges(t *testing.T) {
+	sender, backup, primary := roster.RoleSender, roster.RoleBackup, roster.RolePrimary
+	cases := []struct {
+		name         string
+		gained, lost []roster.Role
+		now, undone  string
+	}{
+		{"made a sender", []roster.Role{sender}, nil,
+			"flint2 is now a sender", "flint2 became a sender"},
+		{"made the backup admin", []roster.Role{backup}, nil,
+			"flint2 is now the backup admin", "flint2 became the backup admin"},
+		{"no longer a sender", nil, []roster.Role{sender},
+			"flint2 is no longer a sender", "flint2 stopped being a sender"},
+		{"no longer the primary admin", nil, []roster.Role{primary},
+			"flint2 is no longer the primary admin", "flint2 stopped being the primary admin"},
+		{"a takeover", []roster.Role{primary}, []roster.Role{backup},
+			"flint2 is now the primary admin and no longer the backup admin",
+			"flint2 became the primary admin and stopped being the backup admin"},
+		{"two roles, in any order, each once", []roster.Role{sender, backup, sender}, nil,
+			"flint2 is now the backup admin and a sender", "flint2 became the backup admin and a sender"},
+		{"an unknown role is not repeated", []roster.Role{"Visit http://x"}, nil,
+			"flint2 roles changed", "flint2 roles changed"},
+		{"no detail", nil, nil, "flint2 roles changed", "flint2 roles changed"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ch := []Change{{Kind: ChangeRoles, Member: "flint2", By: "flint2", Gained: c.gained, Lost: c.lost}}
+			got := Render(fact(local(17, 59, 27), "", events.RosterChanged), "home", cet, Facts{Changes: ch})
+			if want := "home: the group changed: " + c.now + " (by flint2)."; got != want {
+				t.Errorf("announcement =\n  %q\nwant\n  %q", got, want)
+			}
+			got = Render(fact(local(17, 59, 27), "", events.RosterChangesDropped), "home", cet, Facts{Changes: ch})
+			if want := "home: after the network healed, these changes were undone: " + c.undone + " (by flint2). Repeat them if they are still wanted."; got != want {
+				t.Errorf("undone =\n  %q\nwant\n  %q", got, want)
+			}
+		})
 	}
 }
 

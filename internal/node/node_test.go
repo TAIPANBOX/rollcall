@@ -779,7 +779,7 @@ func TestRosterChangeAnnouncedOnce(t *testing.T) {
 	g.split([]int{0}, []int{1, 2, 3}, true)
 	g.run(120 * sec)
 	t.Logf("chat:\n%s", strings.Join(g.chat.all(), "\n"))
-	roles, removed := g.chat.messages("r03 roles changed (by r01)"), g.chat.messages("r04 removed (by r01)")
+	roles, removed := g.chat.messages("r03 is now a sender (by r01)"), g.chat.messages("r04 removed (by r01)")
 	if len(roles) != 1 || len(removed) != 1 {
 		t.Fatalf("announcements: %d of the role change, %d of the removal; want 1 and 1. Chat:\n%s",
 			len(roles), len(removed), strings.Join(g.chat.all(), "\n"))
@@ -1068,7 +1068,7 @@ func TestDroppedBranchAnnounced(t *testing.T) {
 	}
 	t.Logf("chat:\n%s", strings.Join(g.chat.all(), "\n"))
 	undone := g.chat.messages("these changes were undone")
-	if len(undone) != 1 || !strings.Contains(undone[0], "r02 roles changed (by r02)") {
+	if len(undone) != 1 || !strings.Contains(undone[0], "r02 became a sender (by r02)") {
 		t.Fatalf("undone announcements: %q; want one naming r02's change by r02. Chat:\n%s", undone, strings.Join(g.chat.all(), "\n"))
 	}
 }

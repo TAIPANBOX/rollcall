@@ -2,6 +2,7 @@ package deliver
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -49,23 +50,33 @@ const (
 	wordFlood        = "a flood of packets that failed authentication reached the group at %s"
 	wordSeenBy       = "Seen by %s"
 
-	wordDuplicate     = "two devices answered as %s at %s"
-	wordFork          = "%s showed different histories to different routers at %s; the proof is kept"
-	wordJoined        = "%s joined the group at %s"
-	wordLeft          = "%s left the group at %s"
-	wordGroupChanged  = "the group changed: %s"
-	wordGroupChangeAt = "the group changed at %s"
-	wordUndone        = "after the network healed, these changes were undone: %s"
-	wordUndoneNone    = "after the network healed, changes made during the split were undone"
-	wordUndoneRepeat  = "Repeat them if they are still wanted"
-	wordAdded         = "%s added"
-	wordRemoved       = "%s removed"
-	wordRoles         = "%s roles changed"
-	wordChanged       = "%s changed"
-	wordBy            = " (by %s)"
-	wordQueueFull     = "incidents were dropped: more than %d were waiting to be sent"
-	wordOther         = "event %s at %s"
-	wordUnknownEvent  = "an unknown event at %s"
+	wordDuplicate       = "two devices answered as %s at %s"
+	wordFork            = "%s showed different histories to different routers at %s; the proof is kept"
+	wordJoined          = "%s joined the group at %s"
+	wordLeft            = "%s left the group at %s"
+	wordGroupChanged    = "the group changed: %s"
+	wordGroupChangeAt   = "the group changed at %s"
+	wordUndone          = "after the network healed, these changes were undone: %s"
+	wordUndoneNone      = "after the network healed, changes made during the split were undone"
+	wordUndoneRepeat    = "Repeat them if they are still wanted"
+	wordAdded           = "%s added"
+	wordRemoved         = "%s removed"
+	wordRoles           = "%s roles changed"
+	wordRolesNow        = "%s is now %s"
+	wordRolesNoLonger   = "%s is no longer %s"
+	wordRolesBoth       = "%s is now %s and no longer %s"
+	wordRolesBecame     = "%s became %s"
+	wordRolesStopped    = "%s stopped being %s"
+	wordRolesBecameBoth = "%s became %s and stopped being %s"
+	wordRolePrimary     = "the primary admin"
+	wordRoleBackup      = "the backup admin"
+	wordRoleSender      = "a sender"
+	wordAnd             = " and "
+	wordChanged         = "%s changed"
+	wordBy              = " (by %s)"
+	wordQueueFull       = "incidents were dropped: more than %d were waiting to be sent"
+	wordOther           = "event %s at %s"
+	wordUnknownEvent    = "an unknown event at %s"
 
 	wordConfirmed     = ", confirmed by %d of %d"
 	wordApproximate   = "Times are approximate"
@@ -129,6 +140,9 @@ type Change struct {
 	Kind   ChangeKind
 	Member string // the roster name of the member changed
 	By     string // the roster name of the router that signed the change; left out if empty or not a roster name
+	// Gained and Lost are, for ChangeRoles, the roles the member gained
+	// and lost.
+	Gained, Lost []roster.Role
 }
 
 // Render returns the message that reports inc for the site, with times in tz
@@ -230,12 +244,12 @@ func (m *message) describe(inc events.Incident) (string, []string) {
 		if len(m.f.Changes) == 0 {
 			return fmt.Sprintf(wordGroupChangeAt, at), nil
 		}
-		return fmt.Sprintf(wordGroupChanged, changes(m.f.Changes)), nil
+		return fmt.Sprintf(wordGroupChanged, changes(m.f.Changes, false)), nil
 	case events.RosterChangesDropped:
 		if len(m.f.Changes) == 0 {
 			return wordUndoneNone, []string{wordUndoneRepeat}
 		}
-		return fmt.Sprintf(wordUndone, changes(m.f.Changes)), []string{wordUndoneRepeat}
+		return fmt.Sprintf(wordUndone, changes(m.f.Changes, true)), []string{wordUndoneRepeat}
 	case QueueFull:
 		return fmt.Sprintf(wordQueueFull, MaxQueued), nil
 	}
@@ -352,29 +366,66 @@ func (m *message) name(h string) string {
 	return fmt.Sprintf(wordRouter, h[:8])
 }
 
-// changes lists roster changes, each with the router that signed it.
-func changes(cs []Change) string {
+// changes lists roster changes, each with the router that signed it: as
+// they stand now, or, when undone, as what was done.
+func changes(cs []Change, undone bool) string {
 	out := make([]string, len(cs))
 	for i, c := range cs {
 		who := wordUnknownRouter
 		if roster.ValidName(c.Member) == nil {
 			who = c.Member
 		}
-		word := wordChanged
 		switch c.Kind {
 		case ChangeAdded:
-			word = wordAdded
+			out[i] = fmt.Sprintf(wordAdded, who)
 		case ChangeRemoved:
-			word = wordRemoved
+			out[i] = fmt.Sprintf(wordRemoved, who)
 		case ChangeRoles:
-			word = wordRoles
+			out[i] = roleChange(who, c.Gained, c.Lost, undone)
+		default:
+			out[i] = fmt.Sprintf(wordChanged, who)
 		}
-		out[i] = fmt.Sprintf(word, who)
 		if roster.ValidName(c.By) == nil {
 			out[i] += fmt.Sprintf(wordBy, c.By)
 		}
 	}
 	return strings.Join(out, wordList)
+}
+
+// roleChange tells which roles who gained and lost: "is now a sender",
+// "is no longer the backup admin", or, for a change undone, "became a
+// sender", "stopped being the backup admin". Only the roles this version
+// knows are named, each once; without any it says the roles changed.
+func roleChange(who string, gained, lost []roster.Role, undone bool) string {
+	g, l := roleNames(gained), roleNames(lost)
+	both, onlyGained, onlyLost := wordRolesBoth, wordRolesNow, wordRolesNoLonger
+	if undone {
+		both, onlyGained, onlyLost = wordRolesBecameBoth, wordRolesBecame, wordRolesStopped
+	}
+	switch {
+	case g != "" && l != "":
+		return fmt.Sprintf(both, who, g, l)
+	case g != "":
+		return fmt.Sprintf(onlyGained, who, g)
+	case l != "":
+		return fmt.Sprintf(onlyLost, who, l)
+	}
+	return fmt.Sprintf(wordRoles, who)
+}
+
+// roleNames names the roles in rs that this version knows, primary, backup
+// and sender in that order, each once, joined by "and".
+func roleNames(rs []roster.Role) string {
+	var out []string
+	for _, r := range []struct {
+		role roster.Role
+		word string
+	}{{roster.RolePrimary, wordRolePrimary}, {roster.RoleBackup, wordRoleBackup}, {roster.RoleSender, wordRoleSender}} {
+		if slices.Contains(rs, r.role) {
+			out = append(out, r.word)
+		}
+	}
+	return strings.Join(out, wordAnd)
 }
 
 // at formats one moment.

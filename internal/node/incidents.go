@@ -343,12 +343,24 @@ func diffRosters(prev, r roster.Roster, by string) []deliver.Change {
 		case !ok:
 			out = append(out, deliver.Change{Kind: deliver.ChangeAdded, Member: m.Name, By: by})
 		case !sameRoles(old.Roles, m.Roles):
-			out = append(out, deliver.Change{Kind: deliver.ChangeRoles, Member: m.Name, By: by})
+			out = append(out, deliver.Change{Kind: deliver.ChangeRoles, Member: m.Name, By: by,
+				Gained: rolesNotIn(m.Roles, old.Roles), Lost: rolesNotIn(old.Roles, m.Roles)})
 		}
 	}
 	for _, m := range prev.Members {
 		if _, ok := memberOf(r, m.ID); !ok {
 			out = append(out, deliver.Change{Kind: deliver.ChangeRemoved, Member: m.Name, By: by})
+		}
+	}
+	return out
+}
+
+// rolesNotIn returns the roles of a that b lacks, in a's order; never nil.
+func rolesNotIn(a, b []roster.Role) []roster.Role {
+	out := []roster.Role{}
+	for _, x := range a {
+		if !slices.Contains(b, x) {
+			out = append(out, x)
 		}
 	}
 	return out
@@ -377,10 +389,14 @@ type droppedOf struct {
 	Changes []changeMsg `json:"changes"`
 }
 
+// changeMsg is one change of a dropped branch. Gained and Lost, on a change
+// of roles only, are the roles the member gained and lost.
 type changeMsg struct {
-	Kind   int    `json:"kind"`
-	Member string `json:"member"`
-	By     string `json:"by"`
+	Kind   int           `json:"kind"`
+	Member string        `json:"member"`
+	By     string        `json:"by"`
+	Gained []roster.Role `json:"gained,omitempty"`
+	Lost   []roster.Role `json:"lost,omitempty"`
 }
 
 func decodeDropped(e history.Entry) (droppedOf, bool) {
@@ -394,11 +410,33 @@ func decodeDropped(e history.Entry) (droppedOf, bool) {
 	}
 	for _, c := range d.Changes {
 		if c.Kind < int(deliver.ChangeAdded) || c.Kind > int(deliver.ChangeRoles) ||
-			roster.ValidName(c.Member) != nil || (c.By != "" && roster.ValidName(c.By) != nil) {
+			roster.ValidName(c.Member) != nil || (c.By != "" && roster.ValidName(c.By) != nil) ||
+			!validRoleChange(c) {
 			return droppedOf{}, false
 		}
 	}
 	return d, true
+}
+
+// validRoleChange reports whether the roles c names are fit to show: none
+// on a change that is not one of roles; on one of roles, only roles this
+// version knows, none named twice, in Gained and Lost together.
+func validRoleChange(c changeMsg) bool {
+	if c.Kind != int(deliver.ChangeRoles) {
+		return len(c.Gained) == 0 && len(c.Lost) == 0
+	}
+	all := append(slices.Clone(c.Gained), c.Lost...)
+	for i, r := range all {
+		switch r {
+		case roster.RolePrimary, roster.RoleBackup, roster.RoleSender:
+		default:
+			return false
+		}
+		if slices.Contains(all[:i], r) {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *incidents) droppedIn(e history.Entry, d droppedOf, now clock.Stamp) {
@@ -407,7 +445,7 @@ func (c *incidents) droppedIn(e history.Entry, d droppedOf, now clock.Stamp) {
 	}
 	var cs []deliver.Change
 	for _, m := range d.Changes {
-		cs = append(cs, deliver.Change{Kind: deliver.ChangeKind(m.Kind), Member: m.Member, By: m.By})
+		cs = append(cs, deliver.Change{Kind: deliver.ChangeKind(m.Kind), Member: m.Member, By: m.By, Gained: m.Gained, Lost: m.Lost})
 	}
 	c.changes[d.Tip] = cs
 	c.add(d.Tip, &evRec{ev: events.Event{Type: events.RosterChangesDropped, Ref: d.Tip, At: fixedStamp}, seen: now.Mono, single: true,
@@ -422,7 +460,7 @@ func (n *Node) droppedLocked(base roster.Roster, ours []roster.Signed, oursR []r
 	for i, s := range ours {
 		for _, c := range diffRosters(before, oursR[i], signerName(before, s)) {
 			if len(d.Changes) < maxChanges {
-				d.Changes = append(d.Changes, changeMsg{Kind: int(c.Kind), Member: c.Member, By: c.By})
+				d.Changes = append(d.Changes, changeMsg{Kind: int(c.Kind), Member: c.Member, By: c.By, Gained: c.Gained, Lost: c.Lost})
 			}
 		}
 		before = oursR[i]

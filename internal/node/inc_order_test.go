@@ -2,12 +2,16 @@ package node
 
 import (
 	"crypto/ed25519"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/TAIPANBOX/rollcall/internal/deliver"
 	"github.com/TAIPANBOX/rollcall/internal/events"
+	"github.com/TAIPANBOX/rollcall/internal/history"
 	"github.com/TAIPANBOX/rollcall/internal/identity"
+	"github.com/TAIPANBOX/rollcall/internal/ids"
 	"github.com/TAIPANBOX/rollcall/internal/roster"
 )
 
@@ -68,7 +72,7 @@ func TestHeldAnnouncementsInOrder(t *testing.T) {
 	g.chat.setDown(false)
 	g.run(30 * sec)
 	t.Logf("chat:\n%s", strings.Join(g.chat.all(), "\n"))
-	want := []string{"internet lost", "r04 added", "r05 added", "r04 ", "r02 "}
+	want := []string{"internet lost", "r04 added (by r01)", "r05 added (by r01)", "r04 is now the backup admin (by r01)", "r02 is now a sender (by r01)"}
 	var got []string
 	for _, m := range g.chat.all() {
 		if strings.Contains(m, "internet lost") || strings.Contains(m, "the group changed") {
@@ -126,6 +130,51 @@ func TestAnnouncementsLearntTogetherInOrder(t *testing.T) {
 			if !strings.Contains(got[i], "["+id+"]") {
 				t.Fatalf("announcement %d is %q, want the one of roster version %d [%s]; the order was:\n%s", i+1, got[i], v, id, strings.Join(got, "\n"))
 			}
+			if w := []string{"r03 is now a sender", "r03 is now the backup admin", "r03 is no longer a sender", "r01 is now a sender"}[i]; !strings.Contains(got[i], "the group changed: "+w+" (by r01).") {
+				t.Fatalf("announcement %d is %q, want it to say %q", i+1, got[i], w)
+			}
 		}
+	}
+}
+
+// TestDroppedBodyRoles (U2): the record of an undone branch names the roles
+// a change of roles gave and took, and a reader takes only roles this
+// version knows, each once, and only on a change of roles: the body comes
+// from another member's chain.
+func TestDroppedBodyRoles(t *testing.T) {
+	tip := `"tip":"` + strings.Repeat("ab", 32) + `"`
+	cases := []struct {
+		name string
+		body string
+		ok   bool
+	}{
+		{"gained and lost", `{"dropped":{` + tip + `,"changes":[{"kind":3,"member":"r02","by":"r01","gained":["primary"],"lost":["backup"]}]}}`, true},
+		{"none named", `{"dropped":{` + tip + `,"changes":[{"kind":3,"member":"r02","by":"r01"}]}}`, true},
+		{"an unknown role", `{"dropped":{` + tip + `,"changes":[{"kind":3,"member":"r02","by":"r01","gained":["root"]}]}}`, false},
+		{"a role twice", `{"dropped":{` + tip + `,"changes":[{"kind":3,"member":"r02","by":"r01","lost":["sender","sender"]}]}}`, false},
+		{"a role gained and lost", `{"dropped":{` + tip + `,"changes":[{"kind":3,"member":"r02","by":"r01","gained":["sender"],"lost":["sender"]}]}}`, false},
+		{"roles on an addition", `{"dropped":{` + tip + `,"changes":[{"kind":1,"member":"r02","by":"r01","gained":["sender"]}]}}`, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := history.Entry{Kind: history.KindEvent, Body: []byte(c.body)}
+			d, ok := decodeDropped(e)
+			if ok != c.ok {
+				t.Fatalf("decodeDropped = %+v, %v; want ok %v", d, ok, c.ok)
+			}
+		})
+	}
+	// What a member writes for a takeover, it reads back.
+	base := roster.Roster{Members: []roster.Member{{ID: ids.MemberID{1}, Name: "r01", Roles: []roster.Role{roster.RolePrimary, roster.RoleSender}},
+		{ID: ids.MemberID{2}, Name: "r02", Roles: []roster.Role{roster.RoleBackup}}}}
+	next := roster.Roster{Members: []roster.Member{{ID: ids.MemberID{1}, Name: "r01", Roles: []roster.Role{roster.RoleSender, roster.RoleBackup}},
+		{ID: ids.MemberID{2}, Name: "r02", Roles: []roster.Role{roster.RolePrimary}}}}
+	got := diffRosters(base, next, "r02")
+	want := []deliver.Change{
+		{Kind: deliver.ChangeRoles, Member: "r01", By: "r02", Gained: []roster.Role{roster.RoleBackup}, Lost: []roster.Role{roster.RolePrimary}},
+		{Kind: deliver.ChangeRoles, Member: "r02", By: "r02", Gained: []roster.Role{roster.RolePrimary}, Lost: []roster.Role{roster.RoleBackup}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("diffRosters = %+v, want %+v", got, want)
 	}
 }
