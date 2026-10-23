@@ -14,14 +14,20 @@
 //
 //	{"subject":"<32 hex>","type":"reboot_unplanned",
 //	 "last":{"id":"<32 hex>","seq":7},"back":{"id":"<32 hex>","seq":8},
-//	 "ref":{"seq":17,"hash":"<64 hex>"}}
+//	 "ref":{"seq":17,"hash":"<64 hex>"},
+//	 "at":{"wall":"2026-10-23T09:00:00Z","mono":1000000000,"trusted":true,"boot":"<32 hex>"},
+//	 "detail":{"from":"24.10.3","to":"24.10.4"}}
 //
 // Last is the Subject's boot when the origin last heard it before the event,
 // Back the boot the Subject came back in (for a return), both as its
 // heartbeats named them; Ref an entry of the Subject's own chain, normally
 // its head as the origin held it when it recorded the event. Each is left
 // out when unknown or not given, and a zero Subject (an event about no single
-// member) names none of them.
+// member) names none of them. At is when the event happened on the origin's
+// clocks (a clock.Stamp, wall clock in UTC), and Detail what a message needs
+// beyond it (versions, a proof's entries); both are left out when not given,
+// so every member builds the same event, and the same incident, from the
+// entry.
 //
 // An entry of history.KindBoot carries a BootBody: the boot record a member
 // writes first in every boot.
@@ -42,7 +48,9 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"time"
 
+	"github.com/TAIPANBOX/rollcall/internal/clock"
 	"github.com/TAIPANBOX/rollcall/internal/events"
 	"github.com/TAIPANBOX/rollcall/internal/history"
 	"github.com/TAIPANBOX/rollcall/internal/identity"
@@ -55,9 +63,13 @@ const (
 	// maxVersion is the longest version, in bytes: member.MaxVersionLen.
 	maxVersion = 64
 	// maxBody is the longest body DecodeEvent and DecodeBoot read. The
-	// longest that NewEvent writes is 349 bytes, NewBoot 169
+	// longest that NewEvent writes is 1007 bytes, NewBoot 169
 	// (TestBodySizes).
-	maxBody = 1 << 10
+	maxBody = 2 << 10
+	// maxDetail is the most entries an event's Detail holds, maxDetailKey
+	// the longest key; a value follows the rule of a version.
+	maxDetail    = 6
+	maxDetailKey = 16
 )
 
 var (
@@ -97,12 +109,38 @@ type EntryRef struct {
 // doc. Type is 1 to 32 characters, a lowercase letter and then lowercase
 // letters and '_' (every events.Type, and those of newer versions).
 type EventBody struct {
-	Subject ids.MemberID `json:"subject"`       // the member the event is about; zero for none
-	Type    events.Type  `json:"type"`          // what happened
-	Last    Boot         `json:"last,omitzero"` // the Subject's boot when last heard before the event
-	Back    Boot         `json:"back,omitzero"` // the boot the Subject came back in
-	Ref     EntryRef     `json:"ref,omitzero"`  // an entry of the Subject's chain
+	Subject ids.MemberID      `json:"subject"`         // the member the event is about; zero for none
+	Type    events.Type       `json:"type"`            // what happened
+	Last    Boot              `json:"last,omitzero"`   // the Subject's boot when last heard before the event
+	Back    Boot              `json:"back,omitzero"`   // the boot the Subject came back in
+	Ref     EntryRef          `json:"ref,omitzero"`    // an entry of the Subject's chain
+	At      At                `json:"at,omitzero"`     // when, on the origin's clocks
+	Detail  map[string]string `json:"detail,omitzero"` // what a message needs beyond the event
 }
+
+// At is a clock.Stamp in the wire form of an event body. Wall is in UTC,
+// from 1970 to 9999; Mono is nanoseconds since the origin's boot.
+type At struct {
+	Wall    time.Time  `json:"wall"`
+	Mono    int64      `json:"mono"`
+	Trusted bool       `json:"trusted"`
+	Boot    ids.BootID `json:"boot"`
+}
+
+// AtOf returns s in the wire form of an event body.
+func AtOf(s clock.Stamp) At {
+	return At{Wall: s.Wall.UTC().Round(0), Mono: int64(s.Mono), Trusted: s.Trusted, Boot: s.Boot}
+}
+
+// Stamp returns a as a clock.Stamp.
+func (a At) Stamp() clock.Stamp {
+	return clock.Stamp{Wall: a.Wall, Mono: time.Duration(a.Mono), Trusted: a.Trusted, Boot: a.Boot}
+}
+
+var (
+	minWall = time.Unix(0, 0).UTC()
+	maxWall = time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC)
+)
 
 // BootBody is the body of an entry of history.KindBoot; see the package doc.
 // Boot is known; Version is empty or up to 64 characters from A-Z, a-z,
@@ -126,8 +164,31 @@ func (b EventBody) check() error {
 		return fmt.Errorf("%w: a reference with only one of its seq and hash", history.ErrBody)
 	case none && (b.Last.known() || b.Back.known() || b.Ref != EntryRef{}):
 		return fmt.Errorf("%w: boots or a reference of no member", history.ErrBody)
+	case b.At != (At{}) && (b.At.Wall.Before(minWall) || b.At.Wall.After(maxWall) || b.At.Wall.Location() != time.UTC || b.At.Mono < 0):
+		return fmt.Errorf("%w: a stamp outside 1970..9999 UTC or before its boot", history.ErrBody)
+	case b.Detail != nil && (len(b.Detail) == 0 || len(b.Detail) > maxDetail):
+		return fmt.Errorf("%w: detail holds %d entries, 1 to %d", history.ErrBody, len(b.Detail), maxDetail)
+	}
+	for k, v := range b.Detail {
+		if !validDetailKey(k) || !validVersion(v) {
+			return fmt.Errorf("%w: a detail entry that is not a plain key and value", history.ErrBody)
+		}
 	}
 	return nil
+}
+
+// validDetailKey reports whether k can be a key of an event's Detail: 1
+// to maxDetailKey characters, lowercase letters and '_'.
+func validDetailKey(k string) bool {
+	if len(k) == 0 || len(k) > maxDetailKey {
+		return false
+	}
+	for i := 0; i < len(k); i++ {
+		if c := k[i]; !('a' <= c && c <= 'z' || c == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 // check returns history.ErrBody unless b is a body NewBoot may sign.

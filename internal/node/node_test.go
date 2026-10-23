@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TAIPANBOX/rollcall/internal/clock"
 	"github.com/TAIPANBOX/rollcall/internal/epoch"
 	"github.com/TAIPANBOX/rollcall/internal/events"
 	"github.com/TAIPANBOX/rollcall/internal/history"
@@ -880,32 +881,64 @@ func TestEpochRotatesAfter30Days(t *testing.T) {
 	}
 }
 
-// TestUnderFloodRaised: a burst of AEAD failures raises one UnderFlood,
-// and authenticated heartbeats from the same source address still count.
+// TestUnderFloodRaised: a burst of AEAD failures raises one UnderFlood, a
+// local status, and authenticated heartbeats from the same source address
+// still count.
 func TestUnderFloodRaised(t *testing.T) {
 	g := newGroup(t, setup{n: 2})
 	a := g.nodes[0]
 	g.run(10 * sec)
-	garbage := func() {
-		for i := 0; i < 2*floodBurst; i++ {
-			p := sealPlain(t, g.key, []byte("not a packet"))
-			p[len(p)-1] ^= 1
-			a.HandlePacket(g.addrs[1], p)
-		}
-	}
 	accepted := with(a, func() uint64 { return a.table.Counters().Accepted })
-	garbage()
+	flood(t, g, a)
+	if !a.Status().UnderFlood {
+		t.Fatal("Status does not say the node is under a flood")
+	}
 	g.run(6 * sec)
-	garbage()
+	flood(t, g, a)
 	g.run(6 * sec)
-	if n := countType(ownTypes(a), events.UnderFlood); n != 1 {
-		t.Fatalf("%d UnderFlood events, want 1", n)
+	if n := a.Status().Counters.Floods; n != 1 {
+		t.Fatalf("%d UnderFlood raised, want 1", n)
 	}
 	if with(a, func() uint64 { return a.table.Counters().Accepted }) <= accepted {
 		t.Fatal("B's heartbeats from the flooded address no longer count")
 	}
 	if s := a.Status(); s.Members[1].State != "up" {
 		t.Fatalf("B is %s during the flood", s.Members[1].State)
+	}
+	g.run(floodQuiet + 5*sec)
+	if a.Status().UnderFlood {
+		t.Fatal("still under a flood a minute after it ended")
+	}
+}
+
+// flood sends two bursts' worth of packets that fail AEAD to n from r02's
+// address.
+func flood(t testing.TB, g *group, n *Node) {
+	for i := 0; i < 2*floodBurst; i++ {
+		p := sealPlain(t, g.key, []byte("not a packet"))
+		p[len(p)-1] ^= 1
+		n.HandlePacket(g.addrs[1], p)
+	}
+}
+
+// TestUnderFloodNotInChat: a flood is local status only: no chat message,
+// nothing queued, nothing in the history (ruling on security spec 5.2).
+func TestUnderFloodNotInChat(t *testing.T) {
+	g := newGroup(t, setup{n: 2, senders: map[int]int{0: 1}})
+	a := g.nodes[0]
+	g.run(10 * sec)
+	flood(t, g, a)
+	g.run(60 * sec)
+	if m := g.chat.all(); len(m) != 0 {
+		t.Fatalf("a flood reached the chat: %q", m)
+	}
+	if q := a.Status().Queued; q != 0 {
+		t.Fatalf("%d incidents queued after a flood", q)
+	}
+	for _, n := range g.nodes {
+		if countType(ownTypes(n), events.UnderFlood) != 0 {
+			t.Fatal("a flood was written to the history")
+		}
 	}
 }
 
@@ -1326,5 +1359,292 @@ func TestTakeoverNeedsTenMinutesOfSilence(t *testing.T) {
 			t.Fatalf("r%02d after the primary's return: version %d, primary %s, takeover %v; want 3, r01, false",
 				i+1, cur.Version, cur.Admins[0], cur.Takeover)
 		}
+	}
+}
+
+// ownEntries returns n's own entries of the given kind.
+func ownEntries(n *Node, kind history.Kind) []history.Entry {
+	return with(n, func() []history.Entry {
+		var out []history.Entry
+		for _, e := range n.log.Range(n.id.ID, 1, n.log.Head(n.id.ID).Seq) {
+			if e.Kind == kind {
+				out = append(out, e)
+			}
+		}
+		return out
+	})
+}
+
+// eventOfType returns n's first own event of type typ about subject.
+func eventOfType(t testing.TB, n *Node, typ events.Type, subject ids.MemberID) history.Entry {
+	t.Helper()
+	for _, e := range ownEntries(n, history.KindEvent) {
+		if b, err := DecodeEvent(e); err == nil && b.Type == typ && b.Subject == subject {
+			return e
+		}
+	}
+	t.Fatalf("no own %s event about %s", typ, subject)
+	return history.Entry{}
+}
+
+// witnesses returns n's own statements about the entry ref.
+func witnesses(n *Node, ref ids.Hash) []history.WitnessBody {
+	var out []history.WitnessBody
+	for _, e := range ownEntries(n, history.KindWitness) {
+		if w, err := history.DecodeWitness(e); err == nil && w.Ref == ref {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// TestWitnessWrittenOnce: a member that accepts another member's event
+// states its own view once, even when the entry reaches it again.
+func TestWitnessWrittenOnce(t *testing.T) {
+	g := newGroup(t, setup{n: 3})
+	a, b := g.nodes[0], g.nodes[1]
+	g.run(20 * sec)
+	g.stop(2)
+	g.run(45 * sec)
+	ev := eventOfType(t, a, events.MemberSilent, g.ids[2].ID)
+	for i := 0; i < 3; i++ {
+		with(b, func() bool { return b.appendLocked(ev, b.stamp()) })
+		g.run(5 * sec)
+	}
+	ws := witnesses(b, ev.Hash())
+	if len(ws) != 1 || !ws[0].Agree {
+		t.Fatalf("r02's statements about r01's silence of r03: %+v; want one that agrees", ws)
+	}
+	own := eventOfType(t, b, events.MemberSilent, g.ids[2].ID)
+	if len(witnesses(b, own.Hash())) != 0 {
+		t.Fatal("a member stated a view on its own event")
+	}
+	if ws := witnesses(a, own.Hash()); len(ws) != 1 || !ws[0].Agree {
+		t.Fatalf("r01's statements about r02's event: %+v; want one that agrees", ws)
+	}
+}
+
+// TestConfirmedByCount: a message says how many members confirmed the event
+// from their own view: N agreeing, of the members other than its origin.
+func TestConfirmedByCount(t *testing.T) {
+	g := newGroup(t, setup{n: 4, senders: map[int]int{0: 1}})
+	g.run(20 * sec)
+	g.stop(3)
+	g.run(90 * sec)
+	g.nodes[1].LocalEvent(events.Event{Type: events.InternetLost})
+	g.run(60 * sec)
+	t.Logf("chat:\n%s", strings.Join(g.chat.all(), "\n"))
+	if n := len(g.chat.messages("r04 stopped answering at 09:00, confirmed by 2 of 3.")); n != 1 {
+		t.Fatalf("%d silence messages confirmed by 2 of 3, want 1", n)
+	}
+	if n := len(g.chat.messages("internet lost at 09:01, confirmed by 0 of 3. Seen by r02.")); n != 1 {
+		t.Fatalf("%d messages of r02's own internet loss confirmed by 0 of 3, want 1", n)
+	}
+}
+
+// forge returns entries of r's chain, built after head, with bodies bs.
+func forge(t testing.TB, id *identity.Identity, head history.Head, bs ...EventBody) []history.Entry {
+	t.Helper()
+	var out []history.Entry
+	for _, b := range bs {
+		e, err := NewEvent(id, head, b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, e)
+		head = history.Head{Seq: e.Seq, Hash: e.Hash()}
+	}
+	return out
+}
+
+func inject(n *Node, es ...history.Entry) {
+	with(n, func() any {
+		for _, e := range es {
+			n.appendLocked(e, n.stamp())
+		}
+		return nil
+	})
+}
+
+// updates returns n's own update events.
+func updateEvents(n *Node) []EventBody {
+	var out []EventBody
+	for _, e := range ownEntries(n, history.KindEvent) {
+		if b, err := DecodeEvent(e); err == nil && b.Detail["update"] != "" {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// TestCorrectionSendsOneUpdate: a correction that changes what the incident
+// told sends exactly one update to the chat; one that does not change it
+// sends none (security spec 5.8).
+func TestCorrectionSendsOneUpdate(t *testing.T) {
+	t.Run("class changed", func(t *testing.T) {
+		g := newGroup(t, setup{n: 4, running: []bool{true, true, true, false}, senders: map[int]int{0: 1}})
+		g.run(40 * sec)
+		c, liar := g.ids[2].ID, g.ids[3]
+		now := AtOf(g.clk.stampNow())
+		b1 := Boot{ID: bootN(2, 1), Seq: 1}
+		inject(g.nodes[0], forge(t, liar, history.Head{},
+			EventBody{Subject: c, Type: events.MemberSilent, Last: b1, At: shift(now, -50*sec)},
+			EventBody{Subject: c, Type: events.RebootUnplanned, Last: b1, Back: b1, At: shift(now, -10*sec)},
+		)...)
+		g.run(60 * sec)
+		t.Logf("chat:\n%s", strings.Join(g.chat.all(), "\n"))
+		us := updateEvents(g.nodes[2])
+		if len(us) != 1 || us[0].Type != events.LinkLost {
+			t.Fatalf("r03's updates: %+v; want one link_lost", us)
+		}
+		id := updateID(t, g.nodes[0])
+		if n := len(g.chat.messages("[" + id[:8] + "]")); n != 1 {
+			t.Fatalf("the update reached the chat %d times, want 1", n)
+		}
+		if n := len(g.chat.messages("r03 lost contact until")); n != 1 {
+			t.Fatalf("%d update messages, want 1", n)
+		}
+	})
+	t.Run("class unchanged", func(t *testing.T) {
+		g := newGroup(t, setup{n: 4, running: []bool{true, true, true, false}, senders: map[int]int{0: 1}})
+		g.run(40 * sec)
+		g.stop(2)
+		g.run(60 * sec)
+		g.cfgs[2].Boot, g.cfgs[2].BootSeq = bootN(2, 2), 2
+		g.start(2)
+		g.run(30 * sec)
+		c, liar := g.ids[2].ID, g.ids[3]
+		inject(g.nodes[0], forge(t, liar, history.Head{},
+			EventBody{Subject: c, Type: events.LinkLost, Last: Boot{ID: bootN(2, 1), Seq: 1}, Back: Boot{ID: bootN(2, 2), Seq: 2}, At: AtOf(g.clk.stampNow())},
+		)...)
+		g.run(60 * sec)
+		t.Logf("chat:\n%s", strings.Join(g.chat.all(), "\n"))
+		corrected := false
+		for _, e := range ownEntries(g.nodes[2], history.KindCorrection) {
+			if b, err := history.DecodeCorrection(e); err == nil && b.Class == history.ClassRebootUnplanned {
+				corrected = true
+			}
+		}
+		if !corrected {
+			t.Fatal("r03 did not correct the false link_lost: the case did not happen")
+		}
+		if us := updateEvents(g.nodes[2]); len(us) != 0 {
+			t.Fatalf("updates for a correction that changes nothing told: %+v", us)
+		}
+	})
+}
+
+// updateID returns the ID of the update incident n holds.
+func updateID(t testing.TB, n *Node) string {
+	t.Helper()
+	return with(n, func() string {
+		for _, r := range n.inc.recent {
+			for _, e := range r.events {
+				if e.Detail["update"] != "" {
+					return r.inc.ID
+				}
+			}
+		}
+		t.Fatal("no update incident")
+		return ""
+	})
+}
+
+func (c *fakeClock) stampNow() clock.Stamp {
+	return clock.Stamp{Wall: c.Now(), Mono: c.Mono(), Trusted: true, Boot: bootN(3, 1)}
+}
+
+func shift(a At, d time.Duration) At {
+	a.Wall, a.Mono = a.Wall.Add(d), a.Mono+int64(d)
+	return a
+}
+
+// alarms returns n's own alarm entries of the given proof kind.
+func alarms(n *Node, kind string) []EventBody {
+	var out []EventBody
+	for _, e := range ownEntries(n, history.KindEvent) {
+		if b, err := DecodeEvent(e); err == nil && b.Detail["proof"] == kind {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// TestFalsehoodAlarmOnce: a claim the member's own signed chain disproves
+// raises exactly one alarm naming its author and the proof's entries, also
+// when Reconcile finds it again, and the group sends it once; nobody is
+// expelled.
+func TestFalsehoodAlarmOnce(t *testing.T) {
+	g := newGroup(t, setup{n: 4, running: []bool{true, true, true, false}, senders: map[int]int{0: 1}})
+	g.run(40 * sec)
+	c, liar := g.ids[2].ID, g.ids[3]
+	now := AtOf(g.clk.stampNow())
+	lie := forge(t, liar, history.Head{},
+		EventBody{Subject: c, Type: events.RebootUnplanned, Last: Boot{ID: bootN(9, 9), Seq: 1}, Back: Boot{ID: bootN(2, 1), Seq: 1}, At: now})
+	inject(g.nodes[0], lie...)
+	g.run(30 * sec)
+	// Another claim about r03 makes it reconcile again.
+	more := forge(t, liar, history.Head{Seq: lie[0].Seq, Hash: lie[0].Hash()},
+		EventBody{Subject: c, Type: events.MemberSilent, Last: Boot{ID: bootN(2, 1), Seq: 1}, At: now})
+	inject(g.nodes[0], more...)
+	g.run(30 * sec)
+	t.Logf("chat:\n%s", strings.Join(g.chat.all(), "\n"))
+	as := alarms(g.nodes[2], "falsehood")
+	if len(as) != 1 {
+		t.Fatalf("r03 recorded %d falsehood alarms, want 1", len(as))
+	}
+	if as[0].Subject != liar.ID || as[0].Detail["a"] != lie[0].Hash().String() || as[0].Detail["b"] == "" {
+		t.Fatalf("alarm %+v does not name r04 and the claim %s", as[0], lie[0].Hash())
+	}
+	if n := len(g.chat.messages("r04 showed different histories")); n != 1 {
+		t.Fatalf("%d alarms in the chat, want 1", n)
+	}
+	for i, n := range g.nodes[:3] {
+		s := n.Status()
+		if s.Version != 1 || len(s.Members) != 4 || s.Members[3].State != "suspicious" {
+			t.Fatalf("r%02d: version %d, %d members, r04 %s; want 1, 4, suspicious", i+1, s.Version, len(s.Members), s.Members[3].State)
+		}
+	}
+}
+
+// TestForkAlarmOnce: a fork proof raises exactly one alarm per member that
+// finds it, naming the proof's two entries, however often the forked chain
+// is offered again, and the group sends it once.
+func TestForkAlarmOnce(t *testing.T) {
+	g := newGroup(t, setup{n: 3, running: []bool{true, true, false}, senders: map[int]int{0: 1}})
+	a, b := g.nodes[0], g.nodes[1]
+	c := g.ids[2]
+	g.run(10 * sec)
+	e1, _ := NewBoot(c, history.Head{}, BootBody{Boot: Boot{ID: bootN(2, 1), Seq: 1}, Version: "24.10.4"})
+	e2, _ := NewBoot(c, history.Head{}, BootBody{Boot: Boot{ID: bootN(2, 1), Seq: 1}, Version: "24.10.5"})
+	inject(a, e1)
+	inject(b, e2)
+	g.run(30 * sec)
+	// The forked origin's chain is offered again, three times.
+	later := forge(t, c, history.Head{Seq: 1, Hash: e1.Hash()}, EventBody{Type: events.WanDown, Subject: c.ID})
+	for i := 0; i < 3; i++ {
+		inject(a, later...)
+		inject(b, e1, later[0])
+		g.run(10 * sec)
+	}
+	t.Logf("chat:\n%s", strings.Join(g.chat.all(), "\n"))
+	for i, n := range []*Node{a, b} {
+		as := alarms(n, "fork")
+		if len(as) != 1 {
+			t.Fatalf("r%02d recorded %d fork alarms, want 1", i+1, len(as))
+		}
+		got := []string{as[0].Detail["a"], as[0].Detail["b"]}
+		slices.Sort(got)
+		want := []string{e1.Hash().String(), e2.Hash().String()}
+		slices.Sort(want)
+		if as[0].Subject != c.ID || !slices.Equal(got, want) {
+			t.Fatalf("r%02d's alarm %+v does not name r03 and both entries", i+1, as[0])
+		}
+	}
+	if n := len(g.chat.messages("r03 showed different histories")); n != 1 {
+		t.Fatalf("%d fork alarms in the chat, want 1", n)
+	}
+	if s := a.Status(); s.Version != 1 || len(s.Members) != 3 {
+		t.Fatal("the roster changed after a fork")
 	}
 }

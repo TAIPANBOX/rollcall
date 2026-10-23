@@ -140,6 +140,7 @@ type Counters struct {
 	Schema     uint64 // a validly signed payload that does not decode
 	Self       uint64 // the node's own identity
 	Ignored    uint64 // reserved types, checked and ignored
+	Floods     uint64 // bursts of failures that raised UnderFlood
 	Accepted   uint64 // messages other than heartbeats that passed every check
 	SigChecks  uint64 // signatures verified on messages other than heartbeats
 	Heartbeats member.Counters
@@ -657,8 +658,10 @@ func (n *Node) wireFailed(err error, now clock.Stamp) {
 	}
 	f.last = now.Mono
 	if !f.raised {
+		// Local status only (Status.UnderFlood): never a chat message, and
+		// nothing in the history.
 		f.raised = true
-		n.recordEvent(events.Event{Type: events.UnderFlood, At: n.localStamp(now)}, EventBody{Type: events.UnderFlood}, now)
+		n.counters.Floods++
 	}
 }
 
@@ -886,7 +889,15 @@ func (n *Node) serveFetch(ep uint32, env envelope) []byte {
 	var out entriesMsg
 	out.Entries = []history.Entry{}
 	size := 64
-	for _, e := range n.log.Range(req.Origin, req.From, req.To) {
+	es := n.log.Range(req.Origin, req.From, req.To)
+	for _, p := range n.log.Forks() {
+		// The other entry of a fork goes along, so the asker finds the
+		// fork itself (an alarm is checked before it is repeated).
+		if p.A.Origin == req.Origin && p.B.Seq >= req.From && p.B.Seq <= req.To {
+			es = append(es, p.B)
+		}
+	}
+	for _, e := range es {
 		b, err := json.Marshal(e)
 		if err != nil {
 			break
@@ -1119,6 +1130,7 @@ func (n *Node) tickLocked(now clock.Stamp) {
 		n.beatLocked(now)
 	}
 	n.reconcileLocked(now)
+	n.checkPendingLocked(now)
 	n.incidentsLocked(now)
 	_ = n.flusher.Tick(now.Wall)
 }

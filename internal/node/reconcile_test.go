@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"math"
 	"math/rand/v2"
 	"reflect"
 	"slices"
@@ -1089,7 +1090,7 @@ func TestEventBodyWireForm(t *testing.T) {
 		t.Fatalf("NewEvent body\n %s\nwant\n %s", e.Body, want)
 	}
 	got, err := DecodeEvent(e)
-	if err != nil || got != full {
+	if err != nil || !reflect.DeepEqual(got, full) {
 		t.Fatalf("DecodeEvent = %+v, %v; want %+v", got, err, full)
 	}
 
@@ -1135,6 +1136,9 @@ func TestBodyRules(t *testing.T) {
 		{Subject: sub, Type: events.MemberBack, Back: boot(7)},
 		{Subject: sub, Type: events.MemberBack, Ref: EntryRef{Seq: 1, Hash: ids.Hash{1}}},
 		{Type: events.UnderFlood},
+		{Type: events.UnderFlood, At: At{Wall: t0, Mono: 5, Trusted: true, Boot: bootID(1)}},
+		{Subject: sub, Type: events.Upgraded, Detail: map[string]string{"from": "24.10.3", "to": "24.10.4"}},
+		{Subject: sub, Type: events.Fork, Detail: map[string]string{"a": strings.Repeat("f", 64), "a_seq": "18446744073709551615"}},
 	}
 	for i, b := range good {
 		if _, err := NewEvent(rx.id, history.Head{}, b); err != nil {
@@ -1160,6 +1164,18 @@ func TestBodyRules(t *testing.T) {
 		"back of no member":      {Type: ok.Type, Back: boot(7)},
 		"ref into no member":     {Type: ok.Type, Ref: EntryRef{Seq: 1, Hash: ids.Hash{1}}},
 		"type in capitals, long": {Subject: sub, Type: events.Type(strings.Repeat("A", maxType))},
+		"stamp before 1970":      {Subject: sub, Type: ok.Type, At: At{Wall: time.Unix(-1, 0).UTC()}},
+		"stamp after 9999":       {Subject: sub, Type: ok.Type, At: At{Wall: time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)}},
+		"stamp not in UTC":       {Subject: sub, Type: ok.Type, At: At{Wall: t0.In(time.FixedZone("x", 3600))}},
+		"stamp before its boot":  {Subject: sub, Type: ok.Type, At: At{Wall: t0, Mono: -1}},
+		"empty detail":           {Subject: sub, Type: ok.Type, Detail: map[string]string{}},
+		"detail too long":        {Subject: sub, Type: ok.Type, Detail: map[string]string{"a": "1", "b": "1", "c": "1", "d": "1", "e": "1", "f": "1", "g": "1"}},
+		"detail key in capitals": {Subject: sub, Type: ok.Type, Detail: map[string]string{"From": "1"}},
+		"detail key too long":    {Subject: sub, Type: ok.Type, Detail: map[string]string{strings.Repeat("k", maxDetailKey+1): "1"}},
+		"detail empty key":       {Subject: sub, Type: ok.Type, Detail: map[string]string{"": "1"}},
+		"detail value spaced":    {Subject: sub, Type: ok.Type, Detail: map[string]string{"to": "24 10"}},
+		"detail value too long":  {Subject: sub, Type: ok.Type, Detail: map[string]string{"to": strings.Repeat("9", maxVersion+1)}},
+		"detail value a link":    {Subject: sub, Type: ok.Type, Detail: map[string]string{"to": "https://x"}},
 	}
 	for name, b := range bad {
 		e, err := NewEvent(rx.id, history.Head{}, b)
@@ -1245,7 +1261,7 @@ func TestDecodeBodiesStrict(t *testing.T) {
 	}
 	for name, body := range hostile {
 		got, err := DecodeEvent(event(body))
-		if !errors.Is(err, history.ErrBody) || got != (EventBody{}) {
+		if !errors.Is(err, history.ErrBody) || !reflect.DeepEqual(got, EventBody{}) {
 			t.Errorf("event, %s: %+v, %v; want history.ErrBody and the zero body", name, got, err)
 		}
 	}
@@ -1275,7 +1291,7 @@ func TestDecodeBodiesStrict(t *testing.T) {
 	for _, k := range []history.Kind{history.KindBoot, history.KindWitness, history.KindCorrection, history.KindCheckpoint, history.KindObjection, "x"} {
 		e := event(`{"subject":"` + sub + `","type":"link_lost"}`)
 		e.Kind = k
-		if got, err := DecodeEvent(e); !errors.Is(err, history.ErrInvalid) || got != (EventBody{}) {
+		if got, err := DecodeEvent(e); !errors.Is(err, history.ErrInvalid) || !reflect.DeepEqual(got, EventBody{}) {
 			t.Errorf("DecodeEvent of a %s entry: %v", k, err)
 		}
 	}
@@ -1295,10 +1311,16 @@ func TestBodySizes(t *testing.T) {
 	for i := range max {
 		max[i] = 0xff
 	}
+	detail := map[string]string{}
+	for i := 0; i < maxDetail; i++ {
+		detail[strings.Repeat(string(rune('a'+i)), maxDetailKey)] = strings.Repeat("~", maxVersion)
+	}
 	biggest := EventBody{
 		Subject: max, Type: events.Type(strings.Repeat("z", maxType)),
 		Last: Boot{ID: bootID(255), Seq: 1<<64 - 1}, Back: Boot{ID: bootID(255), Seq: 1<<64 - 1},
-		Ref: EntryRef{Seq: 1<<64 - 1, Hash: ids.Hash{0: 1}},
+		Ref:    EntryRef{Seq: 1<<64 - 1, Hash: ids.Hash{0: 1}},
+		At:     At{Wall: time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC), Mono: math.MaxInt64, Trusted: true, Boot: bootID(255)},
+		Detail: detail,
 	}
 	e, err := NewEvent(rx.id, history.Head{}, biggest)
 	if err != nil {

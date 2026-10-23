@@ -32,14 +32,9 @@ import (
 // its records wait in RAM (Node.writes), so a router whose last minute
 // was lost with its RAM in a power cut does not fork its own chain.
 //
-// An own event is two entries: the event (EventBody, which Reconcile reads)
-// and right after it a stamp entry, an entry of kind event whose body is
-//
-//	{"stamp":{"ref":"<64 hex>","at":{...clock.Stamp...},"detail":{...}}}
-//
-// carrying the stamp and the details incidents need, which EventBody has
-// no fields for. Every member builds the same events from the same
-// entries, so they coalesce into incidents with the same IDs.
+// An own event is one entry, an EventBody with its stamp and details, so
+// every member builds the same events from the same entries, and they
+// coalesce into incidents with the same IDs.
 //
 // Catch-up: a heartbeat whose digest differs from the node's makes it ask
 // the sender for its heads (digest_req, heads) and fetch, origin by
@@ -53,39 +48,6 @@ type ownWrite struct {
 	kind history.Kind
 	body any           // EventBody, BootBody, or a json.RawMessage
 	ev   *events.Event // for an event: its stamp and details
-}
-
-// stampBody is the body of a stamp entry.
-type stampBody struct {
-	Stamp stampOf `json:"stamp"`
-}
-
-type stampOf struct {
-	Ref    ids.Hash          `json:"ref"`
-	At     clock.Stamp       `json:"at"`
-	Detail map[string]string `json:"detail,omitempty"`
-}
-
-// maxDetail bounds the details of one event: entries and values, in bytes.
-const (
-	maxDetail    = 8
-	maxDetailLen = 64
-)
-
-func decodeStamp(e history.Entry) (stampOf, bool) {
-	var b stampBody
-	if e.Kind != history.KindEvent || decodeJSON(e.Body, &b, maxBody) != nil {
-		return stampOf{}, false
-	}
-	if b.Stamp.Ref == (ids.Hash{}) || len(b.Stamp.Detail) > maxDetail {
-		return stampOf{}, false
-	}
-	for k, v := range b.Stamp.Detail {
-		if len(k) > maxDetailLen || len(v) > maxDetailLen {
-			return stampOf{}, false
-		}
-	}
-	return b.Stamp, true
 }
 
 // recordEvent records e, which this node saw, with body in its own chain:
@@ -126,7 +88,12 @@ func (n *Node) flushWritesLocked(now clock.Stamp) {
 		var err error
 		switch b := w.body.(type) {
 		case EventBody:
+			if w.ev != nil {
+				b.At, b.Detail = AtOf(w.ev.At), cleanDetail(w.ev.Detail)
+			}
 			e, err = NewEvent(n.id, head, b)
+		case witnessWrite:
+			e, err = history.NewWitness(n.id, head, b.ref, b.agree, "")
 		case BootBody:
 			e, err = NewBoot(n.id, head, b)
 		default:
@@ -138,24 +105,17 @@ func (n *Node) flushWritesLocked(now clock.Stamp) {
 		if b, ok := w.body.(BootBody); ok {
 			n.rec.boot, n.rec.bootSeen = b, true
 		}
-		if w.ev == nil {
-			continue
-		}
-		st := stampBody{Stamp: stampOf{Ref: e.Hash(), At: w.ev.At, Detail: cleanDetail(w.ev.Detail)}}
-		s, err := history.NewEntry(n.id, history.Head{Seq: e.Seq, Hash: e.Hash()}, history.KindEvent, st)
-		if err == nil {
-			n.appendLocked(s, now)
-		}
 	}
 }
 
+// cleanDetail keeps the entries of d an event body allows, nil if none.
 func cleanDetail(d map[string]string) map[string]string {
-	if len(d) == 0 {
-		return nil
-	}
-	out := map[string]string{}
+	var out map[string]string
 	for k, v := range d {
-		if len(out) < maxDetail && len(k) <= maxDetailLen && len(v) <= maxDetailLen {
+		if validDetailKey(k) && validVersion(v) && len(out) < maxDetail {
+			if out == nil {
+				out = map[string]string{}
+			}
 			out[k] = v
 		}
 	}
@@ -183,16 +143,18 @@ func (n *Node) appendLocked(e history.Entry, now clock.Stamp) bool {
 
 // entryIn handles an entry the log accepted.
 func (n *Node) entryIn(e history.Entry, now clock.Stamp) {
+	if e.Kind == history.KindWitness {
+		if w, err := history.DecodeWitness(e); err == nil && e.Origin == n.id.ID {
+			n.inc.witnessed[w.Ref] = true
+		}
+		return
+	}
 	if e.Kind != history.KindEvent {
 		return
 	}
 	if id, by, ok := deliver.AckOf(e); ok {
 		n.queue.Ack(id, by)
 		n.inc.acked(id)
-		return
-	}
-	if s, ok := decodeStamp(e); ok {
-		n.inc.stampIn(e.Origin, s, now)
 		return
 	}
 	if d, ok := decodeDropped(e); ok {
@@ -203,26 +165,18 @@ func (n *Node) entryIn(e history.Entry, now clock.Stamp) {
 	if err != nil {
 		return
 	}
-	n.inc.eventIn(e, b, now)
+	switch {
+	case b.Detail["proof"] != "":
+		n.alarmIn(e, b, now)
+	case b.Detail["update"] != "":
+		n.inc.singleIn(e, b, now)
+	default:
+		n.inc.eventIn(e, b, now)
+		n.witnessLocked(e, b, now)
+	}
 	if b.Subject == n.id.ID && e.Origin != n.id.ID {
 		n.rec.claim(e)
 	}
-}
-
-// forkLocked handles a fork proof: the origin is marked suspicious and one
-// alarm is raised. Nobody is expelled: removing a member is the owner's
-// decision (security spec 4, 12).
-func (n *Node) forkLocked(p history.ForkProof, now clock.Stamp) {
-	o := p.A.Origin
-	if n.inc.forkRaised[o] {
-		return
-	}
-	n.inc.forkRaised[o] = true
-	n.flusher.Mark()
-	if o == n.id.ID {
-		return
-	}
-	n.recordEvent(events.Event{Type: events.Fork, Subject: o, At: n.localStamp(now)}, EventBody{Subject: o, Type: events.Fork}, now)
 }
 
 // writeHistory is the Flusher's write function.

@@ -58,41 +58,40 @@ type evRec struct {
 	single   bool // an incident of its own: a roster announcement
 }
 
-type unstamped struct {
-	origin ids.MemberID
-	body   EventBody
-}
-
 type incRec struct {
 	inc        events.Incident
 	events     []events.Event
 	components []string
 	paired     bool
+	single     bool // an incident of its own: no count of confirmations
 	queuedAt   time.Time
 }
 
 type incidents struct {
 	evs        map[ids.Hash]*evRec
-	unstamped  map[ids.Hash]unstamped
 	changes    map[ids.Hash][]deliver.Change // by the ref of a roster event
 	facts      map[string][]deliver.Change   // by incident ID
 	recent     []*incRec
 	byID       map[string]*incRec
 	ackedIDs   map[string]bool
 	ackPending map[string]bool
-	forkRaised map[ids.MemberID]bool
+	alarmed    map[string]bool   // alarm incident IDs raised, one per proof
+	witnessed  map[ids.Hash]bool // events this node has stated a view on
+	pending    []pendingAlarm    // falsehood alarms of others, not yet checkable
+	updates    map[ids.Hash]bool // corrections whose update was recorded
 	loading    bool
 }
 
 func (c *incidents) init() {
 	c.evs = map[ids.Hash]*evRec{}
-	c.unstamped = map[ids.Hash]unstamped{}
 	c.changes = map[ids.Hash][]deliver.Change{}
 	c.facts = map[string][]deliver.Change{}
 	c.byID = map[string]*incRec{}
 	c.ackedIDs = map[string]bool{}
 	c.ackPending = map[string]bool{}
-	c.forkRaised = map[ids.MemberID]bool{}
+	c.alarmed = map[string]bool{}
+	c.witnessed = map[ids.Hash]bool{}
+	c.updates = map[ids.Hash]bool{}
 }
 
 // settleAll marks every event held as taken: what was loaded at start is
@@ -103,25 +102,28 @@ func (c *incidents) settleAll() {
 	}
 }
 
+// eventIn takes another or an own event entry with body b into the
+// events incidents are made of. An event without a stamp, a flood (local
+// status only) and an alarm (an incident of its own) are left out.
 func (c *incidents) eventIn(e history.Entry, b EventBody, now clock.Stamp) {
-	h := e.Hash()
-	if _, ok := c.evs[h]; ok {
+	if b.At == (At{}) || b.Type == events.UnderFlood || b.Type == events.Fork {
 		return
 	}
-	if len(c.unstamped) >= keepEvents {
-		clear(c.unstamped)
-	}
-	c.unstamped[h] = unstamped{origin: e.Origin, body: b}
+	c.add(e.Hash(), &evRec{ev: eventOf(e, b), seen: now.Mono})
 }
 
-func (c *incidents) stampIn(origin ids.MemberID, s stampOf, now clock.Stamp) {
-	u, ok := c.unstamped[s.Ref]
-	if !ok || u.origin != origin {
+// singleIn takes an event that is an incident of its own: the update a
+// correction sends.
+func (c *incidents) singleIn(e history.Entry, b EventBody, now clock.Stamp) {
+	if b.At == (At{}) {
 		return
 	}
-	delete(c.unstamped, s.Ref)
-	c.add(s.Ref, &evRec{ev: events.Event{Type: u.body.Type, Subject: u.body.Subject, Witness: origin,
-		At: s.At, Ref: s.Ref, Detail: s.Detail}, seen: now.Mono})
+	c.add(e.Hash(), &evRec{ev: eventOf(e, b), seen: now.Mono, single: true})
+}
+
+// eventOf returns the event the entry e with body b records.
+func eventOf(e history.Entry, b EventBody) events.Event {
+	return events.Event{Type: b.Type, Subject: b.Subject, Witness: e.Origin, At: b.At.Stamp(), Ref: e.Hash(), Detail: b.Detail}
 }
 
 func (c *incidents) add(ref ids.Hash, r *evRec) {
@@ -280,6 +282,7 @@ func (n *Node) incidentsLocked(now clock.Stamp) {
 			if len(incs) == 1 {
 				n.inc.facts[incs[0].ID] = n.inc.changes[r.ev.Ref]
 				n.queueLocked(incs[0], []events.Event{r.ev}, nil, now)
+				n.inc.byID[incs[0].ID].single = true
 			}
 		default:
 			list = append(list, r.ev)
@@ -420,6 +423,9 @@ func (n *Node) renderLocked(inc events.Incident) string {
 		for _, m := range n.cur().Members {
 			f.Names[m.ID.String()] = m.Name
 		}
+	}
+	if r := n.inc.byID[inc.ID]; r != nil && !r.single && len(n.rosters) > 0 {
+		f.Confirmed, f.Of = n.confirmations(r.events)
 	}
 	if r := n.inc.byID[inc.ID]; r != nil && slices.Contains(inc.Events, events.Upgraded) {
 		for _, e := range r.events {

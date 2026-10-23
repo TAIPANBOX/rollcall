@@ -6,6 +6,7 @@ import (
 
 	"github.com/TAIPANBOX/rollcall/internal/clock"
 	"github.com/TAIPANBOX/rollcall/internal/epoch"
+	"github.com/TAIPANBOX/rollcall/internal/events"
 	"github.com/TAIPANBOX/rollcall/internal/history"
 	"github.com/TAIPANBOX/rollcall/internal/ids"
 	"github.com/TAIPANBOX/rollcall/internal/redact"
@@ -17,23 +18,25 @@ import (
 // Claims about this router (event entries of other members whose subject
 // it is) are collected as they reach the log. Once the own chain is caught
 // up and this boot's record is written, Reconcile judges them against the
-// own chain (security spec 5.8): its corrections are appended at once,
-// and a claim it proves false marks its author suspicious. Nobody is
-// expelled.
+// own chain (security spec 5.8): its corrections are appended at once; a
+// correction that changes what the incident told (Correction.Update) also
+// records one update, an own event of the corrected class about this router
+// marked "update" in its Detail, which every member makes into the same
+// incident of its own, so the chat gets one update; a correction that
+// changes nothing told records none. A claim proven false raises one alarm
+// (witness.go). Nobody is expelled.
 
 type recon struct {
 	claims     []history.Entry
 	dirty      bool
 	boot       BootBody
 	bootSeen   bool
-	falsehoods map[ids.Hash]bool
 	suspicious map[ids.MemberID]bool
 }
 
 const keepClaims = 512
 
 func (r *recon) init() {
-	r.falsehoods = map[ids.Hash]bool{}
 	r.suspicious = map[ids.MemberID]bool{}
 }
 
@@ -55,19 +58,48 @@ func (n *Node) reconcileLocked(now clock.Stamp) {
 		return
 	}
 	for _, c := range res.Corrections {
+		ok := len(c.Entries) > 0
 		for _, e := range c.Entries {
 			if !n.appendLocked(e, now) {
+				ok = false
 				break
 			}
 		}
-	}
-	for _, f := range res.Falsehoods {
-		h := f.Claim.Hash()
-		if !n.rec.falsehoods[h] {
-			n.rec.falsehoods[h] = true
-			n.rec.suspicious[f.Claim.Origin] = true
+		if ok && c.Update && !n.inc.updates[c.Entries[0].Hash()] {
+			n.inc.updates[c.Entries[0].Hash()] = true
+			n.updateLocked(c, now)
 		}
 	}
+	for _, f := range res.Falsehoods {
+		n.falsehoodLocked(f, now)
+	}
+}
+
+// updateLocked records the update a correction that changed the incident's
+// meaning sends: an event of the corrected class about this router, from
+// boot From to To, stamped when the latest claim it corrects was.
+func (n *Node) updateLocked(c Correction, now clock.Stamp) {
+	at := n.localStamp(now)
+	latest := time.Time{}
+	refs := map[ids.Hash]bool{}
+	for _, e := range c.Entries {
+		if b, err := history.DecodeCorrection(e); err == nil {
+			for _, r := range b.Refs {
+				refs[r] = true
+			}
+		}
+	}
+	for _, cl := range n.rec.claims {
+		if !refs[cl.Hash()] {
+			continue
+		}
+		if b, err := DecodeEvent(cl); err == nil && b.At != (At{}) && b.At.Wall.After(latest) {
+			latest, at = b.At.Wall, b.At.Stamp()
+		}
+	}
+	typ := events.Type(c.Class)
+	n.recordEvent(events.Event{Type: typ, Subject: n.id.ID, At: at, Detail: map[string]string{"update": "1"}},
+		EventBody{Subject: n.id.ID, Type: typ, Last: c.From, Back: c.To}, now)
 }
 
 // # Status
@@ -98,12 +130,15 @@ type Status struct {
 	BackupWarning bool             `json:"backup_warning"`
 
 	// For the CLI's own text and for tests; not part of the JSON contract.
-	State    string   `json:"-"` // "running", "stopped" or "removed"
-	Epoch    uint32   `json:"-"`
-	Version  uint64   `json:"-"`
-	Counters Counters `json:"-"`
-	Queued   int      `json:"-"`
-	Delivery string   `json:"-"` // what stops delivery, from the queue
+	State string `json:"-"` // "running", "stopped" or "removed"
+	// UnderFlood is true while a burst of packets that fail authentication
+	// goes on (security spec 5.2); it is local status, never a chat message.
+	UnderFlood bool     `json:"-"`
+	Epoch      uint32   `json:"-"`
+	Version    uint64   `json:"-"`
+	Counters   Counters `json:"-"`
+	Queued     int      `json:"-"`
+	Delivery   string   `json:"-"` // what stops delivery, from the queue
 }
 
 type SelfStatus struct {
@@ -208,6 +243,7 @@ func (n *Node) Status() Status {
 	s.Version = cur.Version
 	s.Counters = n.counters
 	s.Counters.Heartbeats = n.table.Counters()
+	s.UnderFlood = n.flood.raised
 	if self, ok := memberOf(cur, n.id.ID); ok {
 		ss := &SelfStatus{Name: self.Name, Roles: roleNames(self.Roles), Takeover: cur.Takeover && !cur.OwnerConfirmed}
 		if a, ok := authority(cur, n.id.ID); ok {
@@ -267,9 +303,13 @@ func (n *Node) Status() Status {
 		if start.IsZero() {
 			start = r.queuedAt
 		}
+		confirmed := 0
+		if !r.single {
+			confirmed, _ = n.confirmations(r.events)
+		}
 		s.Incidents = append(s.Incidents, IncidentStatus{
 			ID: shortID(r.inc.ID), Time: at(start), Text: n.renderLocked(r.inc),
-			ConfirmedBy: len(r.inc.Witnesses), Members: len(cur.Members),
+			ConfirmedBy: confirmed + 1, Members: len(cur.Members),
 			Delivered: n.inc.ackedIDs[r.inc.ID],
 		})
 	}
