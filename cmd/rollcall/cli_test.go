@@ -994,6 +994,23 @@ func TestStatusText(t *testing.T) {
 	}
 }
 
+// TestStatusTextShowsFlood: the text form of status says when the router is
+// under a flood, and says nothing of one otherwise.
+func TestStatusTextShowsFlood(t *testing.T) {
+	for _, flood := range []bool{false, true} {
+		report := fullReport(t, func(m map[string]any) { m["under_flood"] = flood })
+		b, _ := json.Marshal(report)
+		var out, errb bytes.Buffer
+		c := &cli{stdout: &out, stderr: &errb, call: func(context.Context, string, ...string) ([]byte, error) { return b, nil }}
+		if code := c.run([]string{"status"}); code != 0 {
+			t.Fatalf("status: exit %d, %q", code, errb.String())
+		}
+		if got := strings.Contains(out.String(), "Under a flood:"); got != flood {
+			t.Errorf("under_flood %v: the text says a flood %v:\n%s", flood, got, out.String())
+		}
+	}
+}
+
 // TestInitSiteName: the roster's site is --site, else the site option when
 // it is a valid name, else home; an invalid --site is refused.
 func TestInitSiteName(t *testing.T) {

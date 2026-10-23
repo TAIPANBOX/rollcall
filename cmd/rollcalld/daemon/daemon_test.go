@@ -932,6 +932,31 @@ func TestStatusDiscoveryAndTopology(t *testing.T) {
 	}
 }
 
+// TestStatusUnderFlood: a burst of packets that fail authentication shows in
+// the status report as under_flood (security spec 5.2: local status only),
+// and the flag clears once the burst has been over for a while.
+func TestStatusUnderFlood(t *testing.T) {
+	f := newFixture(t, false, true)
+	h := start(t, f.dir, nil)
+	h.run(6 * time.Second)
+	if v, ok := h.status()["under_flood"]; !ok || v != false {
+		t.Fatalf("under_flood before any flood: %v (in the report: %v), want false", v, ok)
+	}
+	from := netip.MustParseAddrPort("192.0.2.9:7432")
+	junk := make([]byte, 200)
+	for range 200 {
+		rand.Read(junk)
+		h.d.HandlePacket(from, junk)
+	}
+	if v := h.status()["under_flood"]; v != true {
+		t.Fatalf("under_flood during a flood: %v, want true", v)
+	}
+	h.run(2 * time.Minute)
+	if v := h.status()["under_flood"]; v != false {
+		t.Fatalf("under_flood two minutes after the flood: %v, want false", v)
+	}
+}
+
 // TestSystemClock: the monotonic clock counts from the boot, as
 // proc/uptime gives it, and moves on with the process.
 func TestSystemClock(t *testing.T) {

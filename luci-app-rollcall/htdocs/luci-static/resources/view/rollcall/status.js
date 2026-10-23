@@ -267,6 +267,14 @@ function buildPage(st) {
 		]));
 	}
 
+	var flooded = st.under_flood === true;
+	if (flooded) {
+		nodes.push(alertBox('warning', [
+			E('strong', {}, [ _('Under a flood: ') ]),
+			_('many packets that fail authentication are arriving at this router. They are dropped and no address is blocked. Members may look silent while it lasts; that is reported as an alarm, never hidden.')
+		]));
+	}
+
 	var tg = st.telegram || {};
 	if (tg.state === 'bot_blocked' || tg.state === 'tls_failed' || tg.state === 'rate_limited') {
 		nodes.push(alertBox('warning', [ T(lookup(telegramLabels(), tg.state, text(tg.state))) ]));
@@ -289,6 +297,7 @@ function buildPage(st) {
 		labelRow(_('Telegram from this router'), [ T(telegramText(tg)) ]),
 		labelRow(_('Sandbox'), [ T(sandboxText(st.sandbox)) ]),
 		labelRow(_('Storage'), [ T(storageFailed ? _('error, see above') : _('ok')) ]),
+		labelRow(_('Flood of bad packets'), [ T(flooded ? _('yes, see above') : _('no')) ]),
 		labelRow(_('Group key'), [ T(groupKeyText(st.group_key)) ]),
 		labelRow(_('Discovery errors'), [ discoveryNode(st) ]),
 		labelRow(_('Report generated'), [ T(text(st.generated)) ])

@@ -77,6 +77,7 @@ A set-up router prints every field below.
 | `telegram` | object | this router's Telegram state, see below |
 | `group_key` | object or null | `null` before the first key exists |
 | `backup_warning` | bool | `true` when this router holds the group key, so its configuration backup holds secrets |
+| `under_flood` | bool | `true` while this router receives a burst of packets that fail authentication (security design 5.2); local status only, never a chat message, see below |
 
 ### `self`
 
@@ -162,6 +163,15 @@ The page maps each value to its wording. The CLI sends the value only.
 No raw error text ever goes into this object. Every state is one of the words
 above.
 
+### `under_flood`
+
+`true` while packets that fail the authenticated decryption keep arriving in a
+burst; it goes back to `false` once no burst has been seen for a while. The
+packets are dropped and nothing is blocked by source address, so a member
+whose address is spoofed keeps working. A flood that makes members look
+silent still shows as `silent` members and as an alarm. The page shows a
+warning while it is `true`; the chat never hears of a flood.
+
 ### Example of a full report
 
 ```json
@@ -186,7 +196,8 @@ above.
   "storage": {"ok": true, "error": null},
   "telegram": {"state": "ok", "last_ok": "2026-10-23T14:02:01+01:00"},
   "group_key": {"created": "2026-10-01T03:00:00+01:00", "age_days": 22, "rotates_every_days": 30},
-  "backup_warning": true
+  "backup_warning": true,
+  "under_flood": false
 }
 ```
 

@@ -42,6 +42,9 @@ type report struct {
 	Telegram      node.TelegramStatus   `json:"telegram"`
 	GroupKey      *node.GroupKeyStatus  `json:"group_key"`
 	BackupWarning bool                  `json:"backup_warning"`
+	// UnderFlood is the node's flood state (security spec 5.2): local
+	// status only, never a chat message.
+	UnderFlood bool `json:"under_flood"`
 }
 
 // notSetUp is the status of a router without a group. Error says why when
@@ -84,6 +87,7 @@ func (d *Daemon) status() ([]byte, error) {
 		Self: s.Self, Members: nonNil(s.Members), Sender: s.Sender, Incidents: nonNil(s.Incidents),
 		Discovery: d.discovery(), Topology: topology(d.o.Devices, switched),
 		Storage: s.Storage, Telegram: s.Telegram, GroupKey: s.GroupKey, BackupWarning: s.BackupWarning,
+		UnderFlood: s.UnderFlood,
 	}
 	if d.o.Sandbox != nil {
 		r.Sandbox = d.o.Sandbox()

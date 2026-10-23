@@ -107,6 +107,7 @@ type textStatus struct {
 		OK    bool    `json:"ok"`
 		Error *string `json:"error"`
 	} `json:"storage"`
+	UnderFlood bool `json:"under_flood"`
 }
 
 func (c *cli) printStatus(out []byte) {
@@ -143,6 +144,9 @@ func (c *cli) printStatus(out []byte) {
 	fmt.Fprintf(w, "Sender: %s. Telegram on this router: %s. Sandbox: %s.\n", sender, s.Telegram.State, s.Sandbox.State)
 	if !s.Storage.OK && s.Storage.Error != nil {
 		fmt.Fprintf(w, "Storage: %s\n", *s.Storage.Error)
+	}
+	if s.UnderFlood {
+		fmt.Fprintln(w, "Under a flood: many packets that fail authentication are arriving here. They are dropped; members may look silent while it lasts, and that is reported.")
 	}
 	for i, inc := range s.Incidents {
 		if i == 5 {
