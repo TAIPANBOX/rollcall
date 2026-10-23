@@ -252,3 +252,40 @@ func TestTakeoverWaitsForAcks(t *testing.T) {
 		t.Fatalf("the incident was sent %d times: r01 took over before it held r02's acknowledgement", n)
 	}
 }
+
+// TestForeignAckHoldsSender (D2): while another member still delivers (its
+// acknowledgements keep arriving), this node, though it takes itself for the
+// sender, waits the delivery grace after the last of them, so the two do not
+// send at once while their views converge.
+func TestForeignAckHoldsSender(t *testing.T) {
+	g := newGroup(t, setup{n: 3, running: []bool{true, true, false}, senders: map[int]int{0: 2, 2: 1}})
+	g.run(60 * sec)
+	a := g.nodes[0]
+	body, err := deliver.AckBody("4444444444444444")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ack, err := history.NewEntry(g.ids[2], history.Head{}, history.KindEvent, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inject(a, ack)
+	acked := g.clk.Mono()
+	with(a, func() any {
+		now := a.stamp()
+		a.queueLocked(events.Incident{ID: "5555555555555555", Start: now, End: now}, nil, nil, now)
+		return nil
+	})
+	g.run(time.Minute)
+	g.chat.mu.Lock()
+	defer g.chat.mu.Unlock()
+	for _, m := range g.chat.msgs {
+		if strings.Contains(m.text, "[55555555]") {
+			if d := m.at - acked; d < deliver.Grace {
+				t.Fatalf("r01 sent %s after r03's acknowledgement arrived, want the grace (%s)", d, deliver.Grace)
+			}
+			return
+		}
+	}
+	t.Fatal("the incident never reached the chat")
+}

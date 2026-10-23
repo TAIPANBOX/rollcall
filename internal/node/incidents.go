@@ -584,7 +584,9 @@ func (n *Node) ackedLocked(id string, by ids.MemberID) {
 //
 // A member heard again (a partition healed, a router came back) starts the
 // wait over: it may have been sending on its side, and the views must meet
-// again. A node that announced its shutdown sends nothing more.
+// again. While another member's acknowledgements keep arriving, it still
+// delivers in its own view: the node sends nothing until the grace after
+// the last of them. A node that announced its shutdown sends nothing more.
 
 // handover is the wait after the announcing heartbeat when another member
 // may have been sending.
@@ -645,6 +647,9 @@ func (n *Node) turnLocked(sender ids.MemberID, now clock.Stamp) ids.MemberID {
 	}
 	if t.handover && now.Mono < t.at+2*handover && n.behindSendersLocked() {
 		return ids.MemberID{} // their acknowledgements may be among what is missing
+	}
+	if n.otherAck != 0 && now.Mono-n.otherAck < deliver.Grace {
+		return ids.MemberID{} // another member still delivers
 	}
 	return sender
 }

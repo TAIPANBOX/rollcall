@@ -217,6 +217,9 @@ func (n *Node) entryIn(e history.Entry, now clock.Stamp) {
 	}
 	if id, by, ok := deliver.AckOf(e); ok {
 		n.ackedLocked(id, by)
+		if by != n.id.ID && !n.inc.loading {
+			n.otherAck = now.Mono // another member delivers (incidents.go)
+		}
 		return
 	}
 	if d, ok := decodeDropped(e); ok {

@@ -222,6 +222,8 @@ type Node struct {
 	rec  recon
 	join joinWindow
 	turn senderTurn
+	// otherAck is when the last acknowledgement of another member arrived.
+	otherAck time.Duration
 }
 
 // peer is what the node knows of another member.
