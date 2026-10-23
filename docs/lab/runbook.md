@@ -64,23 +64,23 @@ Copy the packages to each router over standard input, with no scp:
 ```sh
 for h in flint2 beryl1 beryl2; do
   for f in dist/pkg/aarch64_cortex-a53/*.apk dist/pkg/luci/*.apk; do
-    cat "$f" | lab_ssh $h "cat > /tmp/$(basename "$f")"
+    cat "$f" | lab_ssh $h "mkdir -p /tmp/rollcall-lab && cat > /tmp/rollcall-lab/$(basename "$f")"
   done
 done
 ```
 
-Expected: no output. Each router has the package files in `/tmp`.
+Expected: no output. Each router has the package files in `/tmp/rollcall-lab`, a directory of their own, so the install below takes nothing else that lies in `/tmp`.
 
 Install them:
 
 ```sh
 for h in flint2 beryl1 beryl2; do
   echo "== $h"
-  lab_ssh $h 'apk add --allow-untrusted /tmp/*.apk && apk info -v rollcall'
+  lab_ssh $h 'apk add --allow-untrusted /tmp/rollcall-lab/*.apk && apk info -v rollcall'
 done
 ```
 
-Expected: apk installs the packages and resolves the dependencies (`procd-seccomp`, `procd-ujail`, `ca-bundle`) from the router's feeds. The last line names `rollcall` at version `0.0.0-lab`. A dependency that cannot be resolved stops the install; record the message.
+Expected: apk installs the packages and resolves the dependencies (`procd-seccomp`, `procd-ujail`, `ca-bundle`) from the router's feeds. The last line names `rollcall` at version `0.0.0_rcN`, N the number of the ci run that built it, so a later lab build upgrades an earlier one. A dependency that cannot be resolved stops the install; record the message.
 
 ## 3. Init, join, roles, token and bind
 

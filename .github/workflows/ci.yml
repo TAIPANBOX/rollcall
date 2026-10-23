@@ -308,9 +308,13 @@ jobs:
           go-version-file: go.mod
 
       - name: Build the rollcall and LuCI apk packages for aarch64_cortex-a53
+        # The version grows with each run (0.0.0-rcN, apk 0.0.0_rcN), so apk add on a router that
+        # holds an earlier lab build upgrades it instead of keeping the installed one.
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
           set -eu
-          make apk luci VERSION=0.0.0-lab TARGETS=aarch64_cortex-a53
+          make apk luci VERSION="0.0.0-rc$RUN_NUMBER" TARGETS=aarch64_cortex-a53
           find dist/pkg -name '*.apk' -exec sha256sum {} +
 
       - name: Keep the packages for the lab run
