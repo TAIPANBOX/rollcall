@@ -19,7 +19,8 @@ func (g *group) reboot(i int) *Node {
 	return g.start(i)
 }
 
-// ownReturns returns n's own events about itself of a return type.
+// ownReturns returns n's own events about itself of a return type, its
+// updates left out.
 func ownReturns(n *Node) []EventBody {
 	var out []EventBody
 	for _, e := range ownEntries(n, history.KindEvent) {
@@ -28,7 +29,7 @@ func ownReturns(n *Node) []EventBody {
 			continue
 		}
 		switch b.Type {
-		case events.RebootUnplanned, events.RebootPlanned, events.Upgraded:
+		case events.RebootUnplanned, events.RebootPlanned, events.Upgraded, events.LinkLost, events.MemberBack:
 			out = append(out, b)
 		}
 	}
@@ -104,7 +105,7 @@ func TestDaemonRestartNoEvent(t *testing.T) {
 	if rs := ownReturns(g.nodes[1]); len(rs) != 0 {
 		t.Fatalf("a daemon restart recorded %+v", rs)
 	}
-	if m := g.chat.messages("rebooted"); len(m) != 0 {
+	if m := g.chat.all(); len(m) != 0 {
 		t.Fatalf("a daemon restart reached the chat: %q", m)
 	}
 }
