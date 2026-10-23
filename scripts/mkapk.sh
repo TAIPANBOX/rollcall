@@ -77,12 +77,13 @@ install_tree() {
 DATA=$BUILD/root
 mkdir -p "$DATA"
 if [ "$PKG" = rollcall ]; then
-	mkdir -p "$DATA/usr/bin" "$DATA/etc/init.d" "$DATA/etc/hotplug.d/iface" "$DATA/etc/config" \
+	mkdir -p "$DATA/usr/bin" "$DATA/etc/init.d" "$DATA/etc/hotplug.d/iface" "$DATA/etc/hotplug.d/ntp" "$DATA/etc/config" \
 		"$DATA/etc/uci-defaults" "$DATA/etc/seccomp" "$DATA/etc/capabilities" "$DATA/lib/upgrade/keep.d"
 	install -m 0755 "$DAEMON"                                "$DATA/usr/bin/rollcalld"
 	install -m 0755 "$CLI"                                   "$DATA/usr/bin/rollcall"
 	install -m 0755 "$FILES/etc/init.d/rollcall"             "$DATA/etc/init.d/rollcall"
 	install -m 0755 "$FILES/etc/hotplug.d/iface/50-rollcall" "$DATA/etc/hotplug.d/iface/50-rollcall"
+	install -m 0755 "$FILES/etc/hotplug.d/ntp/50-rollcall"   "$DATA/etc/hotplug.d/ntp/50-rollcall"
 	install -m 0644 "$FILES/etc/config/rollcall"             "$DATA/etc/config/rollcall"
 	install -m 0755 "$FILES/etc/uci-defaults/90-rollcall"    "$DATA/etc/uci-defaults/90-rollcall"
 	# One profile per architecture, generated from packaging/seccomp: never the same file twice.
