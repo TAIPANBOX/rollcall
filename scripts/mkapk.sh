@@ -5,8 +5,10 @@
 # not an archive: it is a binary ADB blob (one block of schema and metadata, then signature
 # and data blocks). Handing apk a renamed .ipk is a different format, and apk says so.
 # Exactly one program writes that format, `apk mkpkg` from apk-tools v3, so this script runs
-# it. It uses the host's apk when that is v3, and otherwise a digest-pinned alpine image
-# through docker. apk-tools 2 (alpine 3.22 and earlier) has no mkpkg subcommand at all.
+# it. It uses the host's apk when that is v3 and the script runs as root, and otherwise a
+# digest-pinned alpine image through docker. apk-tools 2 (alpine 3.22 and earlier) has no mkpkg
+# subcommand at all. Every entry of the package is owned by root, and the script checks that in
+# the package it wrote (see "give the tree to root" below).
 #
 # apk refuses an unsigned local file unless the user passes --allow-untrusted. Signing is a
 # repository-index concern, and OpenWrt's own package-pack.mk does not sign packages either.
@@ -122,18 +124,58 @@ EOF
 	SCRIPTS="--script post-install:$BUILD/post-install"
 fi
 
-# ---- find a writer for the format
+# ---- find a writer for the format, and give the tree to root
 #
-# A host apk is usable only if it is v3. apk-tools 2 has no mkpkg subcommand, so probing for
-# the subcommand is the check, not the version string.
-run_mkpkg() {
-	if command -v apk >/dev/null 2>&1 && apk mkpkg --help >/dev/null 2>&1; then
-		apk mkpkg "$@"
-	elif command -v "$DOCKER" >/dev/null 2>&1; then
-		"$DOCKER" run --rm -v "$BUILD:$BUILD" -w "$BUILD" "$ALPINE" apk mkpkg "$@"
+# An apk names the owner of every entry, and `apk mkpkg` has no option to set it: apk-tools
+# 3.0.7 takes the uid and gid of each file and directory of the staged tree and names them from
+# the passwd and group files of the system it runs on, and writes nobody for an id it cannot
+# name. On a CI runner the tree is staged by the runner's user (uid 1001) and named inside the
+# alpine image, which has no such user, so every entry of the first lab packages was installed
+# owned by nobody:nogroup, /etc/init.d/rollcall and /usr/bin/rollcall (both run as root)
+# included. So mkpkg reads a copy of the tree owned by root, and check_owners below reads the
+# result back.
+#
+# A host apk is used only when it is v3 and this script runs as root, the one case where the
+# staged tree is root's already. apk-tools 2 has no mkpkg subcommand and `apk mkpkg --help`
+# exits 1 on v3 as well, so the help text is the probe, not the exit status. Anything else runs
+# in the pinned image, as root there, on a copy made inside the container: the bind-mounted
+# tree is never chowned, so the runner can still delete it.
+if [ "$(id -u)" = 0 ] && command -v apk >/dev/null 2>&1 && apk mkpkg --help 2>/dev/null | grep -q 'Mkpkg options'; then
+	HOST_APK=1
+elif command -v "$DOCKER" >/dev/null 2>&1; then
+	HOST_APK=0
+else
+	echo "mkapk.sh: need apk-tools v3 on PATH and root, or docker to run $ALPINE" >&2
+	echo "mkapk.sh: apk v3 is the only writer of the package format; see the header" >&2
+	exit 1
+fi
+
+# in_writer <command> [args]: runs a command where apk-tools v3 is, as root.
+in_writer() {
+	if [ "$HOST_APK" = 1 ]; then
+		"$@"
 	else
-		echo "mkapk.sh: need apk-tools v3 on PATH or docker to run $ALPINE" >&2
-		echo "mkapk.sh: apk v3 is the only writer of the package format; see the header" >&2
+		"$DOCKER" run --rm -v "$BUILD:$BUILD" -w "$BUILD" "$ALPINE" "$@"
+	fi
+}
+
+# run_mkpkg <mkpkg options>: apk mkpkg over a root-owned copy of $DATA.
+run_mkpkg() {
+	# shellcheck disable=SC2016 # expanded by the inner shell, which gets the paths as arguments
+	in_writer sh -c 'set -e; src=$1; stage=$(mktemp -d); shift; cp -a "$src/." "$stage/"; chown -R 0:0 "$stage"; apk mkpkg --files "$stage" "$@"; rm -rf "$stage"' \
+		sh "$DATA" "$@"
+}
+
+# check_owners <package>: fails unless every entry of the package, files and directories, is
+# owned by user root and group root, as apk itself lists them.
+check_owners() {
+	in_writer apk adbdump "$1" > "$BUILD/adbdump.txt"
+	acls=$(grep -c '^[[:space:]]*\(- \)\{0,1\}acl:' "$BUILD/adbdump.txt" || true)
+	users=$(grep -c '^[[:space:]]*user: root$' "$BUILD/adbdump.txt" || true)
+	groups=$(grep -c '^[[:space:]]*group: root$' "$BUILD/adbdump.txt" || true)
+	if [ "$acls" -eq 0 ] || [ "$users" -ne "$acls" ] || [ "$groups" -ne "$acls" ]; then
+		echo "mkapk.sh: $(basename "$1"): $acls entries, $users owned by user root, $groups by group root; every entry must be root's:" >&2
+		grep -E '^[[:space:]]*(user|group):' "$BUILD/adbdump.txt" | grep -v ': root$' | sort | uniq -c >&2 || true
 		exit 1
 	fi
 }
@@ -151,8 +193,8 @@ run_mkpkg \
 	--info "description:$DESCRIPTION" \
 	--info "depends:$DEPENDS" \
 	$SCRIPTS \
-	--files "$DATA" \
 	--output "$BUILD/$OUT"
+check_owners "$BUILD/$OUT"
 
 mkdir -p "$OUTDIR"
 rm -f "$OUTDIR/$OUT"

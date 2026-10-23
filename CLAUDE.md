@@ -20,6 +20,7 @@ Each bullet is an invariant from section 12 of the security spec. The marker say
 - I11. Only a router with the sender role receives the bot token. (test: TestSecretsOnlyForSender in internal/pairing/join_test.go)
 - I12. A router with missing or corrupt keys stops and makes no network calls. (test: TestFailClosedWithoutKeys in internal/node/node_test.go)
 - I13. The init script sets user, group, no_new_privs, the seccomp profile and a requirejail jail, and never uses ubus. (gate: internal/gates/initscript_test.go)
+- I13b. Every file and directory of the rollcall and luci-app-rollcall packages, .ipk and .apk, is owned by uid 0 and gid 0. (gate: TestPackagesOwnedByRoot in internal/gates/packages_test.go, run on the built packages by the CI packaging job; scripts/mkapk.sh also checks each .apk it writes)
 - I14. A roster has exactly one primary, at most MaxAdmins admins and exactly one recovery key; any other shape is rejected. (test: TestRosterShape in internal/roster/roster_test.go)
 - I15a. A takeover is accepted only after ten minutes without hearing the primary, and a primary that returns restores itself. (test: TestTakeoverNeedsTenMinutesOfSilence in internal/node/node_test.go)
 - I15b. A takeover that the owner confirmed holds: the replaced primary cannot restore itself. (test: TestConfirmedTakeoverStays in internal/roster/admin_test.go)

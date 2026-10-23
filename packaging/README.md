@@ -21,6 +21,28 @@ and the generator that writes one profile per architecture. `scripts/mkipk.sh` a
 
 The package has no ubus ACL: the daemon never calls ubus.
 
+## Every entry is owned by root
+
+Every file and directory of both packages, in both formats, is owned by uid 0 and gid 0.
+procd runs `/etc/init.d/rollcall` as root and hotplug runs `/usr/bin/rollcall` as root, and the
+seccomp profile, the capability file and the rpcd ACL decide the sandbox, so an entry any other
+account owns would let that account replace it and gain root or weaken the sandbox.
+
+- `.ipk`: `mkipk.sh` writes every tar with `--numeric-owner --owner=0 --group=0` (GNU tar) or
+  `--uid 0 --gid 0 --uname root --gname root` (bsdtar).
+- `.apk`: `apk mkpkg` has no owner option. apk-tools 3.0.7 takes the uid and gid of each entry
+  of the staged tree and names them from the passwd file of the system it runs on, writing
+  `nobody` for an id it cannot name. A CI runner stages the tree as uid 1001, which the alpine
+  image cannot name, so the first lab packages installed every file as nobody:nogroup.
+  `mkapk.sh` now runs mkpkg on a copy of the tree owned by root (inside the container, so the
+  runner can still delete its own tree) and reads the result back with `apk adbdump`: it fails
+  unless every entry names user root and group root.
+
+The gate `TestPackagesOwnedByRoot` (`internal/gates/packages_test.go`) reads the packages
+`make release` wrote: every header of the three tars of each `.ipk`, and every acl of each
+`.apk` as `apk adbdump` lists it. The CI job `packaging` runs it with `ROLLCALL_PACKAGES=1`, and
+then plants a real `.apk` with a nobody-owned file and requires the gate to name it.
+
 ## Seccomp: one profile per architecture
 
 `packaging/seccomp/generate.sh <openwrt-arch>` writes the profile on stdout. It is

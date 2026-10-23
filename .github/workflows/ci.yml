@@ -197,6 +197,42 @@ jobs:
             alpine@sha256:020dfcbaaf4cc1078bf2d9c7ba31a8466e334061dcd2f248001d68f79e52c000 \
             apk adbdump "$apk" | grep -q 'name: etc/seccomp' || { echo "apk lacks the seccomp profile"; exit 1; }
 
+      # procd runs /etc/init.d/rollcall as root and hotplug runs /usr/bin/rollcall as root, so an
+      # entry any other account owns lets that account gain root. The gate reads every header of
+      # the three tars of each .ipk and, through apk's own listing, every acl of each .apk.
+      - name: Every entry of every package is owned by root (uid 0, gid 0)
+        run: |
+          set -eu
+          mkdir -p dist/adbdump
+          for apk in dist/release/*.apk; do
+            name=$(basename "$apk")
+            docker run --rm -v "$PWD/dist/release:/work:ro" -w /work \
+              alpine@sha256:020dfcbaaf4cc1078bf2d9c7ba31a8466e334061dcd2f248001d68f79e52c000 \
+              apk adbdump "$name" > "dist/adbdump/$name.txt"
+          done
+          ROLLCALL_PACKAGES=1 go test ./internal/gates -run '^TestPackagesOwnedByRoot$' -count=1 -v
+
+      - name: The owner check fails on a real package with a nobody-owned file (teeth)
+        run: |
+          set -eu
+          t="$RUNNER_TEMP/owners-teeth"
+          rm -rf "$t" && mkdir -p "$t/dist/release" "$t/dist/adbdump"
+          cp dist/release/*.ipk "$t/dist/release/"
+          docker run --rm -v "$t/dist:/d" \
+            alpine@sha256:020dfcbaaf4cc1078bf2d9c7ba31a8466e334061dcd2f248001d68f79e52c000 sh -c '
+              set -e
+              mkdir -p /tree/usr/bin && echo planted > /tree/usr/bin/planted
+              chown 65534:65534 /tree/usr/bin/planted
+              apk mkpkg --info name:planted --info version:1-r1 --files /tree --output /d/release/planted-1-r1.apk
+              apk adbdump /d/release/planted-1-r1.apk > /d/adbdump/planted-1-r1.apk.txt'
+          if ROLLCALL_PACKAGES=1 ROLLCALL_REPO_ROOT="$t" go test ./internal/gates -run '^TestPackagesOwnedByRoot$' -count=1 -v > "$t/out.txt" 2>&1; then
+            cat "$t/out.txt"
+            echo "the owner check passed a package with a nobody-owned file"
+            exit 1
+          fi
+          grep -q 'usr/bin/planted: user nobody' "$t/out.txt" || { cat "$t/out.txt"; echo "the owner check failed, but not on the planted file"; exit 1; }
+          echo "the owner check fails on the planted nobody-owned file, as it must"
+
   # Each shipped seccomp profile installed as a real kernel filter (kill the process on any call
   # it does not list) by tools/seccomp-run, with rollcalld run under it: the profile without each
   # call the gate names as made at start must kill the daemon by SIGSYS, and the whole profile

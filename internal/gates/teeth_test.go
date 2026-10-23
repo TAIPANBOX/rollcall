@@ -29,6 +29,7 @@ type toothCase struct {
 	name     string                   // subtest name
 	gate     string                   // gate test function to run in the copy
 	coverage bool                     // run with ROLLCALL_COVERAGE=1
+	env      []string                 // further KEY=VALUE settings for the gate run
 	plant    func(*testing.T, string) // changes the copy; nil leaves it clean
 	outcome  outcome
 	expect   string // text the gate output must contain
@@ -368,7 +369,7 @@ func runGate(t *testing.T, bin, root string, c toothCase) (string, int) {
 	t.Helper()
 	cmd := exec.Command(bin, "-test.run", "^"+c.gate+"$", "-test.v", "-test.count=1")
 	cmd.Dir = root
-	cmd.Env = gateEnv(root, c.coverage)
+	cmd.Env = append(gateEnv(root, c.coverage), c.env...)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return string(out), 0
