@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -41,6 +42,8 @@ const (
 	fmtRecvKeySize   = 1216
 	fmtEncSize       = 1120 // ML-KEM-768 ciphertext (1088) and an X25519 point (32)
 	fmtRespHeader    = 1 + 32
+	fmtRespVersion   = 2
+	fmtEpochSize     = 87 // ID 4, NotAfter 8, roster version 8, roster hash 32, seq 2, authority 1, secret 32
 	fmtSigSize       = 64
 	fmtMaxNotAfter   = 253402300799
 	fmtTestBootstrap = "192.168.1.1:7432"
@@ -282,11 +285,27 @@ func handRequest(t testing.TB, c Code, pt []byte) []byte {
 	return a.Seal(blob, nonce, pt, handRequestAD(c))
 }
 
-// handPayload lays out a response payload.
+// handPayload lays out a response payload. The epoch key is bound to s,
+// its version read from the body and its hash, unless ek carries a
+// binding of its own; its sequence number is 1 unless ek has one.
 func handPayload(binding []byte, ek epoch.Key, sec *Secrets, s roster.Signed) []byte {
+	if ek.Roster == (epoch.Binding{}) {
+		var v struct {
+			Version uint64 `json:"version"`
+		}
+		_ = json.Unmarshal(s.Body, &v)
+		ek.Roster = epoch.Binding{Version: v.Version, Hash: s.Hash()}
+	}
+	if ek.Seq == 0 {
+		ek.Seq = 1
+	}
 	p := append([]byte(nil), binding...)
 	p = binary.BigEndian.AppendUint32(p, ek.ID)
 	p = binary.BigEndian.AppendUint64(p, uint64(ek.NotAfter.Unix()))
+	p = binary.BigEndian.AppendUint64(p, ek.Roster.Version)
+	p = append(p, ek.Roster.Hash[:]...)
+	p = binary.BigEndian.AppendUint16(p, ek.Seq)
+	p = append(p, ek.Authority)
 	p = append(p, ek.Secret...)
 	if sec == nil {
 		p = append(p, 0)
@@ -310,7 +329,7 @@ func handResponse(t testing.TB, key ed25519.PrivateKey, outerPub []byte, to *ide
 	if err != nil {
 		t.Fatalf("hpke.Seal: %v", err)
 	}
-	blob := append([]byte{1}, outerPub...)
+	blob := append([]byte{fmtRespVersion}, outerPub...)
 	blob = append(blob, ct...)
 	return append(blob, sig.Sign(key, fmtResponseKind, blob)...)
 }
@@ -318,8 +337,8 @@ func handResponse(t testing.TB, key ed25519.PrivateKey, outerPub []byte, to *ide
 // handOpenResponse checks the layout of a response and returns its payload.
 func handOpenResponse(t testing.TB, blob []byte, to *identity.Identity, adminPub []byte) []byte {
 	t.Helper()
-	if blob[0] != 1 {
-		t.Fatalf("response version %d, want 1", blob[0])
+	if blob[0] != fmtRespVersion {
+		t.Fatalf("response version %d, want %d", blob[0], fmtRespVersion)
 	}
 	if !bytes.Equal(blob[1:fmtRespHeader], adminPub) {
 		t.Fatalf("response header does not carry the admin's public key")

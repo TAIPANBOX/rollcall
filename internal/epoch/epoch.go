@@ -2,10 +2,28 @@
 // accepts, and seals an epoch key to one member for delivery (security spec
 // 5.5).
 //
-// An epoch key is SecretSize random bytes with an epoch ID and a NotAfter
-// date. It never encrypts a packet itself: a Ring keeps only the packet key
-// that wire.PacketKey derives from it, computed once when the key is
-// installed.
+// An epoch key is SecretSize random bytes with an epoch ID, a NotAfter date
+// and the roster it was issued under (Binding), with its sequence number
+// within that roster version and the place of the admin who issued it. It
+// never encrypts a packet itself: a Ring keeps only the packet key that
+// wire.PacketKey derives from it, computed once when the key is installed.
+//
+// # Binding and order
+//
+// Every key is bound to the roster it was issued under: that roster's
+// version and hash (roster.Signed.Hash). Keys are ordered by that binding,
+// not by their wire ID (Newer): a higher roster version first, then a
+// higher sequence number within the version, then the primary's (authority
+// 0) before a backup's (authority 1). A sequence number runs from 1 to
+// MaxSeq within one roster version and starts again at 1 with the next.
+// Which keys a member accepts is the node's decision (security spec 5.5):
+// it takes a key only when it fits its roster: bound to it, or to an earlier
+// roster of its chain after which no member was removed.
+//
+// The wire ID that packets carry is IDOf the binding, the sequence number
+// and the authority: 31 bits of a SHA-256 over them. So two admins that
+// issue keys under two different rosters of one version, the two sides of
+// a split, never issue the same ID, which a Ring could not hold apart.
 //
 // # Ring
 //
@@ -13,11 +31,11 @@
 // Overlap (60 s) after the switch: from the switch time, inclusive, to 60 s
 // later, exclusive. A clock that reads earlier than the switch closes the
 // previous epoch rather than extending it. Only one previous epoch is kept.
-// Install refuses an epoch ID that is not greater than the current one, so a
-// replayed old delivery cannot bring back a key that a removed member still
-// holds; the current key delivered again is accepted and changes nothing. An
-// empty Ring accepts any first key, so a member installs its stored current
-// key at start, before it accepts any delivery.
+// Install does not order keys: the caller has decided that a key is the one
+// to switch to, by its binding. Install refuses the current epoch's ID with
+// another secret; the current key delivered again is accepted and changes
+// nothing. An empty Ring accepts any first key, so a member installs its
+// stored current key at start, before it accepts any delivery.
 //
 // NotAfter is the date by which the acting admin rotates the key. Members do
 // not enforce it: a Ring keeps accepting its current key past NotAfter,
@@ -26,22 +44,27 @@
 //
 // # Delivery
 //
-// Seal returns a blob of exactly BlobSize (1261) bytes:
+// Seal returns a blob of exactly BlobSize (1304) bytes:
 //
-//	version (1) = 1 | signer member ID (16) | HPKE ciphertext (1180) | signature (64)
+//	version (1) = 2 | signer member ID (16) | HPKE ciphertext (1223) | signature (64)
 //
 // The ciphertext is single-shot HPKE base mode, hpke.Seal with the
 // recipient's MLKEM768-X25519 key, HKDF-SHA256 and ChaCha20-Poly1305: the
-// encapsulated key (1120) followed by the sealed plaintext and tag (44 + 16).
+// encapsulated key (1120) followed by the sealed plaintext and tag (87 + 16).
 // The info is "rollcall/v1 epoch" followed by the recipient's 16-byte member
 // ID, so a delivery opens only for the member it was sealed for. The
-// plaintext is
+// plaintext is, integers big endian,
 //
-//	epoch ID (4, big endian) | NotAfter (8, Unix seconds, big endian) | secret (32)
+//	epoch ID (4) | NotAfter (8, Unix seconds) | roster version (8) |
+//	roster hash (32) | sequence number (2) | authority (1) | secret (32)
 //
-// with NotAfter from 1 to 253402300799 (9999-12-31T23:59:59Z). The signature
-// is sig.Sign(admin, "epoch", bytes 0 to 1196): it covers everything sent
-// before it, the version and the signer ID as well as the ciphertext.
+// with NotAfter from 1 to 253402300799 (9999-12-31T23:59:59Z), a roster
+// version of at least 1, a roster hash that is not all zero, a sequence
+// number from 1 to MaxSeq and an authority from 0 to MaxAuthority. The
+// signature is sig.Sign(admin, "epoch", bytes 0 to 1239): it covers
+// everything sent before it, the version and the signer ID as well as the
+// ciphertext, and so the binding sealed in it. Version 1, which carried no
+// binding, is refused.
 //
 // Open checks, cheapest first: its own arguments (ErrInvalid), the length and
 // version (ErrFormat), the signature (ErrSignature), and only then decrypts
@@ -65,6 +88,7 @@ import (
 	"crypto/hpke"
 	"crypto/mlkem"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/binary"
 	"errors"
@@ -90,15 +114,23 @@ const (
 	Overlap = 60 * time.Second
 	// BlobSize is the length of every delivery blob in bytes.
 	BlobSize = offSig + ed25519.SignatureSize
+	// MaxSeq is the highest sequence number of a key within one roster
+	// version.
+	MaxSeq = 1023
+	// MaxAuthority is the highest authority a key carries: the place of
+	// its admin in the roster's admin list, 0 the primary.
+	MaxAuthority = 3
 )
 
 const (
-	blobVersion = 1
+	blobVersion = 2
 	sigKind     = "epoch"
 	infoLabel   = "rollcall/v1 epoch"
+	idLabel     = "rollcall/v1 epoch id\x00"
 
 	memberIDSize   = len(ids.MemberID{})
-	plaintextSize  = 4 + 8 + SecretSize
+	hashSize       = len(ids.Hash{})
+	plaintextSize  = 4 + 8 + 8 + hashSize + 2 + 1 + SecretSize
 	encSize        = mlkem.CiphertextSize768 + 32 // X-Wing: ML-KEM-768 ciphertext and an X25519 point
 	tagSize        = 16                           // ChaCha20-Poly1305
 	ciphertextSize = encSize + plaintextSize + tagSize
@@ -120,11 +152,14 @@ var (
 
 var (
 	// ErrInvalidKey reports a secret that is not SecretSize bytes or is all
-	// zero, or a NotAfter outside 1970-01-01T00:00:01Z..9999-12-31T23:59:59Z.
-	ErrInvalidKey = errors.New("epoch: invalid key: the secret must be 32 bytes and not all zero, NotAfter within 1970..9999")
-	// ErrStale reports a key whose epoch ID is not greater than the current
-	// one, or is the current ID with another secret.
-	ErrStale = errors.New("epoch: the key is not newer than the current epoch")
+	// zero, a NotAfter outside 1970-01-01T00:00:01Z..9999-12-31T23:59:59Z,
+	// or, in a delivery, a binding that is not one: a roster version of 0,
+	// an all-zero roster hash, a sequence number outside 1..MaxSeq or an
+	// authority above MaxAuthority.
+	ErrInvalidKey = errors.New("epoch: invalid key: the secret must be 32 bytes and not all zero, NotAfter within 1970..9999, bound to a roster")
+	// ErrStale reports a key with the current epoch's ID and another
+	// secret.
+	ErrStale = errors.New("epoch: the key has the current epoch's ID and another secret")
 	// ErrInvalid reports a zero member ID, an unusable admin signing key, or
 	// a self that cannot open deliveries.
 	ErrInvalid = errors.New("epoch: invalid argument")
@@ -141,11 +176,57 @@ var (
 	ErrDecrypt = errors.New("epoch: the delivery does not open for this member")
 )
 
+// Binding is the roster a key was issued under: its version and its hash,
+// roster.Signed.Hash.
+type Binding struct {
+	Version uint64
+	Hash    ids.Hash
+}
+
 // Key is a group epoch key.
 type Key struct {
-	ID       uint32    // the epoch ID that packets carry
-	Secret   []byte    // SecretSize random bytes
-	NotAfter time.Time // the date by which the acting admin rotates
+	ID        uint32    // the epoch ID that packets carry
+	Secret    []byte    // SecretSize random bytes
+	NotAfter  time.Time // the date by which the acting admin rotates
+	Roster    Binding   // the roster it was issued under
+	Seq       uint16    // its sequence number within that roster version, 1 to MaxSeq
+	Authority uint8     // its admin's place in that roster's Admins: 0 the primary
+}
+
+// IDOf returns the wire epoch ID of the key bound to b with sequence number
+// seq, issued by the admin of the given authority: the first four bytes,
+// big endian, of SHA-256("rollcall/v1 epoch id\x00" || b.Version (8, big
+// endian) || b.Hash || seq (2, big endian) || authority (1)), with the
+// lowest bit set, so it is never 0, which stands for no epoch.
+func IDOf(b Binding, seq uint16, authority uint8) uint32 {
+	h := sha256.New()
+	h.Write([]byte(idLabel))
+	h.Write(binary.BigEndian.AppendUint64(nil, b.Version))
+	h.Write(b.Hash[:])
+	h.Write(binary.BigEndian.AppendUint16(nil, seq))
+	h.Write([]byte{authority})
+	return binary.BigEndian.Uint32(h.Sum(nil)) | 1
+}
+
+// Newer reports whether a ranks above b: bound to a higher roster version,
+// or to the same version with a higher sequence number, or the same
+// sequence number from a lower authority (the primary's above a backup's).
+// The roster hashes are not compared: keys bound to two rosters of one
+// version are not ordered against each other, and the node takes only keys
+// bound to its own chain of rosters.
+func Newer(a, b Key) bool {
+	switch {
+	case a.Roster.Version != b.Roster.Version:
+		return a.Roster.Version > b.Roster.Version
+	case a.Seq != b.Seq:
+		return a.Seq > b.Seq
+	}
+	return a.Authority < b.Authority
+}
+
+// bound reports whether k carries a binding a delivery may carry.
+func (k Key) bound() bool {
+	return k.Roster.Version >= 1 && k.Roster.Hash != (ids.Hash{}) && k.Seq >= 1 && k.Seq <= MaxSeq && k.Authority <= MaxAuthority
 }
 
 // String returns "epoch <id> not after <NotAfter in RFC 3339, UTC>".
@@ -193,11 +274,13 @@ type slot struct {
 }
 
 // Install makes k the current epoch at time now. The epoch it replaces stays
-// valid until now + Overlap; any older one is dropped. It returns
-// ErrInvalidKey for a secret that is not SecretSize bytes or is all zero, and
-// ErrStale for an ID not greater than the current one (the current key
-// itself, same ID and secret, is accepted and changes nothing). On error the
-// Ring is unchanged. NotAfter is not checked (see the package comment).
+// valid until now + Overlap; any older one is dropped. It does not order
+// keys: the caller decides which key comes next (see the package comment).
+// It returns ErrInvalidKey for a secret that is not SecretSize bytes or is
+// all zero, and ErrStale for the current epoch's ID with another secret
+// (the current key itself, same ID and secret, is accepted and changes
+// nothing). On error the Ring is unchanged. NotAfter and the binding are not
+// checked.
 func (r *Ring) Install(k Key, now time.Time) error {
 	if len(k.Secret) != SecretSize {
 		return ErrInvalidKey
@@ -209,10 +292,10 @@ func (r *Ring) Install(k Key, now time.Time) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.cur.set {
-		if k.ID == r.cur.id && subtle.ConstantTimeCompare(pk, r.cur.key) == 1 {
-			return nil
-		}
-		if k.ID <= r.cur.id {
+		if k.ID == r.cur.id {
+			if subtle.ConstantTimeCompare(pk, r.cur.key) == 1 {
+				return nil
+			}
 			return ErrStale
 		}
 		r.prev = r.cur
@@ -266,13 +349,14 @@ func (r *Ring) Format(s fmt.State, _ rune) {
 // The blob layout is in the package comment. NotAfter travels in whole
 // seconds; a fraction is dropped.
 //
-// It returns ErrInvalidKey for a bad secret or NotAfter, ErrRecipientKey if to
-// is nil, is not MLKEM768-X25519, or cannot be encapsulated to, and
+// It returns ErrInvalidKey for a bad secret, NotAfter or binding,
+// ErrRecipientKey if to is nil, is not MLKEM768-X25519, or cannot be
+// encapsulated to, and
 // ErrInvalid for a zero member ID or an admin key that is not 64 bytes or
 // whose public half sig.ValidPublicKey rejects. k is not modified.
 func Seal(k Key, to hpke.PublicKey, recipient, signer ids.MemberID, admin ed25519.PrivateKey) ([]byte, error) {
 	notAfter := k.NotAfter.Unix()
-	if len(k.Secret) != SecretSize || allZero(k.Secret) || notAfter < 1 || notAfter > maxNotAfter {
+	if len(k.Secret) != SecretSize || allZero(k.Secret) || notAfter < 1 || notAfter > maxNotAfter || !k.bound() {
 		return nil, ErrInvalidKey
 	}
 	if to == nil || to.KEM().ID() != recvKEM.ID() {
@@ -285,10 +369,14 @@ func Seal(k Key, to hpke.PublicKey, recipient, signer ids.MemberID, admin ed2551
 		return nil, ErrInvalid
 	}
 
-	pt := make([]byte, plaintextSize)
-	binary.BigEndian.PutUint32(pt[0:4], k.ID)
-	binary.BigEndian.PutUint64(pt[4:12], uint64(notAfter))
-	copy(pt[12:], k.Secret)
+	pt := make([]byte, 0, plaintextSize)
+	pt = binary.BigEndian.AppendUint32(pt, k.ID)
+	pt = binary.BigEndian.AppendUint64(pt, uint64(notAfter))
+	pt = binary.BigEndian.AppendUint64(pt, k.Roster.Version)
+	pt = append(pt, k.Roster.Hash[:]...)
+	pt = binary.BigEndian.AppendUint16(pt, k.Seq)
+	pt = append(pt, k.Authority)
+	pt = append(pt, k.Secret...)
 	ct, err := hpke.Seal(to, kdf, aead, deliveryInfo(recipient), pt)
 	clear(pt)
 	if err != nil {
@@ -332,24 +420,27 @@ func Open(blob []byte, self *identity.Identity, admins map[ids.MemberID]ed25519.
 	return k, signer, nil
 }
 
-// decodePlaintext reads epoch ID | NotAfter | secret. A plaintext of another
-// length is ErrFormat: a BlobSize blob cannot yield one, but the check keeps
-// a later change to the format from turning into a panic. The secret is
-// copied, so pt may be cleared afterwards.
+// decodePlaintext reads epoch ID | NotAfter | roster version | roster hash |
+// sequence number | authority | secret. A plaintext of another length is
+// ErrFormat: a BlobSize blob cannot yield one, but the check keeps a later
+// change to the format from turning into a panic. The secret is copied, so
+// pt may be cleared afterwards.
 func decodePlaintext(pt []byte) (Key, error) {
 	if len(pt) != plaintextSize {
 		return Key{}, ErrFormat
 	}
+	k := Key{ID: binary.BigEndian.Uint32(pt[0:4])}
 	notAfter := binary.BigEndian.Uint64(pt[4:12])
-	secret := pt[12:]
-	if allZero(secret) || notAfter < 1 || notAfter > maxNotAfter {
+	k.Roster.Version = binary.BigEndian.Uint64(pt[12:20])
+	copy(k.Roster.Hash[:], pt[20:20+hashSize])
+	rest := pt[20+hashSize:]
+	k.Seq, k.Authority = binary.BigEndian.Uint16(rest[0:2]), rest[2]
+	secret := rest[3:]
+	if allZero(secret) || notAfter < 1 || notAfter > maxNotAfter || !k.bound() {
 		return Key{}, ErrInvalidKey
 	}
-	return Key{
-		ID:       binary.BigEndian.Uint32(pt[0:4]),
-		Secret:   bytes.Clone(secret),
-		NotAfter: time.Unix(int64(notAfter), 0).UTC(),
-	}, nil
+	k.Secret, k.NotAfter = bytes.Clone(secret), time.Unix(int64(notAfter), 0).UTC()
+	return k, nil
 }
 
 // signedBy reports whether the signature at the end of blob is a valid

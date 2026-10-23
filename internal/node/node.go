@@ -218,6 +218,7 @@ type Node struct {
 	deliveries map[ids.MemberID]*delivery  // epoch key deliveries still to make
 	parts      map[ids.MemberID]*partial   // epoch key deliveries being received
 	bases      map[ids.MemberID]*baseOffer // bases offered for origins the log holds nothing of
+	pending    map[ids.MemberID]epoch.Key  // keys bound to a roster not held yet, by signer (keys.go)
 
 	inc  incidents
 	rec  recon
@@ -268,28 +269,46 @@ type secretsFile struct {
 	ChatID   int64  `json:"chat_id"`
 }
 
+// epochFile is FileEpoch. Format 2 binds every key to the roster it was
+// issued under; a file without it (format 1, before any release) is
+// refused, and the router stops (ErrState).
 type epochFile struct {
+	Format  int            `json:"format"`
 	Keys    []epochFileKey `json:"keys"`
 	Removed bool           `json:"removed"`
 }
 
+// epochFileFormat is the format writeKeys writes and loadKeys reads.
+const epochFileFormat = 2
+
 type epochFileKey struct {
-	ID       uint32    `json:"id"`
-	Secret   []byte    `json:"secret"`
-	NotAfter time.Time `json:"not_after"`
+	ID            uint32    `json:"id"`
+	Secret        []byte    `json:"secret"`
+	NotAfter      time.Time `json:"not_after"`
+	RosterVersion uint64    `json:"roster_version"`
+	RosterHash    ids.Hash  `json:"roster_hash"`
+	Seq           uint16    `json:"seq"`
+	Authority     uint8     `json:"authority"`
 }
 
 // Bootstrap writes the state a node starts from into st: the roster r and
 // the epoch key k, as rollcall init and join leave them. It replaces what
-// st held.
+// st held. A key with no binding (k.Roster zero), as init makes the first
+// one, is bound to r, with sequence number 1 if it has none; a key bound to
+// another roster is refused.
 func Bootstrap(st *store.Store, r roster.Signed, k epoch.Key) error {
 	if st == nil {
 		return ErrArgument
 	}
-	if _, err := rosterOf(r, nil); err != nil {
+	rr, err := rosterOf(r, nil)
+	if err != nil {
 		return fmt.Errorf("%w: the roster: %w", ErrArgument, err)
 	}
-	if !validKey(k) {
+	b := epoch.Binding{Version: rr.Version, Hash: r.Hash()}
+	if k.Roster == (epoch.Binding{}) {
+		k.Roster, k.Seq = b, max(k.Seq, 1)
+	}
+	if !validKey(k) || k.Roster != b {
 		return fmt.Errorf("%w: the epoch key", ErrArgument)
 	}
 	if err := st.WriteFileAtomic(FileRoster, encodeChain([]roster.Signed{r})); err != nil {
@@ -317,7 +336,7 @@ func New(cfg Config, st *store.Store, id *identity.Identity, n Net, c Clock, ch 
 		internetOK: true, wanUp: true, ring: &epoch.Ring{},
 		peers: map[ids.MemberID]*peer{}, dirty: map[ids.MemberID]bool{},
 		deliveries: map[ids.MemberID]*delivery{}, parts: map[ids.MemberID]*partial{},
-		bases: map[ids.MemberID]*baseOffer{}}
+		pending: map[ids.MemberID]epoch.Key{}, bases: map[ids.MemberID]*baseOffer{}}
 	nd.inc.init()
 	nd.rec.init()
 	if err := nd.start(); err != nil {
@@ -536,14 +555,19 @@ func (n *Node) loadRoster() error {
 	return nil
 }
 
+// validKey reports whether k is a key the node may hold: a secret of
+// epoch.SecretSize bytes that is not all zero, a NotAfter, and a binding
+// to a roster with a sequence number and authority in range.
 func validKey(k epoch.Key) bool {
-	return len(k.Secret) == epoch.SecretSize && !bytes.Equal(k.Secret, make([]byte, epoch.SecretSize)) && !k.NotAfter.IsZero()
+	return len(k.Secret) == epoch.SecretSize && !bytes.Equal(k.Secret, make([]byte, epoch.SecretSize)) && !k.NotAfter.IsZero() &&
+		k.Roster.Version >= 1 && k.Roster.Hash != (ids.Hash{}) && k.Seq >= 1 && k.Seq <= epoch.MaxSeq && k.Authority <= epoch.MaxAuthority
 }
 
 func writeKeys(st *store.Store, keys []epoch.Key, removed bool) error {
-	f := epochFile{Removed: removed, Keys: []epochFileKey{}}
+	f := epochFile{Format: epochFileFormat, Removed: removed, Keys: []epochFileKey{}}
 	for _, k := range keys {
-		f.Keys = append(f.Keys, epochFileKey{ID: k.ID, Secret: k.Secret, NotAfter: k.NotAfter.UTC()})
+		f.Keys = append(f.Keys, epochFileKey{ID: k.ID, Secret: k.Secret, NotAfter: k.NotAfter.UTC(),
+			RosterVersion: k.Roster.Version, RosterHash: k.Roster.Hash, Seq: k.Seq, Authority: k.Authority})
 	}
 	b, err := json.Marshal(f)
 	if err != nil {
@@ -568,12 +592,16 @@ func (n *Node) loadKeys() error {
 		n.removed = true
 		return ErrRemoved
 	}
+	if f.Format != epochFileFormat {
+		return fmt.Errorf("%w: %s: format %d, want %d (keys bound to their roster)", ErrState, FileEpoch, f.Format, epochFileFormat)
+	}
 	if len(f.Keys) == 0 {
 		return ErrNoEpochKey
 	}
 	for i, fk := range f.Keys {
-		k := epoch.Key{ID: fk.ID, Secret: fk.Secret, NotAfter: fk.NotAfter}
-		if !validKey(k) || (i > 0 && k.ID <= f.Keys[i-1].ID) {
+		k := epoch.Key{ID: fk.ID, Secret: fk.Secret, NotAfter: fk.NotAfter,
+			Roster: epoch.Binding{Version: fk.RosterVersion, Hash: fk.RosterHash}, Seq: fk.Seq, Authority: fk.Authority}
+		if !validKey(k) || (i > 0 && k.ID == f.Keys[i-1].ID) {
 			return fmt.Errorf("%w: %s: an invalid key", ErrState, FileEpoch)
 		}
 		n.keys = append(n.keys, k)
@@ -599,11 +627,12 @@ func (n *Node) keyByID(id uint32) (epoch.Key, bool) {
 	return epoch.Key{}, false
 }
 
-// packetKey returns the packet key of a held epoch.
+// packetKey returns the packet key of a held epoch, or of a pending key
+// (keys.go), which only seals the request that fetches its roster.
 func (n *Node) packetKey(id uint32) ([]byte, bool) {
 	k, ok := n.keyByID(id)
 	if !ok {
-		return nil, false
+		return n.pendingKey(id)
 	}
 	pk, err := wire.PacketKey(k.Secret)
 	return pk, err == nil
@@ -728,10 +757,6 @@ func (n *Node) admit(epochID uint32, env envelope, check func([]byte) error) (me
 		return a, err
 	}
 	n.counters.Accepted++
-	if p := n.peers[env.from]; p != nil {
-		p.epoch = epochID
-	}
-	n.epochSeen(env.from, epochID)
 	return a, nil
 }
 
@@ -1020,10 +1045,10 @@ type job struct {
 }
 
 // plan queues j, unless a job of the same type to the same member with the
-// same payload is queued already.
+// same payload, sealed under the same epoch, is queued already.
 func (n *Node) plan(j job) {
 	for _, q := range n.jobs {
-		if q.to == j.to && q.typ == j.typ && bytes.Equal(q.payload, j.payload) {
+		if q.to == j.to && q.typ == j.typ && q.sealAs == j.sealAs && bytes.Equal(q.payload, j.payload) {
 			return
 		}
 	}
@@ -1055,7 +1080,20 @@ func (n *Node) request(j job) ([]byte, [16]byte, error) {
 
 // answer checks the reply to j, whose ref was ref, and applies it.
 func (n *Node) answer(j job, ref [16]byte, frame []byte, now clock.Stamp) {
-	ep, msg, err := openFrame(n.lookup, frame)
+	lookup := n.lookup
+	if pk, ok := n.packetKey(j.sealAs); ok && j.sealAs != 0 {
+		// A request sealed under a key of the node's choice, an epoch
+		// the member last spoke that the Ring may no longer take or a
+		// pending key, is answered under that key: the reply to this
+		// request alone opens under it.
+		lookup = func(id uint32) ([]byte, bool) {
+			if id == j.sealAs {
+				return pk, true
+			}
+			return n.ring.Lookup(id)
+		}
+	}
+	ep, msg, err := openFrame(lookup, frame)
 	if err != nil {
 		if errors.Is(err, errMalformed) {
 			n.counters.Malformed++

@@ -175,10 +175,44 @@ first frame must pass AEAD or the connection is closed.
   signing; an HPKE `MLKEM768X25519` key pair for receiving key material (hybrid, so a
   recording of today's pairing traffic stays safe against a future quantum computer).
 - Group epoch key: 32 random bytes created by the acting admin (6.1); packet keys derived with
-  HKDF-SHA256 with a fixed label. Rotation: on member removal, on `rollcall rotate`,
-  and every 30 days. During a switch the previous epoch is accepted for 60 seconds.
+  HKDF-SHA256 with a fixed label. Rotation: when a member is added or removed, on
+  `rollcall rotate`, and every 30 days. During a switch the previous epoch is accepted
+  for 60 seconds.
 - Epoch keys are delivered to each member sealed with HPKE to that member's receive
   key and signed by the acting admin.
+- **Every epoch key is bound to the roster it was issued under**: the delivery carries
+  that roster's version and hash, the key's sequence number within that version and
+  the issuing admin's place in that roster (primary or backup), all inside what the
+  admin signs. Keys are ordered by that binding, never by the epoch id on the wire: a
+  higher roster version first, then a higher sequence number, then the primary's key
+  before the backup's. The sequence number starts again at 1 with every roster version
+  and stops at 1023; at that cap rotation fails until the roster changes, so an admin
+  that pushes it there blocks rotation only until the owner removes it. The epoch id
+  in the packet header is 32 bits of a SHA-256 over the binding, the sequence number
+  and the admin's place, so two admins on the two sides of a split never issue the
+  same id.
+- A member takes a delivered key only when it fits its roster: bound to its current
+  roster, or to an earlier roster of its chain after which no member was removed,
+  and signed by an admin whose place the key carries. Of two fitting keys it keeps
+  the newer; a current key that no longer fits is replaced by a fitting one whatever
+  the order. A key bound to a roster the member does not hold yet is kept aside and
+  used only to fetch that roster from the admin who sent it; it is taken once the
+  roster is. A key bound to a roster that lost a member since is refused. So a removed
+  router never gets a key the rest of the group uses: the admin that signs the
+  removal rotates at once, the acting admin rotates whenever its own key stops
+  fitting (a removal signed elsewhere, by the recovery key for instance, or a split
+  that healed in favour of the other branch), and a key the backup made on its side
+  of a split, before the primary removed someone on the other side, does not fit the
+  roster that wins. Other roster changes (roles, admins, a takeover) keep the key, so
+  the two sides of a split that changed only roles still share a key when it heals.
+  (Refined during implementation on 2026-10-23: this replaces epoch ids ordered as
+  (sequence << 2) | authority, under which a removed admin could exhaust the sequence
+  and a backup's key could outrank the primary's after a split.)
+- A member that missed a switch for longer than the 60 s overlap still takes the new
+  key: the delivery is sealed under the key it last used, and the admin reads its
+  acknowledgement under that same key. A split during which both sides rotate (a
+  removal on each side, or the 30-day rotation) and that outlasts the overlap leaves
+  the two sides without a common key; they do not join again by themselves.
 
 ### 5.6 Roster
 

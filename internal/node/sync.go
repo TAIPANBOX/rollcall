@@ -593,6 +593,7 @@ func (n *Node) planProbe(helper, target ids.MemberID) {
 // rosterFetch is one roster synchronisation with a peer.
 type rosterFetch struct {
 	peer   ids.MemberID
+	sealAs uint32 // the epoch its requests are sealed under: 0 for the current one, or a pending key's (keys.go)
 	tip    roster.Signed
 	tipV   uint64
 	branch map[uint64]roster.Signed // the peer's rosters by the version it gave
@@ -611,7 +612,7 @@ func (n *Node) planRosterAt(f *rosterFetch, v uint64) {
 		s    roster.Signed
 	)
 	payload, _ := json.Marshal(rosterReq{Version: v})
-	n.plan(job{to: f.peer, typ: msgRoster, reply: msgRoster, payload: payload,
+	n.plan(job{to: f.peer, typ: msgRoster, reply: msgRoster, payload: payload, sealAs: f.sealAs,
 		check: func(b []byte) error {
 			var err error
 			gotV, s, err = decodeRosterReply(b)
@@ -777,6 +778,7 @@ func (n *Node) extendLocked(base int, links []roster.Signed, dropped []roster.Si
 			delete(n.deliveries, id)
 		}
 	}
+	n.pendingLocked(now)
 	return true
 }
 
@@ -824,6 +826,10 @@ func (n *Node) removeSelfLocked() {
 	}
 	n.keys = nil
 	n.secrets = secretsFile{}
+	for _, k := range n.pending {
+		clear(k.Secret)
+	}
+	clear(n.pending)
 	_ = writeKeys(n.st, nil, true)
 	_ = SaveSecrets(n.st, "", 0)
 	n.ch = nil
@@ -836,8 +842,9 @@ func (n *Node) removeSelfLocked() {
 // Publish signs the next roster, as edit makes it from the current one,
 // with this router's key, and adopts it. This router must be an admin of
 // the current roster, and Verify must accept the result: the roster rules
-// (who may sign, takeover, keys) are Verify's. A removal rotates the epoch
-// key at once.
+// (who may sign, takeover, keys) are Verify's. A roster that adds or
+// removes a member rotates the epoch key at once, when this router is an
+// admin of it (keys.go).
 func (n *Node) Publish(edit func(r *roster.Roster) error) error {
 	return n.publish(edit, nil)
 }
@@ -916,7 +923,7 @@ func (n *Node) publishLocked(edit func(r *roster.Roster) error, recovery []byte,
 	// The members still on the old key hear the new roster in this
 	// heartbeat, among them the removed ones, which may fetch it.
 	n.beatLocked(now)
-	if removedAny(prev, n.cur()) {
+	if _, admin := authority(n.cur(), n.id.ID); admin && (membersChanged(prev, n.cur()) || !n.fits(n.current().Roster)) {
 		if err := n.rotateLocked(now); err != nil {
 			return err
 		}
@@ -943,7 +950,11 @@ func (n *Node) Remove(id ids.MemberID) error {
 	})
 }
 
-func removedAny(prev, cur roster.Roster) bool {
+// membersChanged reports whether cur adds a member to prev or removes one.
+func membersChanged(prev, cur roster.Roster) bool {
+	if len(prev.Members) != len(cur.Members) {
+		return true
+	}
 	for _, m := range prev.Members {
 		if _, ok := memberOf(cur, m.ID); !ok {
 			return true
