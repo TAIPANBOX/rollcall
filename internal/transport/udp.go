@@ -22,6 +22,7 @@ type endpoint struct {
 	conn      *net.UDPConn
 	addr      netip.Addr // the bound address; carries the zone for link-local and group sockets
 	iface     string
+	ifindex   int  // the kernel's index of iface when the socket was bound
 	group     bool // bound to the discovery group: receives multicast
 	linkLocal bool // IPv6 link-local unicast: multicast leaves from here
 }
@@ -72,34 +73,8 @@ func (t *Transport) Unicast(to netip.AddrPort, b []byte) error {
 	return err
 }
 
-// sender picks the socket a datagram to dst leaves from. A link-local
-// destination needs a link-local source on its zone. Any other destination
-// prefers a global source and falls back to a link-local one.
-func (t *Transport) sender(dst netip.Addr) (*endpoint, error) {
-	ll := isLinkLocal(dst)
-	if ll && dst.Zone() == "" {
-		return nil, errNeedZone
-	}
-	var fallback *endpoint
-	for _, ep := range t.endpoints {
-		if ep.group || ep.addr.Is4() != dst.Is4() {
-			continue
-		}
-		if z := dst.Zone(); z != "" && ep.iface != z {
-			continue
-		}
-		if ep.linkLocal == ll {
-			return ep, nil
-		}
-		if !ll && fallback == nil {
-			fallback = ep
-		}
-	}
-	if fallback != nil {
-		return fallback, nil
-	}
-	return nil, errNoSocket
-}
+// unicastEndpoints is the list sender picks from.
+func (t *Transport) unicastEndpoints() []*endpoint { return t.endpoints }
 
 // readLoop passes each datagram to onPacket. A datagram larger than MaxDatagram
 // is dropped whole; the buffer is one byte longer than the limit, so a larger

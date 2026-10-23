@@ -135,7 +135,7 @@ func (t *Transport) listenUnicast(ifi *net.Interface, addr netip.Addr) error {
 		return fmt.Errorf("transport: listen %s on %s: %w", ap, ifi.Name, err)
 	}
 	t.noteBind(plan.pinned)
-	t.endpoints = append(t.endpoints, &endpoint{conn: pc.(*net.UDPConn), addr: addr, iface: ifi.Name, linkLocal: ll})
+	t.endpoints = append(t.endpoints, &endpoint{conn: pc.(*net.UDPConn), addr: addr, iface: ifi.Name, ifindex: ifi.Index, linkLocal: ll})
 
 	tplan := &bindPlan{iface: ifi.Name, ifindex: ifi.Index}
 	tl := net.ListenConfig{Control: tplan.control}
@@ -161,7 +161,7 @@ func (t *Transport) listenGroup(ifi *net.Interface) error {
 		return fmt.Errorf("transport: join %s on %s: %w", group, ifi.Name, err)
 	}
 	t.noteBind(plan.pinned)
-	t.endpoints = append(t.endpoints, &endpoint{conn: pc.(*net.UDPConn), addr: g, iface: ifi.Name, group: true})
+	t.endpoints = append(t.endpoints, &endpoint{conn: pc.(*net.UDPConn), addr: g, iface: ifi.Name, ifindex: ifi.Index, group: true})
 	return nil
 }
 
