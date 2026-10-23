@@ -527,7 +527,11 @@ func (n *Node) ackedLocked(id string, by ids.MemberID) {
 // eligible meanwhile (it may have been sending), the wait after that
 // heartbeat is handover instead: that member stops within a tick of hearing
 // it, and the wait keeps the two members' messages the delivery grace apart
-// and lets the other's acknowledgements arrive. A member heard again (a
+// and lets the other's acknowledgements arrive. So it is when the node takes
+// over from a member that was the sender in its view less than the grace
+// ago (it lost its internet, announced its shutdown, went silent): its last
+// messages were sent just before. A node that announced its shutdown sends
+// nothing more. A member heard again (a
 // partition healed, a router came back) starts the wait over: it may have
 // been sending on its side, and the views must meet again.
 
@@ -537,6 +541,8 @@ const handover = deliver.Grace + 2*time.Second
 
 // senderTurn is this node's turn as the sender.
 type senderTurn struct {
+	prev      ids.MemberID          // the other member last seen as the sender
+	prevAt    time.Duration         // when
 	on        bool                  // the node is the sender in its own view
 	announced bool                  // a heartbeat with its fresh Telegram call went out since
 	at        time.Duration         // when it went out
@@ -547,11 +553,21 @@ type senderTurn struct {
 // turnLocked returns the sender the queue is to act on: sender, unless it
 // is this node and its turn has not begun yet, as the doc above says.
 func (n *Node) turnLocked(sender ids.MemberID, now clock.Stamp) ids.MemberID {
+	if n.goingDown {
+		return ids.MemberID{}
+	}
 	if sender != n.id.ID {
-		n.turn = senderTurn{}
+		prev, at := n.turn.prev, n.turn.prevAt
+		if sender != (ids.MemberID{}) {
+			prev, at = sender, now.Mono
+		}
+		n.turn = senderTurn{prev: prev, prevAt: at}
 		return sender
 	}
 	t := &n.turn
+	if !t.on && t.prev != (ids.MemberID{}) && now.Mono-t.prevAt < deliver.Grace {
+		t.handover = true // taking over from a sender that sent until just now
+	}
 	others := n.othersLocked()
 	heard := map[ids.MemberID]bool{}
 	for _, v := range others {

@@ -162,3 +162,55 @@ func TestMergedAckCoversItsStart(t *testing.T) {
 		}
 	}
 }
+
+// TestNoSendAfterGoingDown (D2): a router that announced its shutdown sends
+// nothing more: its peers took it for gone and one of them sends now.
+func TestNoSendAfterGoingDown(t *testing.T) {
+	g := newGroup(t, setup{n: 2, senders: map[int]int{0: 1}})
+	g.run(60 * sec)
+	a := g.nodes[0]
+	a.GoingDown()
+	with(a, func() any {
+		now := a.stamp()
+		a.queueLocked(events.Incident{ID: "1111111111111111", Start: now, End: now}, nil, nil, now)
+		return nil
+	})
+	g.run(time.Minute)
+	if m := g.chat.messages("[11111111]"); len(m) != 0 {
+		t.Fatalf("r01 sent after it announced its shutdown: %q", m)
+	}
+}
+
+// TestTakeoverWaitsGrace (D2): the sender loses its internet; the member that
+// takes over waits the delivery grace and 2 s after its announcing heartbeat,
+// so a message the old sender sent just before is not followed by another
+// sender's within the grace, and its acknowledgement can arrive.
+func TestTakeoverWaitsGrace(t *testing.T) {
+	g := newGroup(t, setup{n: 2, senders: map[int]int{0: 2, 1: 1}})
+	g.run(60 * sec)
+	a, b := g.nodes[0], g.nodes[1]
+	a.LocalEvent(events.Event{Type: events.InternetLost})
+	with(b, func() any {
+		now := b.stamp()
+		b.queueLocked(events.Incident{ID: "2222222222222222", Start: now, End: now}, nil, nil, now)
+		return nil
+	})
+	var took time.Duration
+	for range 60 {
+		g.run(sec)
+		if s := b.Status().Sender; took == 0 && s != nil && *s == "r02" {
+			took = g.clk.Mono()
+		}
+	}
+	g.chat.mu.Lock()
+	defer g.chat.mu.Unlock()
+	for _, m := range g.chat.msgs {
+		if strings.Contains(m.text, "[22222222]") {
+			if d := m.at - took; m.by != "r02" || d < handover {
+				t.Fatalf("%s sent it %s after r02 took over, want r02 after %s", m.by, d, handover)
+			}
+			return
+		}
+	}
+	t.Fatal("the incident never reached the chat")
+}
