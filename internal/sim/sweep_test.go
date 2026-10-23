@@ -50,8 +50,9 @@ import (
 //     sees each up (or suspicious, for the equivocator or a forked router).
 //
 // A violation whose own evidence matches a known defect (defects_test.go)
-// is tagged with it; a seed whose violations are all tagged is skipped and
-// names them, unless ROLLCALL_STRICT=1. An untagged violation always fails.
+// is tagged with it; a seed whose violations are all tagged with defects
+// still listed there is skipped and names them, unless ROLLCALL_STRICT=1.
+// Any other violation fails, a tag of a defect since fixed included.
 //
 // One seed drives every random choice of the fault plan and the fake
 // network (see the package doc for what a replay repeats). A failing seed
@@ -130,7 +131,9 @@ func TestSweep(t *testing.T) {
 			var plain []violation
 			defects := map[string]bool{}
 			for _, v := range r.violations {
-				if v.defect == "" || strict() {
+				// A tag counts only while its defect is listed: once a fix
+				// removes the entry, that tag is a plain failure.
+				if v.defect == "" || strict() || knownDefects[v.defect] == "" {
 					plain = append(plain, v)
 				} else {
 					defects[v.defect] = true

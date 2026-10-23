@@ -30,10 +30,6 @@ var knownDefects = map[string]string{
 	"D5": "after an outage the sender becomes eligible (its ping succeeds) before the restore has settled, so the queued " +
 		"'internet lost at 09:01' goes out alone and 20 s later 'internet was down from 09:01 to 09:06 (5 min)': two " +
 		"messages where one is wanted (TestSingleRouterGroup, TestNobodyReachesTelegram20Min)",
-	"D6": "a router restarting after a power cut takes itself for caught up from the first peer whose heads do not show it " +
-		"behind, and writes its boot record where another peer holds an entry of its unflushed last minute: its own chain " +
-		"forks, it and its peers mark it suspicious, the chat alarms that it showed different histories, and its later " +
-		"entries (acknowledgements included) never take, so its queue never drains and others resend (sweep I1, I4)",
 	"D7": "alarms do not survive a restart: a fork proof found less than a minute before a power cut is lost (forks.json not " +
 		"flushed), and an alarm not yet delivered when its router restarts is never queued again, because its own alarm " +
 		"record, read back, marks it raised; so the equivocator shows up, or its alarm never reaches the chat (sweep I3)",
