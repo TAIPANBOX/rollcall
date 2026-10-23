@@ -249,9 +249,9 @@ func TestSeccompRuntimeSetPerArch(t *testing.T) {
 	}
 }
 
-// seccompToolDir holds the loader that installs a profile as a real filter in CI, and the
-// syscall tables generated from golang.org/x/sys for it.
-const seccompToolDir = "tools/seccomp-run"
+// seccompTableDir holds the system call tables generated from golang.org/x/sys, which
+// internal/sandbox builds the seccomp filter with.
+const seccompTableDir = "internal/sandbox"
 
 // seccompGoarch is the GOARCH of an OpenWrt architecture.
 func seccompGoarch(arch string) string {
@@ -271,7 +271,7 @@ func seccompGoarch(arch string) string {
 }
 
 // TestSeccompNamesExistPerArch requires every name in each shipped profile to be a system call
-// of that architecture, as golang.org/x/sys/unix numbers it (tools/seccomp-run/zsysnum_linux_*.go,
+// of that architecture, as golang.org/x/sys/unix numbers it (internal/sandbox/zsysnum_linux_*.go,
 // generated from x/sys). A name the architecture does not have protects nothing and leaves the
 // call the daemon really makes out (newfstatat on mips, whose o32 ABI has fstatat64; mmap on
 // arm, whose EABI has only mmap2), and procd's handling of such a name is not established.
@@ -326,7 +326,7 @@ func seccompNames(root, arch string) (map[string]bool, error) {
 
 // seccompTable reads the keys of the sysnums map in the generated table of one GOARCH.
 func seccompTable(root, goarch string) (map[string]bool, error) {
-	path := filepath.Join(root, filepath.FromSlash(seccompToolDir), "zsysnum_linux_"+goarch+".go")
+	path := filepath.Join(root, filepath.FromSlash(seccompTableDir), "zsysnum_linux_"+goarch+".go")
 	f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
 	if err != nil {
 		return nil, err
@@ -470,7 +470,7 @@ func init() {
 		toothCase{
 			name: "seccomp_names_no_table", gate: "TestSeccompNamesExistPerArch",
 			plant: func(t *testing.T, dst string) {
-				removeFile(t, filepath.Join(dst, filepath.FromSlash(seccompToolDir), "zsysnum_linux_mipsle.go"))
+				removeFile(t, filepath.Join(dst, filepath.FromSlash(seccompTableDir), "zsysnum_linux_mipsle.go"))
 			},
 			outcome: wantFail, expect: "measured nothing",
 		},

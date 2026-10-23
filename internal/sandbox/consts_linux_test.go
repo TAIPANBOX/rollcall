@@ -1,6 +1,6 @@
 //go:build linux && (amd64 || arm64 || arm || mips || mipsle)
 
-package main
+package sandbox
 
 import (
 	"testing"
@@ -10,7 +10,8 @@ import (
 )
 
 // TestConstantsMatchXSys ties the values filter.go spells out to golang.org/x/sys/unix, so the
-// portable builder and its tests use exactly what the kernel reads.
+// portable builder and its tests use exactly what the kernel reads, and the Insn layout to
+// struct sock_filter, so install can hand the kernel the program as it is.
 func TestConstantsMatchXSys(t *testing.T) {
 	pairs := []struct {
 		name      string
@@ -21,7 +22,7 @@ func TestConstantsMatchXSys(t *testing.T) {
 		{"BPF_RET", bpfRET, unix.BPF_RET},
 		{"SECCOMP_RET_KILL_PROCESS", retKillProcess, unix.SECCOMP_RET_KILL_PROCESS},
 		{"SECCOMP_RET_ALLOW", retAllow, unix.SECCOMP_RET_ALLOW},
-		{"sizeof(sock_filter)", uint64(unsafe.Sizeof(insn{})), uint64(unsafe.Sizeof(unix.SockFilter{}))},
+		{"sizeof(sock_filter)", uint64(unsafe.Sizeof(Insn{})), uint64(unsafe.Sizeof(unix.SockFilter{}))},
 	}
 	for _, p := range pairs {
 		if p.mine != p.sys {

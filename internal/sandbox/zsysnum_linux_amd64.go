@@ -2,14 +2,14 @@
 
 //go:build linux && amd64
 
-package main
+package sandbox
 
 import "golang.org/x/sys/unix"
 
-// auditArch is seccomp_data.arch for a amd64 process.
+// auditArch is seccomp_data.arch for a linux/amd64 process.
 const auditArch = unix.AUDIT_ARCH_X86_64
 
-// sysnums maps the kernel's name of every amd64 system call to its number.
+// sysnums maps the kernel's name of every linux/amd64 system call to its number.
 var sysnums = map[string]uint32{
 	"read":                    unix.SYS_READ,
 	"write":                   unix.SYS_WRITE,

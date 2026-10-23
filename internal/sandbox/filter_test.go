@@ -1,4 +1,4 @@
-package main
+package sandbox
 
 import (
 	"slices"
@@ -10,42 +10,19 @@ const testArch = 0xc000003e // AUDIT_ARCH_X86_64
 
 var testTable = map[string]uint32{"read": 0, "write": 1, "close": 3, "prctl": 157, "execve": 59, "getppid": 110}
 
-func TestReadProfile(t *testing.T) {
-	good := `{"defaultAction": "SCMP_ACT_KILL_PROCESS", "syscalls": [{"names": ["read", "write"], "action": "SCMP_ACT_ALLOW"}]}`
-	names, err := readProfile([]byte(good))
-	if err != nil || !slices.Equal(names, []string{"read", "write"}) {
-		t.Fatalf("readProfile(good) = %v, %v", names, err)
-	}
-	bad := map[string]string{
-		"default allows":   `{"defaultAction": "SCMP_ACT_ALLOW", "syscalls": [{"names": ["read"], "action": "SCMP_ACT_ALLOW"}]}`,
-		"default errno":    `{"defaultAction": "SCMP_ACT_ERRNO", "syscalls": [{"names": ["read"], "action": "SCMP_ACT_ALLOW"}]}`,
-		"rule not allow":   `{"defaultAction": "SCMP_ACT_KILL_PROCESS", "syscalls": [{"names": ["read"], "action": "SCMP_ACT_LOG"}]}`,
-		"no names":         `{"defaultAction": "SCMP_ACT_KILL_PROCESS", "syscalls": [{"names": [], "action": "SCMP_ACT_ALLOW"}]}`,
-		"no rules":         `{"defaultAction": "SCMP_ACT_KILL_PROCESS", "syscalls": []}`,
-		"unknown field":    `{"defaultAction": "SCMP_ACT_KILL_PROCESS", "args": 1, "syscalls": [{"names": ["read"], "action": "SCMP_ACT_ALLOW"}]}`,
-		"not json":         `{"defaultAction" "SCMP_ACT_KILL_PROCESS"}`,
-		"trailing garbage": good + `{}`,
-	}
-	for name, text := range bad {
-		if _, err := readProfile([]byte(text)); err == nil {
-			t.Errorf("%s: readProfile accepted %s", name, text)
-		}
-	}
-}
-
 func TestNumbers(t *testing.T) {
-	nrs, err := numbers([]string{"read", "prctl", "write", "read"}, testTable, map[string]bool{"write": true})
+	nrs, err := Numbers([]string{"read", "prctl", "write", "read"}, testTable, map[string]bool{"write": true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Equal(nrs, []uint32{0, 157}) {
 		t.Fatalf("numbers = %v; want [0 157] (sorted, once each, write left out)", nrs)
 	}
-	if _, err := numbers([]string{"read", "frobnicate", "newfstatat"}, testTable, nil); err == nil ||
+	if _, err := Numbers([]string{"read", "frobnicate", "newfstatat"}, testTable, nil); err == nil ||
 		!strings.Contains(err.Error(), "frobnicate") || !strings.Contains(err.Error(), "newfstatat") {
 		t.Fatalf("numbers with unknown names: %v; want an error naming both", err)
 	}
-	if _, err := numbers([]string{"read"}, testTable, map[string]bool{"nosuch": true}); err == nil {
+	if _, err := Numbers([]string{"read"}, testTable, map[string]bool{"nosuch": true}); err == nil {
 		t.Fatal("numbers accepted -without of a name the profile does not hold")
 	}
 }
@@ -54,7 +31,7 @@ func TestNumbers(t *testing.T) {
 // numbers of the right architecture are allowed, everything else kills the process.
 func TestFilterAllowsOnlyTheList(t *testing.T) {
 	allowed := []uint32{0, 1, 3, 59, 157}
-	prog, err := buildFilter(testArch, allowed)
+	prog, err := Build(testArch, allowed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,17 +54,17 @@ func TestFilterAllowsOnlyTheList(t *testing.T) {
 }
 
 func TestFilterLimits(t *testing.T) {
-	if _, err := buildFilter(testArch, nil); err == nil {
+	if _, err := Build(testArch, nil); err == nil {
 		t.Error("buildFilter accepted an empty list")
 	}
 	many := make([]uint32, maxAllowed+1)
 	for i := range many {
 		many[i] = uint32(i)
 	}
-	if _, err := buildFilter(testArch, many); err == nil {
+	if _, err := Build(testArch, many); err == nil {
 		t.Errorf("buildFilter accepted %d numbers; jump offsets stop at %d", len(many), maxAllowed)
 	}
-	prog, err := buildFilter(testArch, many[:maxAllowed])
+	prog, err := Build(testArch, many[:maxAllowed])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,31 +80,31 @@ func TestFilterLimits(t *testing.T) {
 
 // runFilter interprets the instructions buildFilter emits (ld [k], jeq #k, ret #k) over one
 // seccomp_data, and fails the test on anything else or on a jump out of the program.
-func runFilter(t *testing.T, prog []insn, arch, nr uint32) uint32 {
+func runFilter(t *testing.T, prog []Insn, arch, nr uint32) uint32 {
 	t.Helper()
 	var acc uint32
 	for pc := 0; pc < len(prog); pc++ {
 		in := prog[pc]
-		switch in.code {
+		switch in.Code {
 		case bpfLD | bpfW | bpfABS:
-			switch in.k {
+			switch in.K {
 			case offNr:
 				acc = nr
 			case offArch:
 				acc = arch
 			default:
-				t.Fatalf("pc %d: load of offset %d", pc, in.k)
+				t.Fatalf("pc %d: load of offset %d", pc, in.K)
 			}
 		case bpfJMP | bpfJEQ | bpfK:
-			if acc == in.k {
-				pc += int(in.jt)
+			if acc == in.K {
+				pc += int(in.Jt)
 			} else {
-				pc += int(in.jf)
+				pc += int(in.Jf)
 			}
 		case bpfRET | bpfK:
-			return in.k
+			return in.K
 		default:
-			t.Fatalf("pc %d: unexpected instruction %#x", pc, in.code)
+			t.Fatalf("pc %d: unexpected instruction %#x", pc, in.Code)
 		}
 	}
 	t.Fatalf("the program ran off its end (arch %#x, nr %d)", arch, nr)

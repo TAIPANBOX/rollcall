@@ -2,14 +2,14 @@
 
 //go:build linux && mips
 
-package main
+package sandbox
 
 import "golang.org/x/sys/unix"
 
-// auditArch is seccomp_data.arch for a mips process.
+// auditArch is seccomp_data.arch for a linux/mips process.
 const auditArch = unix.AUDIT_ARCH_MIPS
 
-// sysnums maps the kernel's name of every mips system call to its number.
+// sysnums maps the kernel's name of every linux/mips system call to its number.
 var sysnums = map[string]uint32{
 	"syscall":                      unix.SYS_SYSCALL,
 	"exit":                         unix.SYS_EXIT,
