@@ -46,6 +46,11 @@ const (
 	// apart to 1/driftDiv (2000 ppm): crystals within 100 ppm, and NTP
 	// slewing each kernel clock by at most 500 ppm, give 1200 ppm.
 	driftDiv = 500
+	// hearWindow is how far back from the newest direct hearing of a boot
+	// the hearings go that place its packets, and hearRing the most of them
+	// kept: with the drift, 10 minutes cost at most 1.2 s.
+	hearWindow = 10 * time.Minute
+	hearRing   = 128
 )
 
 // MaxBootSeqRaise is how far RestoreBootSeq may raise this member's boot
@@ -231,11 +236,14 @@ type Config struct {
 // router sends one packet per destination, so a member never sees all of a
 // neighbour's counters, and a recorded packet it missed comes with such a
 // counter: only its timing tells a replay from a second router. The Table
-// places the heartbeat's Mono on the local clock from the last heartbeat of
-// that boot it received directly (at the earliest maxDelay before it
-// arrived, less the drift), and the start of the current boot from its
-// heartbeats (at the latest when one arrived, less its Mono and the drift);
-// a heartbeat placed after that start is proof, any other is a replay. When
+// places the heartbeat's Mono on the local clock from the heartbeats of that
+// boot it received directly in the last hearWindow (10 minutes) it heard the
+// boot, up to hearRing (128) of them: each at the earliest maxDelay before
+// it arrived, less the drift, and the least delayed of them counts. It
+// places the start of the current boot from its heartbeats (at the latest
+// when one arrived, less its Mono and the drift); a heartbeat placed after
+// that start is proof, any other is a replay. An attacker who can delay
+// every direct heartbeat of those 10 minutes can still forge the timing. When
 // both boots have one kernel boot ID (the daemon restarted), they read one
 // clock: proof is a Mono more than maxDelay past the lowest the current run
 // sent. A previous boot the Table heard nothing of directly proves nothing.
@@ -340,6 +348,42 @@ type bootRun struct {
 	direct  bool          // a heartbeat of it was received directly
 	hearAt  time.Duration // when the one with the highest Mono of those arrived
 	hearMon time.Duration // its Mono
+	ring    [hearRing]hearing
+	ringN   int // hearings in ring
+	ringI   int // the slot of the next one
+}
+
+// hearing is one heartbeat of a boot received directly: when it arrived, and
+// that moment less its Mono, shrunk by the drift. Every hearing places a
+// later packet of its boot; a hearing that was delayed places it too late.
+type hearing struct{ at, k time.Duration }
+
+// earliest returns the earliest local moment at which r can have sent a
+// packet with Mono m, as the Table's doc describes, and false when no
+// heartbeat of r was received directly. At or above the highest Mono received
+// directly, the least delayed hearing of r's last hearWindow places it, so
+// that holding back one heartbeat does not move it; below, the hearing with
+// that Mono does.
+func (r *bootRun) earliest(m time.Duration) (time.Duration, bool) {
+	if !r.direct {
+		return 0, false
+	}
+	if m < r.hearMon {
+		return addSat(r.hearAt-maxDelay, -stretch(r.hearMon-m)), true
+	}
+	// note keeps every direct hearing in the ring, so it is not empty.
+	hs := r.ring[:r.ringN]
+	newest := hs[0].at
+	for _, e := range hs {
+		newest = max(newest, e.at)
+	}
+	k := time.Duration(math.MaxInt64)
+	for _, e := range hs {
+		if newest-e.at <= hearWindow {
+			k = min(k, e.k)
+		}
+	}
+	return addSat(k-maxDelay, shrink(m)), true
 }
 
 // sentBy returns the latest local moment at which r can have sent a
@@ -368,6 +412,11 @@ func (r *bootRun) note(m, now time.Duration, direct bool) {
 	r.startBy = min(r.startBy, now-shrink(m))
 	if direct && (!r.direct || m >= r.hearMon) {
 		r.direct, r.hearAt, r.hearMon = true, now, m
+	}
+	if direct {
+		r.ring[r.ringI] = hearing{at: now, k: now - shrink(m)}
+		r.ringI = (r.ringI + 1) % hearRing
+		r.ringN = min(r.ringN+1, hearRing)
 	}
 }
 
@@ -444,17 +493,8 @@ func (p *peer) outlived(m time.Duration) bool {
 		// One kernel boot, one clock; neither reading is negative.
 		return m-cur.minMono > maxDelay
 	}
-	if !old.direct {
-		return false
-	}
-	// The earliest local moment it can have been sent.
-	sent := old.hearAt - maxDelay
-	if m >= old.hearMon {
-		sent = addSat(sent, shrink(m-old.hearMon))
-	} else {
-		sent = addSat(sent, -stretch(old.hearMon-m))
-	}
-	return sent > cur.startBy
+	sent, ok := old.earliest(m)
+	return ok && sent > cur.startBy
 }
 
 // Counters counts what a Table did with the packets it was given.

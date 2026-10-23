@@ -76,6 +76,29 @@ func TestReplayedOldBootHeartbeatIsNoDuplicate(t *testing.T) {
 		}
 	})
 
+	// An attacker on the path holds back only the last heartbeat of boot 1
+	// the local member hears, by the reboot gap plus 10 s, so that it seems
+	// sent late; the earlier ones, on time, still place the boot.
+	t.Run("the last one heard held back", func(t *testing.T) {
+		f := newFixture(t, 3, start)
+		r02 := f.ms[1]
+		for d := time.Duration(0); d <= 10*s; d += 5 * s {
+			f.mustSend(r02, at(h+d))
+		}
+		held := enc(t, f.beatAt(r02, h+15*s), r02)
+		recorded := enc(t, f.beatAt(r02, h+20*s), r02) // the last of boot 1
+		// Boot 2 starts 3 s after it, at h+23 s, and is heard at h+33 s.
+		gap := 3 * s
+		if _, err := f.tab.Observe(testEpoch, held, at(h+15*s+gap+10*s)); err != nil {
+			t.Fatal(err)
+		}
+		f.reboot(r02)
+		f.mustSend(r02, at(h+20*s+gap+firstBeat))
+		if o, err := f.tab.Observe(testEpoch, recorded, at(h+40*s)); !errors.Is(err, ErrReplay) || len(o.Events) != 0 {
+			t.Errorf("replay: %v %s, want ErrReplay and no event", err, describe(o.Events))
+		}
+	})
+
 	// r02's clock runs 0.1% fast. The local member heard it, then nothing for
 	// three hours, in which its clock gained 10.8 s on the local one.
 	t.Run("a clock 0.1% fast over three hours", func(t *testing.T) {
@@ -205,6 +228,37 @@ func TestCloneProvedByItsClock(t *testing.T) {
 			t.Fatalf("A relayed after B started: %v %s, want ErrDuplicateIdentity and one event", err, describe(evs))
 		}
 		wantEvent(t, evs[0], events.DuplicateIdentity, r02, f.self, at(h+65*s))
+	})
+
+	// A ran for 30 days, heard all along; B appears and A's next heartbeat
+	// comes 30 s after B's boot started. Only the hearings of A's last 10
+	// minutes place it, so 30 days of drift allowance do not hide B.
+	t.Run("after a boot of 30 days", func(t *testing.T) {
+		f := newFixture(t, 3, start)
+		month := 30 * 24 * time.Hour
+		bootB := h + month
+		mono := func(local time.Duration) time.Duration { return local - (h - time.Minute) }
+		c := uint64(0)
+		hearA := func(local time.Duration) {
+			t.Helper()
+			c++
+			if _, err := f.tab.Observe(testEpoch, rawBeat(t, r02, 10, 0xa, c, mono(local)), at(local)); err != nil {
+				t.Fatalf("A at +%v: %v", local-h, err)
+			}
+		}
+		for d := time.Duration(0); d < month-time.Hour; d += time.Hour {
+			hearA(h + d)
+		}
+		for local := bootB - 10*time.Minute; local <= bootB+20*s; local += 5 * s {
+			hearA(local)
+		}
+		if _, err := f.tab.Observe(testEpoch, rawBeat(t, r02, 11, 0xb, 1, 25*s), at(bootB+25*s)); err != nil {
+			t.Fatalf("B: %v", err)
+		}
+		o, err := f.tab.Observe(testEpoch, rawBeat(t, r02, 10, 0xa, c+1, mono(bootB+30*s)), at(bootB+30*s))
+		if !errors.Is(err, ErrDuplicateIdentity) || len(o.Events) != 1 {
+			t.Fatalf("A 30 s after B started: %v %s, want ErrDuplicateIdentity and one event", err, describe(o.Events))
+		}
 	})
 
 	// Within one kernel boot both runs read one clock: the old run goes on
