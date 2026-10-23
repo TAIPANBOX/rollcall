@@ -33,7 +33,9 @@ BINARIES := $(foreach a,$(TARGETS),$(BIN_DIR)/$(a)/rollcalld $(BIN_DIR)/$(a)/rol
 
 # A binary is rebuilt only when a Go source is newer than it. The release workflow relies on
 # this: it downloads the binaries it has already compared and packages them without a rebuild.
-GO_SOURCES := $(shell find cmd internal -name '*.go' 2>/dev/null) go.mod go.sum
+# rollcalld embeds the system call lists of packaging/seccomp (its seccomp filter), so they count.
+GO_SOURCES := $(shell find cmd internal packaging/seccomp -name '*.go' 2>/dev/null) \
+	$(wildcard packaging/seccomp/*.txt) go.mod go.sum
 
 build: $(BINARIES)
 

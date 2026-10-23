@@ -9,7 +9,8 @@
 // root's alone and hold secrets. It listens on the devices of the peer zones
 // only; serves the control socket for the CLI; and runs the node once a
 // second. SIGTERM and SIGINT stop it cleanly. It never runs a command and
-// never talks to ubus.
+// never talks to ubus. Before any of that it installs its own seccomp filter
+// (internal/sandbox), from the list the package ships for its architecture.
 package main
 
 import (
@@ -41,6 +42,7 @@ import (
 	"github.com/TAIPANBOX/rollcall/internal/ids"
 	"github.com/TAIPANBOX/rollcall/internal/node"
 	"github.com/TAIPANBOX/rollcall/internal/probe"
+	"github.com/TAIPANBOX/rollcall/internal/sandbox"
 	"github.com/TAIPANBOX/rollcall/internal/transport"
 )
 
@@ -73,6 +75,22 @@ func main() {
 		os.Exit(2)
 	}
 	log.SetFlags(0)
+	// The seccomp filter goes on here, before anything else the daemon does: until now only the
+	// Go runtime's start, package initialisation (none of rollcall's packages has an init
+	// function or a variable that opens anything) and the command line have run, and none of
+	// them opens a file or a socket. Everything that does (the snapshot and configuration, the
+	// state directory, the listeners, the control socket, Telegram, the probes) is in run, so it
+	// all runs filtered, and the list holds every call it makes (internal/gates
+	// TestSeccompRuntimeSetPerArch). The calls made only before this point are free of the
+	// filter. procd cannot install it: it applies a profile through LD_PRELOAD, which a static
+	// binary never loads. A daemon that cannot filter itself does not run (security spec 1.5,
+	// 4.10); off Linux, a developer build, there is nothing to install.
+	if n, err := sandbox.Confine(); err != nil {
+		log.Printf("rollcalld: refusing to run without its seccomp filter: %v", err)
+		os.Exit(1)
+	} else if n > 0 {
+		log.Printf("rollcalld: seccomp filter installed on every thread: %d system calls of linux/%s allowed, any other ends the process", n, runtime.GOARCH)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 	if err := run(ctx, f); err != nil {
@@ -110,9 +128,11 @@ func run(ctx context.Context, f flags) error {
 	}
 	devices := peerDevices(zones)
 
-	// rollcalld ships for Linux only; elsewhere there is no seccomp or
-	// no_new_privs to check, and the binary is a developer build. Nothing in
-	// UCI or on the command line turns the check off.
+	// The filter main installed must be in force before anything listens:
+	// sandboxGate reads it back from the kernel. rollcalld ships for Linux
+	// only; elsewhere there is no seccomp or no_new_privs to check, and the
+	// binary is a developer build. Nothing in UCI or on the command line turns
+	// the check off.
 	if runtime.GOOS == "linux" {
 		if err := sandboxGate("/"); err != nil {
 			return fmt.Errorf("%w; start rollcalld through /etc/init.d/rollcall", err)
@@ -216,9 +236,10 @@ loop:
 // sandboxGate decides whether the daemon may listen (security spec 1.5,
 // 4.10, 14.2): the kernel must report, in root's proc/self/status ("/" on a
 // router), no_new_privs set (NoNewPrivs: 1) and seccomp in filter mode
-// (Seccomp: 2). Anything else refuses, an unreadable status included: a
-// daemon that cannot show its sandbox does not run in a weaker mode. The jail
-// is reported in status but not decided here: it has no kernel flag to read.
+// (Seccomp: 2), which the filter main installs (sandbox.Confine) gives.
+// Anything else refuses, an unreadable status included: a daemon that cannot
+// show its sandbox does not run in a weaker mode. The jail is reported in
+// status but not decided here: it has no kernel flag to read.
 func sandboxGate(root string) error {
 	b, err := os.ReadFile(filepath.Join(root, "proc", "self", "status"))
 	if err != nil {
