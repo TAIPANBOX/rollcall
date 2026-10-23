@@ -166,8 +166,25 @@ func New(o Options) (*Daemon, error) {
 	return d, nil
 }
 
-// Close stops what the daemon runs in the background: a chat binding.
-func (d *Daemon) Close() { d.end() }
+// Close stops what the daemon runs in the background (a chat binding) and
+// the node, which writes everything it keeps on flash at once (node.Stop):
+// rollcalld calls it on a clean shutdown, after the transport stopped, so
+// state the Flusher would write only within the next minute (the incidents
+// kept, the peers, the alive moment) survives the stop; when the router
+// goes down, GoingDown (notify going-down) came first. A node that does
+// not run writes nothing. Close may be called more than once.
+func (d *Daemon) Close() {
+	d.end()
+	d.mu.Lock()
+	nd := d.nd
+	d.mu.Unlock()
+	if nd == nil {
+		return
+	}
+	if err := nd.Stop(); err != nil {
+		d.o.Logf("rollcalld: the state was not all written at shutdown: %v", err)
+	}
+}
 
 // Step is one turn of the main loop, about once a second: start a node
 // that is due, and move the current one to the present (node.Tick).
