@@ -24,7 +24,7 @@ func Confine() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	nrs, err := Numbers(names, sysnums, nil)
+	nrs, err := Numbers(names, sysnums)
 	if err != nil {
 		return 0, err
 	}

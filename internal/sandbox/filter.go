@@ -44,30 +44,19 @@ type Insn struct {
 	K      uint32
 }
 
-// Numbers maps the names to this architecture's numbers, sorted and once each, leaving out the
-// names in without (each must be in the list, so a typing mistake does not pass as a test).
-// A name the table does not have is an error: the list would protect nothing with it, and the
-// call the program really makes would be missing.
-func Numbers(names []string, table map[string]uint32, without map[string]bool) ([]uint32, error) {
+// Numbers maps the names to this architecture's numbers, sorted and once each. A name the table
+// does not have is an error: the list would protect nothing with it, and the call the program
+// really makes would be missing.
+func Numbers(names []string, table map[string]uint32) ([]uint32, error) {
 	var unknown []string
 	var nrs []uint32
-	in := map[string]bool{}
 	for _, name := range names {
-		in[name] = true
-		if without[name] {
-			continue
-		}
 		nr, ok := table[name]
 		if !ok {
 			unknown = append(unknown, name)
 			continue
 		}
 		nrs = append(nrs, nr)
-	}
-	for name := range without {
-		if !in[name] {
-			unknown = append(unknown, name+" (in -without, not in the profile)")
-		}
 	}
 	if len(unknown) > 0 {
 		sort.Strings(unknown)

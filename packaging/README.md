@@ -10,12 +10,12 @@ and the generator that writes one profile per architecture. `scripts/mkipk.sh` a
 | Path | Purpose |
 |---|---|
 | `/usr/bin/rollcalld`, `/usr/bin/rollcall` | daemon and CLI (built by the Makefile) |
-| `/etc/init.d/rollcall` | procd service: user `rollcall`, `no_new_privs`, seccomp, jail, control directory, and the snapshot written as root before each start |
+| `/etc/init.d/rollcall` | procd service: user `rollcall`, `no_new_privs`, jail, control directory, and the snapshot written as root before each start; no procd seccomp profile (the daemon installs its own filter) |
 | `/etc/hotplug.d/iface/50-rollcall` | forwards interface events to `rollcall notify iface` and writes the snapshot again (`rollcall snapshot`), both in the background |
 | `/etc/hotplug.d/ntp/50-rollcall` | tells the daemon the clock is synchronised (`rollcall notify clock-synced`), in the background |
 | `/etc/config/rollcall` | site configuration; kept across upgrades |
 | `/etc/uci-defaults/90-rollcall` | builds the firewall rules at first boot and after an upgrade (`/etc/init.d/rollcall firewall`) |
-| `/etc/seccomp/rollcall.json` | system call allow-list, generated for the target architecture |
+| `/etc/seccomp/rollcall.json` | the system call allow-list of the target architecture in procd's format: the readable record of the filter rollcalld installs itself from the same lists; procd does not load it |
 | `/etc/capabilities/rollcall.json` | `CAP_NET_RAW`, used only when `option icmp '1'` |
 | `/lib/upgrade/keep.d/rollcall` | keeps `/etc/rollcall/` and `/etc/config/rollcall` on sysupgrade |
 
@@ -25,8 +25,9 @@ The package has no ubus ACL: the daemon never calls ubus.
 
 Every file and directory of both packages, in both formats, is owned by uid 0 and gid 0.
 procd runs `/etc/init.d/rollcall` as root and hotplug runs `/usr/bin/rollcall` as root, and the
-seccomp profile, the capability file and the rpcd ACL decide the sandbox, so an entry any other
-account owns would let that account replace it and gain root or weaken the sandbox.
+daemon binary (which carries its seccomp list), the capability file and the rpcd ACL decide the
+sandbox, so an entry any other account owns would let that account replace it and gain root or
+weaken the sandbox.
 
 - `.ipk`: `mkipk.sh` writes every tar with `--numeric-owner --owner=0 --group=0` (GNU tar) or
   `--uid 0 --gid 0 --uname root --gname root` (bsdtar).
@@ -43,55 +44,89 @@ The gate `TestPackagesOwnedByRoot` (`internal/gates/packages_test.go`) reads the
 `.apk` as `apk adbdump` lists it. The CI job `packaging` runs it with `ROLLCALL_PACKAGES=1`, and
 then plants a real `.apk` with a nobody-owned file and requires the gate to name it.
 
-## Seccomp: one profile per architecture
+## Seccomp: the daemon installs its own filter
 
-`packaging/seccomp/generate.sh <openwrt-arch>` writes the profile on stdout. It is
-`common.txt` plus the list of the architecture's family, sorted, with no duplicates:
+rollcalld installs its seccomp filter itself, at start. procd cannot do it for a statically
+linked program: it applies the profile named by `procd_set_param seccomp` through
+`LD_PRELOAD=/lib/libpreload-seccomp.so` and `SECCOMP_FILE`, and a static binary never loads a
+preload library. The lab run of 2026-10-23 found the daemon on OpenWrt 25.12.5 (procd
+2026.03.13~58eb263d with procd-seccomp and procd-ujail) at `Seccomp: 0`, and the daemon refused
+to listen. The init script therefore no longer sets that parameter (`TestInitScriptHardening`
+refuses it); procd and ujail still give the daemon its user, `no_new_privs` and the jail.
+
+`main` calls `internal/sandbox` right after the command line, before the signal handler and
+before anything opens a file or a socket (all of that is in `run`). It:
+
+1. reads the lists of this directory, embedded in the binary (`packaging/seccomp/lists.go`), for
+   its architecture, with the rules `generate.sh` uses;
+2. numbers them with `golang.org/x/sys/unix` (`internal/sandbox/zsysnum_linux_*.go`, generated
+   by `mksysnum.go`);
+3. builds a classic BPF program: a call made with another audit architecture is killed, the
+   listed numbers are allowed, and every other call kills the process (`SECCOMP_RET_KILL_PROCESS`);
+4. sets `no_new_privs` and installs the program with
+   `seccomp(SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_TSYNC)`, so the kernel puts it on every
+   thread the Go runtime already runs; a thread it cannot synchronise fails the install.
+
+When any step fails on Linux the daemon logs `refusing to run without its seccomp filter` and
+exits. Otherwise it logs `seccomp filter installed on every thread: N system calls of
+linux/<arch> allowed`, and `sandboxGate` still refuses to listen unless the kernel reports
+`NoNewPrivs: 1` and `Seccomp: 2`. The calls the Go runtime makes only before that point (its
+start, package initialisation, the command line) are free of the filter.
+
+`packaging/seccomp/generate.sh <openwrt-arch>` writes the same names as the profile the package
+installs as `/etc/seccomp/rollcall.json`, the readable record of the filter. It is `common.txt`
+plus the list of the architecture's family, sorted, with no duplicates:
 
 | List | Applies to | Holds |
 |---|---|---|
 | `common.txt` | every target | names that exist on aarch64, amd64, arm and mips |
-| `amd64.txt` | `x86_64` | `arch_prctl` (Go sets the TLS base with it), `mmap`, `newfstatat` |
+| `amd64.txt` | `x86_64` | `arch_prctl` (Go sets the TLS base with it, also for every new thread), `mmap`, `newfstatat` |
 | `aarch64.txt` | `aarch64_*` | `mmap`, `newfstatat`; no 32-bit legacy names, no `arch_prctl` |
 | `arm.txt` | `arm_*` | the EABI names: `mmap2` (EABI has no `mmap`), `brk`, `open`, `futex_time64`, `fstat64`, `fstatat64`, the 32-bit uid calls, ... |
 | `mips.txt` | `mips_*`, `mipsel_*` | the o32 names: `mmap`, `mmap2`, `brk`, `open`, `futex_time64`, `stat64`, `lstat64`, `fstat64`, `fstatat64`, ... (o32 has no `newfstatat`) |
 
-Every profile uses `defaultAction` `SCMP_ACT_KILL_PROCESS`. Three gates in
-`internal/gates/seccomp_test.go` read the generated profile of every shipped target:
+Every profile uses `defaultAction` `SCMP_ACT_KILL_PROCESS`. The gates in
+`internal/gates/seccomp_test.go` and `internal/gates/sandbox_test.go`:
 
-- `TestSeccompProfilesPerArch`: it parses, kills by default, carries `arch_prctl` only on
-  amd64 and no 32-bit legacy name on aarch64.
+- `TestSeccompProfilesPerArch`: every generated profile parses, kills by default, carries
+  `arch_prctl` only on amd64, no 32-bit legacy name on aarch64, and neither `execve` nor
+  `execveat`.
 - `TestSeccompRuntimeSetPerArch`: it carries the named set of calls the Go 1.27 runtime, the
-  standard library and the daemon make on every run, each listed with the source that makes it
-  (for example `prctl` from `runtime/set_vma_name_linux.go`, `eventfd2` from
-  `runtime/netpoll_epoll.go`, and on 32-bit `brk` from `runtime/malloc.go`, `open` from
-  `runtime/os_linux.go` through `sys_linux_arm.s` or `sys_linux_mipsx.s`, `futex_time64` from
-  `runtime/os_linux32.go`). Profiles without these calls killed the daemon at its first
-  allocation on every architecture.
+  standard library and the daemon make, each listed with the source that makes it (for example
+  `prctl` from `runtime/set_vma_name_linux.go`, `eventfd2` from `runtime/netpoll_epoll.go`, and
+  on 32-bit `futex_time64` from `runtime/os_linux32.go`).
 - `TestSeccompNamesExistPerArch`: every name is a system call of that architecture as
-  `golang.org/x/sys/unix` numbers it (`internal/sandbox/zsysnum_linux_*.go`, generated by
-  `mksysnum.go`), so a name that protects nothing there (`newfstatat` on mips, `mmap` on arm)
-  cannot stand in for the call the daemon really makes.
+  `golang.org/x/sys/unix` numbers it, so a name that protects nothing there (`newfstatat` on
+  mips, `mmap` on arm) cannot stand in for the call the daemon really makes.
+- `TestSeccompDaemonListIsTheProfile`: for every shipped target, the names the daemon's filter
+  allows are exactly the names of the profile the package ships.
+- `TestDaemonConfinesFirst`: `main` installs the filter before any call other than the command
+  line and the log flags, and exits when it cannot.
 
-Two entries are allowed on reasoning rather than a Go source: `restart_syscall`, through which
-the kernel resumes a sleep a signal interrupted (Go's preemption signal interrupts them), and
-`execve`. procd's ujail on openwrt/procd master installs the filter in-process before it execs
-the daemon on one path and injects it after the exec on another (`jail/jail.c`,
-`jail_inproc_seccomp`, `jail_ptrace_seccomp`, read 2026-10-23); which path the procd of 24.10
-and 25.12 takes is not established, so `execve` is allowed rather than risk a daemon that can
-never start.
+One entry is allowed on reasoning rather than a Go source: `restart_syscall`, through which the
+kernel resumes a sleep a signal interrupted (Go's preemption signal interrupts them). `execve` is
+not allowed: the filter goes on after the daemon was started, and the daemon never runs a
+program. Some names are made only at the runtime's start on some kernels (`brk` and `open` on
+32-bit, `prctl` where the kernel does not name anonymous mappings) and are kept, because the
+runtime may make them again later.
 
-Proof that runs: the CI job `seccomp` (`tools/seccomp-run/prove.sh`) builds rollcalld for
-amd64 and arm64, installs the x86_64 and aarch64_cortex-a53 profiles as real kernel filters
-with `tools/seccomp-run` (no_new_privs, a classic BPF program that checks the architecture,
-allows the listed numbers and kills the process otherwise, then execve), and requires: the
-daemon killed by SIGSYS when each start-up call is left out (the harness can see a kill); and
-under the whole profile, the filter in force (`Seccomp: 2`), the control socket served, UDP and
-TCP 7432 bound, a group made with `rollcall init` and the node started, a heartbeat routed
-(rtnetlink route lookup) to a static peer, 30 s alive and a clean stop. It tries linux/arm on
-the arm64 runner too and reports NOT RUN when that CPU or kernel does not execute AArch32.
-Not proven by CI: mips (no runner), procd's own loader (only the lab run on a router proves
-it), and code paths the CI run does not reach (Telegram and ntfy delivery, ICMP probes).
+Proof that runs: the CI job `seccomp` runs `go test ./internal/sandbox` on amd64 and arm64
+kernels, which re-executes a child that installs the filter and calls `getppid` (in no list): it
+must die by SIGSYS, on the main thread and on a second thread that existed before the install
+(TSYNC), while a child that makes a listed call lives and shows `NoNewPrivs: 1` and
+`Seccomp: 2`. Then `tools/seccomp-run/prove.sh` builds rollcalld for amd64 and arm64, starts it
+directly with no loader, and requires: its own filter in force on every thread (one filter more
+than the harness) and its log naming as many calls as its list; the control socket served, UDP
+and TCP 7432 bound, a group made with `rollcall init` and the node started, a heartbeat routed
+(rtnetlink route lookup) to a static peer, discovery on the default-route device, 30 s alive and
+a clean stop. Last, daemons built from a copy of the tree whose list lacks `prctl`, `eventfd2` or
+`epoll_pwait` must log one call fewer and die by SIGSYS within 20 s (run with `GOGC=off` and
+driven by status calls, so the heap grows). `prctl` is shown only where the kernel names
+anonymous mappings (`CONFIG_ANON_VMA_NAME`); elsewhere the runtime stops calling it at its first
+refusal, before the filter is on, and the job says so. It tries linux/arm on the arm64 runner too
+and reports NOT RUN when that CPU or kernel does not execute AArch32. Not proven by CI: mips (no
+runner), the daemon under procd and ujail on a router (the lab run), and code paths the CI run
+does not reach (Telegram and ntfy delivery, ICMP probes).
 
 ## Control directory and socket
 
@@ -216,7 +251,7 @@ user, password or query) and stays mode 0644, read by the daemon itself.
   start, reload or interface event.
 - Proof that runs: the CI job `seccomp` makes network and system root's with mode 0600 (network
   holding a password), has root write the snapshot, and runs the daemon as an unprivileged user
-  under the real seccomp filter; before this change the daemon stopped there with `open
+  under its own seccomp filter; before this change the daemon stopped there with `open
   .../network: permission denied`, as on the lab routers. Not proven until the next lab run: the
   snapshot written by procd's init script on a router, and the daemon inside ujail reading it.
 

@@ -1,13 +1,14 @@
 # System calls every rollcall profile allows, on every family (aarch64, amd64, arm, mips).
+# rollcalld embeds these lists and installs its own filter from them at start (internal/sandbox);
+# generate.sh writes the same names as /etc/seccomp/rollcall.json for the package.
 # One name per line; a name must exist on all four families (TestSeccompNamesExistPerArch checks it
 # against golang.org/x/sys), or it belongs in a family list. TestSeccompRuntimeSetPerArch names the
-# calls the Go 1.27 runtime, the standard library and the daemon make on every run, each with the
-# source that makes it; among them prctl (runtime/set_vma_name_linux.go, PR_SET_VMA on every new
-# mapping) and eventfd2 (runtime/netpoll_epoll.go), whose absence killed the daemon at start.
-# restart_syscall: the kernel resumes an interrupted sleep through it. execve: procd's in-process
-# path installs the filter before it execs the daemon (procd jail/jail.c on master); the 24.10 and
-# 25.12 path is not established, so it is allowed. The CI seccomp job runs the daemon under the
-# amd64 and aarch64 profiles; arm and mips are proven only from the sources.
+# calls the Go 1.27 runtime, the standard library and the daemon make, each with the source that
+# makes it; among them prctl (runtime/set_vma_name_linux.go, PR_SET_VMA on every new mapping where
+# the kernel names mappings) and eventfd2 (runtime/netpoll_epoll.go, at the first file opened).
+# restart_syscall: the kernel resumes an interrupted sleep through it. No execve: the filter goes
+# on after the daemon was started, and the daemon never runs a program. The CI seccomp job runs
+# the daemon with its own filter on amd64 and aarch64; arm and mips are proven only from the sources.
 accept4
 bind
 clock_gettime
@@ -21,7 +22,6 @@ epoll_create1
 epoll_ctl
 epoll_pwait
 eventfd2
-execve
 exit
 exit_group
 faccessat

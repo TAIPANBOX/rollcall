@@ -1,7 +1,7 @@
 #!/bin/sh /etc/rc.common
 # rollcall: watches the routers of one site and reports incidents to the chat.
-# The daemon runs as its own user, with no_new_privs, a seccomp allow-list and a jail.
-# It never talks to ubus: interface events arrive through hotplug and the CLI.
+# The daemon runs as its own user, with no_new_privs, in a jail, and installs its own seccomp
+# allow-list at start. It never talks to ubus: interface events arrive through hotplug and the CLI.
 
 USE_PROCD=1
 START=95
@@ -46,7 +46,11 @@ start_service() {
 	procd_set_param user rollcall
 	procd_set_param group rollcall
 	procd_set_param no_new_privs 1
-	procd_set_param seccomp /etc/seccomp/rollcall.json
+	# No procd_set_param seccomp: procd applies a profile through LD_PRELOAD of
+	# /lib/libpreload-seccomp.so, which the statically linked rollcalld never loads, so it filtered
+	# nothing (Seccomp 0 on OpenWrt 25.12.5). rollcalld installs the filter itself, from the same
+	# list as /etc/seccomp/rollcall.json, before it opens any file or socket, on every thread, and
+	# refuses to run when it cannot; it then refuses to listen unless the kernel shows it in force.
 	procd_set_param respawn
 	# The daemon reads these at start; reload_service restarts it when one of them changed. The
 	# snapshot changes when a zone, its devices or the time zone do, and not when the firewall

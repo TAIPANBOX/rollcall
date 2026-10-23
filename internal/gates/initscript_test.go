@@ -14,13 +14,12 @@ import (
 const initScriptRel = "packaging/files/etc/init.d/rollcall"
 
 // initScriptRequired are lines the service file must carry, verbatim after trimming. Together
-// they are the user, the no_new_privs flag and the seccomp profile of security section 7.
+// they are the user and the no_new_privs flag of security section 7.
 var initScriptRequired = []string{
 	"USE_PROCD=1",
 	"procd_set_param user rollcall",
 	"procd_set_param group rollcall",
 	"procd_set_param no_new_privs 1",
-	"procd_set_param seccomp /etc/seccomp/rollcall.json",
 }
 
 // daemonMainRel holds ControlDirPath, the directory the daemon creates its control socket in.
@@ -46,8 +45,9 @@ var jailForbidden = []string{"/etc/config/network", "/etc/config/system", "/etc/
 var snapshotCall = regexp.MustCompile(`(^|[\s;(!])("\$CLI"|\$CLI|/usr/bin/rollcall)\s+snapshot(\s|$)`)
 
 // TestInitScriptHardening reads the service file and requires the hardening that every rollcall
-// process runs with (invariant 13): its own user, no_new_privs, the seccomp profile and a jail
-// with requirejail, so the daemon never starts unsandboxed. It also refuses ubus, which the
+// process runs with (invariant 13): its own user, no_new_privs and a jail with requirejail, so the
+// daemon never starts unsandboxed, and no procd seccomp profile, which cannot filter the static
+// daemon (it installs its own filter, TestDaemonConfinesFirst). It also refuses ubus, which the
 // daemon never touches, and capabilities outside the ICMP branch, because ICMP is the only probe
 // that needs CAP_NET_RAW. Finally it applies the control server's own rule to the control
 // directory the script makes (controlDirProblems), so the daemon is not refused at every start.
@@ -162,6 +162,15 @@ func initScriptProblems(text string) []string {
 		}
 		if strings.Contains(line, "ubus") {
 			problems = append(problems, "uses ubus, which rollcall never touches: "+line)
+		}
+		// procd applies a seccomp profile through LD_PRELOAD=/lib/libpreload-seccomp.so, which the
+		// static rollcalld never loads, so it filters nothing (lab run 2026-10-23: Seccomp 0); a
+		// procd that applied it in the jail before the exec would kill the daemon at execve, which
+		// the list no longer allows. The daemon installs its own filter (internal/sandbox).
+		if f := strings.Fields(line); len(f) > 1 && f[0] == "procd_set_param" && f[1] == "seccomp" {
+			problems = append(problems, "asks procd for a seccomp profile ("+line+"): procd applies it through LD_PRELOAD, "+
+				"which the static rollcalld never loads, and one applied before the exec would kill the daemon at execve; "+
+				"rollcalld installs its own filter")
 		}
 		// Root prepares nothing under /tmp: anyone can write there, so a path
 		// planted as a symbolic link before the first start turns root's
@@ -278,13 +287,15 @@ func init() {
 			outcome: wantFail, expect: "no_new_privs",
 		},
 		toothCase{
-			name: "initscript_seccomp_removed", gate: "TestInitScriptHardening",
+			// The lab finding of 2026-10-23: procd's profile never reached the static daemon.
+			name: "initscript_procd_seccomp_added", gate: "TestInitScriptHardening",
 			plant: func(t *testing.T, dst string) {
 				editCopy(t, dst, initScriptRel, func(s string) string {
-					return strings.Replace(s, "procd_set_param seccomp /etc/seccomp/rollcall.json\n", "", 1)
+					return strings.Replace(s, "procd_set_param no_new_privs 1\n",
+						"procd_set_param no_new_privs 1\n\tprocd_set_param seccomp /etc/seccomp/rollcall.json\n", 1)
 				})
 			},
-			outcome: wantFail, expect: "seccomp",
+			outcome: wantFail, expect: "asks procd for a seccomp profile",
 		},
 		toothCase{
 			name: "initscript_requirejail_removed", gate: "TestInitScriptHardening",

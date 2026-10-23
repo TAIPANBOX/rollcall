@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# prove.sh runs rollcalld under the seccomp profile shipped for one OpenWrt architecture, installed
-# as a real kernel filter (kill the process on any call not listed) by seccomp-run, and fails when
-# the daemon is killed by SIGSYS or stops for any other reason. CI only (.github/workflows/ci.yml,
-# job seccomp): it uses sudo to make /etc/rollcall and /var/run/rollcall as the init script does
-# on a router, and to run the CLI as root, as hotplug and LuCI do.
+# prove.sh runs rollcalld for one OpenWrt architecture as it runs on a router, as far as seccomp
+# goes: started directly, with no loader and no LD_PRELOAD. The daemon installs its own filter at
+# start (internal/sandbox), from the list packaging/seccomp ships for its architecture, because
+# procd cannot filter a statically linked program. The script fails when that filter is not in
+# force on every thread, when the daemon is killed by SIGSYS, or when it stops for any other
+# reason. CI only (.github/workflows/ci.yml, job seccomp): it uses sudo to make /etc/rollcall and
+# /var/run/rollcall as the init script does on a router, and to run the CLI as root, as hotplug and
+# LuCI do.
 #
 #   tools/seccomp-run/prove.sh <openwrt-arch> <goarch> [optional]
 #
@@ -11,18 +14,24 @@
 #   0. the configuration laid out as on an OpenWrt 25.12 router: network and system root's alone
 #      (0600, network holding a PPPoE password), which the daemon cannot read and must not; root
 #      writes the snapshot of the facts it needs (rollcall snapshot), root-owned, mode 0640;
-#   1. teeth: for each call the gate TestSeccompRuntimeSetPerArch names as made at start, the
-#      profile without that call must kill the daemon by SIGSYS within 15 s;
-#   2. the daemon under the whole profile, as user runner: the filter in force (Seccomp 2,
-#      NoNewPrivs 1), the control socket served (rollcall status), the UDP and TCP port bound,
-#      a group created with rollcall init and the node started from it, a heartbeat received by
-#      a static peer on 127.0.0.2 (so the rtnetlink route lookup ran and picked the lo socket),
-#      discovery running on the default-route device (its group socket on ff02::114 bound, no
-#      discovery error for it in the status) after init and again after several 5 s socket
-#      reconcile passes, alive for 30 s or more;
-#   3. rollcall notify going-down and SIGTERM: the daemon must stop with status 0.
-# With "optional", a loader this machine cannot execute (AArch32 on an arm64 runner without it)
-# is reported as NOT RUN and the script exits 0. Any other failure fails.
+#   1. the daemon as user runner: its own filter in force on every thread (NoNewPrivs 1, Seccomp 2,
+#      one filter more than this script runs under, so it is the daemon's own and not inherited),
+#      its log naming as many allowed calls as its list holds, the control socket served
+#      (rollcall status), the UDP and TCP port bound, a group created with rollcall init and the
+#      node started from it, a heartbeat received by a static peer on 127.0.0.2 (so the rtnetlink
+#      route lookup ran and picked the lo socket), discovery running on the default-route device
+#      (its group socket on ff02::114 bound, no discovery error for it in the status) after init
+#      and again after several 5 s socket reconcile passes, alive for 30 s or more;
+#   2. rollcall notify going-down and SIGTERM: the daemon must stop with status 0;
+#   3. teeth: for each call the daemon makes once its filter is on, a daemon built from a copy of
+#      the tree whose lists lack only that call must log one allowed call fewer and be killed by
+#      SIGSYS within 20 s, run with GOGC=off and driven by status calls, so its heap grows and the
+#      runtime maps memory within seconds rather than hours. prctl (PR_SET_VMA, on each new
+#      mapping) is made only where the kernel names anonymous mappings (CONFIG_ANON_VMA_NAME):
+#      elsewhere the runtime stops calling it at its first refusal, before the filter is on, so
+#      there its teeth are reported as not shown, with the reason.
+# With "optional", an architecture this machine cannot execute (AArch32 on an arm64 runner
+# without it) is reported as NOT RUN and the script exits 0. Any other failure fails.
 set -euo pipefail
 
 OWRT_ARCH=${1:?usage: prove.sh <openwrt-arch> <goarch> [optional]}
@@ -60,9 +69,9 @@ reap() {
 }
 
 # Nothing this script starts outlives it.
-PID= PEER=
+PID= PEER= TPID=
 cleanup() {
-	for p in $PID $PEER; do kill -KILL "$p" 2>/dev/null || true; done
+	for p in $PID $PEER $TPID; do kill -KILL "$p" 2>/dev/null || true; done
 }
 trap cleanup EXIT
 
@@ -70,7 +79,7 @@ rm -rf "$WORK"
 mkdir -p "$BIN" "$WORK/config" "$WORK/run"
 cd "$ROOT"
 
-# 1. Build for the architecture under test, as the release does.
+# Build for the architecture under test, as the release does.
 goarm=
 [ "$RUN_GOARCH" = arm ] && goarm=7
 for c in rollcalld rollcall; do
@@ -84,11 +93,54 @@ if ! out=$("$BIN/seccomp-run" -arch 2>&1); then
 		note "NOT RUN: this runner cannot execute linux/$RUN_GOARCH binaries ($out)"
 		exit 0
 	fi
-	fail "cannot execute the linux/$RUN_GOARCH loader: $out"
+	fail "cannot execute linux/$RUN_GOARCH binaries: $out"
 fi
-echo "loader: $out; kernel $(uname -r) on $(uname -m)"
+echo "architecture: $out; kernel $(uname -r) on $(uname -m)"
 
-sh packaging/seccomp/generate.sh "$OWRT_ARCH" >"$WORK/profile.json"
+# The number of calls the daemon's filter allows: its list, numbered for this architecture.
+ALLOWED=$("$BIN/seccomp-run" -allowed | head -n 1)
+case $ALLOWED in
+'' | *[!0-9]*) fail "seccomp-run -allowed printed '$ALLOWED', not a number" ;;
+esac
+
+# seccomp_of prints NoNewPrivs, Seccomp and Seccomp_filters of one status file ("-" for a filter
+# count the kernel does not show), or nothing when the file is gone (a thread that ended).
+seccomp_of() {
+	local st
+	st=$(cat "$1" 2>/dev/null) || return 0
+	printf '%s\n' "$st" | awk '/^NoNewPrivs:/ { n = $2 } /^Seccomp:/ { s = $2 } /^Seccomp_filters:/ { f = $2 }
+		END { if (f == "") f = "-"; print n + 0, s + 0, f }'
+}
+read -r H_NNP H_MODE H_FILTERS <<EOF
+$(seccomp_of /proc/$$/status)
+EOF
+echo "this script: NoNewPrivs $H_NNP, Seccomp $H_MODE, filters $H_FILTERS"
+if [ "$H_FILTERS" = - ] && [ "$H_MODE" != 0 ]; then
+	fail "this kernel shows no filter count and this script already runs under seccomp, so the daemon's own filter cannot be told from an inherited one"
+fi
+
+# check_filter fails unless the daemon's own filter is in force on every thread of process $1:
+# no_new_privs set and seccomp in filter mode on each, with one filter more than this script
+# runs under, and its log ($2) naming the number of calls its list allows ($3).
+check_filter() {
+	local pid=$1 log=$2 want=$3 t nnp mode filters n=0
+	for t in /proc/"$pid"/task/*; do
+		read -r nnp mode filters <<EOF
+$(seccomp_of "$t/status")
+EOF
+		[ -n "$nnp" ] || continue
+		[ "$nnp" = 1 ] && [ "$mode" = 2 ] ||
+			fail "thread ${t##*/} of the daemon has NoNewPrivs $nnp and Seccomp $mode: its filter is not on every thread"
+		if [ "$H_FILTERS" != - ] && [ "$filters" != $((H_FILTERS + 1)) ]; then
+			fail "thread ${t##*/} of the daemon runs under $filters seccomp filters; this script runs under $H_FILTERS, so the daemon's own makes $((H_FILTERS + 1))"
+		fi
+		n=$((n + 1))
+	done
+	[ "$n" -gt 0 ] || fail "no thread of the daemon to read"
+	grep -q "seccomp filter installed on every thread: $want system calls of linux/$RUN_GOARCH allowed" "$log" ||
+		fail "the daemon's log does not say that it installed its filter with the $want calls of its list"
+	echo "its own filter in force on all $n threads: NoNewPrivs 1, Seccomp 2, filters $filters (this script: $H_FILTERS); $(grep -m 1 'seccomp filter installed' "$log")"
+}
 
 # A throwaway configuration: the peer zone holds the device of the default route and lo. Two
 # static peers get every heartbeat by unicast, each after an rtnetlink route lookup: 127.0.0.2,
@@ -140,32 +192,8 @@ if sudo grep -q CANARY "$SNAP"; then
 fi
 note "snapshot: written by root, mode 0640, none of the root-only network file's secrets in it"
 
-# 1. Teeth: each call named as made at start, left out, must kill the daemon by SIGSYS.
-drops="prctl eventfd2 epoll_pwait"
-case $RUN_GOARCH in
-arm | mips | mipsle) drops="$drops brk open futex_time64" ;;
-esac
-for drop in $drops; do
-	"$BIN/seccomp-run" -profile "$WORK/profile.json" -without "$drop" -- "$BIN/rollcalld" \
-		-config "$WORK/config/rollcall" -state "$WORK/teeth-state" -run "$WORK/teeth-run" \
-		-control "$WORK/teeth.sock" >"$WORK/teeth-$drop.log" 2>&1 &
-	pid=$!
-	for _ in $(seq 1 15); do
-		kill -0 "$pid" 2>/dev/null || break
-		sleep 1
-	done
-	kill -KILL "$pid" 2>/dev/null || true
-	reap "$pid"
-	got=$GOT
-	if [ "$got" != SIGSYS ]; then
-		cat "$WORK/teeth-$drop.log"
-		fail "teeth: without $drop the daemon ended with $got, not SIGSYS: the harness or the claim that it is made at start is wrong"
-	fi
-	echo "teeth: without $drop the daemon was killed by SIGSYS"
-done
-note "teeth: the daemon is killed by SIGSYS without each of: $drops"
-
-# 2. The daemon under the whole profile. The static peer on 127.0.0.2 records the first datagram.
+# 1. The daemon as it runs on a router: started directly, it installs its own filter. The static
+# peer on 127.0.0.2 records the first datagram.
 python3 -c '
 import socket
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -175,8 +203,7 @@ data, addr = s.recvfrom(4096)
 print(len(data), addr[0], addr[1])
 ' >"$WORK/peer.out" 2>&1 &
 PEER=$!
-"$BIN/seccomp-run" -profile "$WORK/profile.json" -- "$BIN/rollcalld" \
-	-config "$WORK/config/rollcall" -state /etc/rollcall -run "$WORK/run" >"$WORK/daemon.log" 2>&1 &
+"$BIN/rollcalld" -config "$WORK/config/rollcall" -state /etc/rollcall -run "$WORK/run" >"$WORK/daemon.log" 2>&1 &
 PID=$!
 START=$(date +%s)
 
@@ -234,11 +261,7 @@ for _ in $(seq 1 20); do
 done
 [ -S "$SOCK" ] || died "without serving $SOCK within 20 s"
 
-st=$(grep -E '^(Seccomp|Seccomp_filters|NoNewPrivs):' "/proc/$PID/status" | tr -s '\t ' ' ' | tr '\n' ';')
-case $st in
-*"NoNewPrivs: 1;"*"Seccomp: 2;"*) echo "filter in force: $st" ;;
-*) fail "the filter is not in force on the daemon: $st" ;;
-esac
+check_filter "$PID" "$WORK/daemon.log" "$ALLOWED"
 
 status=$(sudo "$BIN/rollcall" status --json) || died "or did not answer rollcall status: $status"
 echo "status before init: $status"
@@ -285,8 +308,9 @@ alive || died "while running"
 ran=$(($(date +%s) - START))
 status=$(sudo "$BIN/rollcall" status --json) || died "or did not answer rollcall status after $ran s"
 check_discovery "after $ran s of passes" "$status"
+check_filter "$PID" "$WORK/daemon.log" "$ALLOWED"
 
-# 3. A clean stop, still under the filter.
+# 2. A clean stop, still under the filter.
 sudo "$BIN/rollcall" notify going-down >/dev/null 2>&1 || true
 kill -TERM "$PID"
 reap "$PID"
@@ -297,7 +321,69 @@ if [ "$got" != 0 ]; then
 	audit
 	fail "rollcalld stopped with $got after SIGTERM"
 fi
+PID=
 echo "--- daemon log"
 cat "$WORK/daemon.log"
 kill "$PEER" 2>/dev/null || true
-note "PASS: $ran s under the $OWRT_ARCH profile (filter in force, control socket served, UDP and TCP 7432 bound, group created and node started, a heartbeat routed to a static peer, discovery on $dev, network and system root-only and read through the snapshot alone), stopped with status 0"
+PEER=
+note "run: $ran s with its own filter for linux/$RUN_GOARCH ($ALLOWED calls; in force on every thread, control socket served, UDP and TCP 7432 bound, group created and node started, a heartbeat routed to a static peer, discovery on $dev, network and system root-only and read through the snapshot alone), stopped with status 0"
+
+# 3. Teeth. Each daemon is built from a copy of the tree whose lists lack only one call: it embeds
+# the lists as the release build does (TestSeccompDaemonListIsTheProfile), so its filter is the
+# shipped one without that call. It runs on the default control socket, so rollcall status reaches
+# it, with GOGC=off, so every status call grows its heap and the runtime maps new memory.
+SRC=$WORK/src
+mkdir -p "$SRC" "$WORK/teeth-state"
+tar -C "$ROOT" --exclude=./.git --exclude=./dist -cf - . | tar -C "$SRC" -xf -
+drops="prctl eventfd2 epoll_pwait"
+case $RUN_GOARCH in
+arm | mips | mipsle) drops="$drops futex_time64" ;;
+esac
+shown= unshown=
+for drop in $drops; do
+	cp "$ROOT"/packaging/seccomp/*.txt "$SRC/packaging/seccomp/"
+	sed -i "/^$drop\$/d" "$SRC"/packaging/seccomp/*.txt
+	if sh "$SRC/packaging/seccomp/generate.sh" "$OWRT_ARCH" | grep -q "\"$drop\""; then
+		fail "teeth: $drop is still in the copy's $OWRT_ARCH profile"
+	fi
+	(cd "$SRC" && CGO_ENABLED=0 GOOS=linux GOARCH=$RUN_GOARCH GOARM=$goarm go build -trimpath -o "$BIN/rollcalld-without-$drop" ./cmd/rollcalld)
+	log=$WORK/teeth-$drop.log
+	GOGC=off "$BIN/rollcalld-without-$drop" -config "$WORK/config/rollcall" -state "$WORK/teeth-state" \
+		-run "$WORK/teeth-run" >"$log" 2>&1 &
+	TPID=$!
+	# named: whether the kernel names the runtime's mappings ("[anon: Go: ...]" in maps), which it
+	# does only with CONFIG_ANON_VMA_NAME; unknown until the maps of the live daemon were read.
+	named=unknown
+	for _ in $(seq 1 20); do
+		kill -0 "$TPID" 2>/dev/null || break
+		if sudo cat "/proc/$TPID/maps" >"$WORK/teeth-maps" 2>/dev/null && [ -s "$WORK/teeth-maps" ]; then
+			if grep -q 'anon: Go:' "$WORK/teeth-maps"; then named=yes; elif [ "$named" = unknown ]; then named=no; fi
+		fi
+		for _ in 1 2 3 4 5; do sudo "$BIN/rollcall" status --json >/dev/null 2>&1 || true; done
+		sleep 1
+	done
+	kill -KILL "$TPID" 2>/dev/null || true
+	reap "$TPID"
+	TPID=
+	got=$GOT
+	count=$(sed -n 's/.*seccomp filter installed on every thread: \([0-9]*\) system calls.*/\1/p' "$log" | head -n 1)
+	if [ "$count" != $((ALLOWED - 1)) ]; then
+		cat "$log"
+		fail "teeth: the daemon built without $drop installed '${count:-no}' allowed calls, not $((ALLOWED - 1)): the copy's list did not reach it"
+	fi
+	if [ "$got" = SIGSYS ]; then
+		echo "teeth: without $drop the daemon ($count calls) was killed by SIGSYS"
+		shown="$shown $drop"
+	elif [ "$drop" = prctl ] && [ "$named" = no ]; then
+		echo "teeth: without prctl the daemon ran 20 s and ended with $got: this kernel names no anonymous mapping ($(grep -h '^# CONFIG_ANON_VMA_NAME\|^CONFIG_ANON_VMA_NAME' "/boot/config-$(uname -r)" 2>/dev/null || echo 'its config not readable')), so the Go runtime stopped calling prctl(PR_SET_VMA) at its first refusal, before the filter was on"
+		unshown=" Not shown here: prctl, which this kernel ($(uname -r)) never sees once the filter is on (no CONFIG_ANON_VMA_NAME)."
+	else
+		echo "kernel names the runtime's mappings: $named"
+		echo "--- log of the daemon without $drop"
+		cat "$log"
+		audit
+		fail "teeth: without $drop the daemon ended with $got, not SIGSYS"
+	fi
+done
+note "teeth: the daemon is killed by SIGSYS when its list lacks any of:$shown.$unshown"
+note "PASS: $OWRT_ARCH on linux/$RUN_GOARCH, the daemon's own filter, no loader"

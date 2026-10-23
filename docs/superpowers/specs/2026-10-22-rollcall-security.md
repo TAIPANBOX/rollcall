@@ -404,9 +404,9 @@ boot sequences raise a `duplicate_identity` alert.
 | Control | Mechanism | Source / note |
 |---|---|---|
 | Own user | `procd_set_param user rollcall` (and group) | `@source` procd.sh supports `user`, `group` |
-| No privilege gain | `no_new_privs` | `@source` procd.sh |
+| No privilege gain | `no_new_privs`, set by procd and again by the daemon before it installs its filter | `@source` procd.sh |
 | No capabilities | empty capability set; ICMP probes are off by default (DNS and TCP 443 probes need none); enabling ICMP adds `CAP_NET_RAW` only | `@source` procd.sh supports `capabilities` |
-| System call allow-list | seccomp profile shipped with the package; `procd-seccomp` is a hard dependency (about 90 KiB) | `@source` 24.10 index |
+| System call allow-list | the daemon installs its own seccomp filter at start, from the per-architecture list the package ships: right after the command line and before it opens any file or socket, `no_new_privs`, then a classic BPF program (a call of another architecture killed, the listed calls allowed, any other kills the process) installed with `SECCOMP_FILTER_FLAG_TSYNC` on every thread; it refuses to run when that fails and to listen unless the kernel shows `Seccomp: 2`. The same lists produce `/etc/seccomp/rollcall.json`, a readable record that procd does not load; a gate keeps both equal per target. procd's `seccomp` parameter is not used: procd applies it through `LD_PRELOAD=/lib/libpreload-seccomp.so`, which a statically linked program never loads. `procd-seccomp` stays a hard dependency (section 14) | lab run 2026-10-23: under procd's parameter the daemon read `Seccomp: 0` on 25.12.5 |
 | Sandbox | ujail: read-only root, writable only `/etc/rollcall`, `/var/run/rollcalld` and `/var/run/rollcall`; read-only `/etc/config/rollcall`, the release file, certificates, zone data and resolver files; never `/etc/config/network`, `system` or `firewall`, nor a directory holding them; `procd-ujail` is a hard dependency (about 110 KiB) | `@source` procd.sh `_procd_add_jail`, 24.10 index |
 | Root-only configuration | network and system are mode 0600 root on 25.12 and may hold PPPoE passwords and WireGuard private keys, so the daemon never reads them: root (`rollcall snapshot`, run by the init script before each start and by the interface hotplug) parses network, firewall and system and writes only the zones, their devices, which zones face the internet and the time zone to `/var/run/rollcall/snapshot.json`, root:rollcall 0640; the daemon refuses to start when the snapshot is missing, malformed or older than those files, and never falls back to them | lab run 2026-10-23: the daemon could not open network on 25.12.5 |
 | ubus | ACL `/usr/share/acl.d/rollcall.json`: listen to `network.interface` events, call read-only `network.interface` status and `system` info, nothing else | `@source` ubusd_acl.c reads `/usr/share/acl.d` with user, access, listen, send |
@@ -532,8 +532,11 @@ gets a case in `scripts/gates-have-teeth.sh`. Mutation testing (T3) covers 2, 3,
 10. Telegram requests carry no parse mode (test).
 11. A member without the `sender` role never holds the token (pairing test).
 12. Missing or corrupt keys stop the listener (test).
-13. The service file sets the user, `no_new_privs`, seccomp and the jail (gate on the
-    init script) and the router run proves it (lab run).
+13. The service file sets the user, `no_new_privs` and the jail (gate on the init script);
+    the daemon installs its own seccomp filter, from the list the package ships, before it
+    opens any file or socket, on every thread, and does not run without it (gates on the list
+    and on `main`, tests that a forbidden call kills the process); the router run proves it
+    (lab run).
 14. A roster has exactly one primary, at most `MaxAdmins` admins and exactly one
     recovery key; any other shape is rejected (test and mutant).
 15. A takeover is accepted only by a member that has not heard the primary for 10
@@ -574,5 +577,10 @@ gets a case in `scripts/gates-have-teeth.sh`. Mutation testing (T3) covers 2, 3,
    warns that a backup file is as sensitive as a password, and rotation is one click.
 2. The sandbox packages (`procd-seccomp`, `procd-ujail`) are hard dependencies; a
    target that cannot run them is not shipped.
+   `@claude 2026-10-23`, beside the decision and not changing it: procd-seccomp cannot filter
+   rollcalld, which is statically linked (procd applies a profile through `LD_PRELOAD`), so the
+   daemon installs its own filter (section 7) and the init script no longer asks procd for one.
+   The dependency stays as decided; nothing of rollcall uses it now, and dropping it would be a
+   decision of its own.
 3. Admin recovery: an optional backup admin router plus the offline recovery code
    (section 6.1).

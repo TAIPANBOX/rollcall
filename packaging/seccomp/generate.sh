@@ -5,7 +5,10 @@
 #
 # Families: amd64 (x86_64), aarch64 (aarch64_*), arm (arm_*), mips (mips_*, mipsel_*).
 # scripts/mkipk.sh and scripts/mkapk.sh install this output as /etc/seccomp/rollcall.json in
-# each package, so a target never carries another family's names.
+# each package, so a target never carries another family's names. procd does not load it: it
+# cannot filter the static daemon. rollcalld embeds the same .txt files (lists.go), reads them
+# with these rules (internal/sandbox) and installs its own filter from them at start; the gate
+# TestSeccompDaemonListIsTheProfile requires both readings to give the same names per target.
 #
 # Usage: sh packaging/seccomp/generate.sh <openwrt-arch>
 set -eu

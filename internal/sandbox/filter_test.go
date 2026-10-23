@@ -11,19 +11,16 @@ const testArch = 0xc000003e // AUDIT_ARCH_X86_64
 var testTable = map[string]uint32{"read": 0, "write": 1, "close": 3, "prctl": 157, "execve": 59, "getppid": 110}
 
 func TestNumbers(t *testing.T) {
-	nrs, err := Numbers([]string{"read", "prctl", "write", "read"}, testTable, map[string]bool{"write": true})
+	nrs, err := Numbers([]string{"read", "prctl", "write", "read"}, testTable)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(nrs, []uint32{0, 157}) {
-		t.Fatalf("numbers = %v; want [0 157] (sorted, once each, write left out)", nrs)
+	if !slices.Equal(nrs, []uint32{0, 1, 157}) {
+		t.Fatalf("Numbers = %v; want [0 1 157] (sorted, once each)", nrs)
 	}
-	if _, err := Numbers([]string{"read", "frobnicate", "newfstatat"}, testTable, nil); err == nil ||
+	if _, err := Numbers([]string{"read", "frobnicate", "newfstatat"}, testTable); err == nil ||
 		!strings.Contains(err.Error(), "frobnicate") || !strings.Contains(err.Error(), "newfstatat") {
-		t.Fatalf("numbers with unknown names: %v; want an error naming both", err)
-	}
-	if _, err := Numbers([]string{"read"}, testTable, map[string]bool{"nosuch": true}); err == nil {
-		t.Fatal("numbers accepted -without of a name the profile does not hold")
+		t.Fatalf("Numbers with unknown names: %v; want an error naming both", err)
 	}
 }
 

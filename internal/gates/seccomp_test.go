@@ -61,7 +61,8 @@ func seccompFamily(arch string) string {
 
 // TestSeccompProfilesPerArch runs the generator for every shipped architecture and checks each
 // profile: it parses as JSON, its default action kills the process, arch_prctl is present only
-// where Go needs it (amd64), and an aarch64 profile carries no 32-bit legacy name.
+// where Go needs it (amd64), an aarch64 profile carries no 32-bit legacy name, and none allows
+// execve or execveat.
 func TestSeccompProfilesPerArch(t *testing.T) {
 	root := requireRoot(t)
 	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(seccompGenerator))); err != nil {
@@ -135,6 +136,12 @@ func seccompCheck(arch string, data []byte) []string {
 			problems = append(problems, family+" profile lacks mmap2")
 		}
 	}
+	// rollcalld installs its filter after it was started and never runs a program (it does not
+	// import os/exec, TestDaemonDoesNotImportExec), so execve under the filter is only ever what
+	// code that took the daemon over would call.
+	if have["execve"] || have["execveat"] {
+		problems = append(problems, "the profile allows execve or execveat: the daemon installs its filter after its own exec and never runs a program")
+	}
 	return problems
 }
 
@@ -143,8 +150,9 @@ func seccompCheck(arch string, data []byte) []string {
 type seccompNeed struct{ name, source string }
 
 // seccompRuntimeAll are the calls rollcalld makes on every run on every family: the Go runtime's
-// own, the standard library's at start, and the daemon's at start. A missing one kills the
-// daemon before it logs anything.
+// own, the standard library's and the daemon's. The daemon installs its filter in main, after the
+// runtime has started (internal/sandbox), so a call made only before that is free of it; the set
+// still names the runtime's start-up calls the runtime may make again later.
 var seccompRuntimeAll = []seccompNeed{
 	{"prctl", "runtime/set_vma_name_linux.go: prctl(PR_SET_VMA) names every new mapping (GODEBUG decoratemappings=1 by default, runtime/runtime1.go)"},
 	{"eventfd2", "runtime/netpoll_epoll.go: netpollinit makes the netpoll break eventfd"},
@@ -176,7 +184,6 @@ var seccompRuntimeAll = []seccompNeed{
 	{"getrandom", "crypto/rand: internal/syscall/unix.GetRandom where the vDSO has no getrandom"},
 	{"prlimit64", "syscall/rlimit.go: init raises RLIMIT_NOFILE through prlimit"},
 	{"restart_syscall", "the kernel resumes a sleep a signal handler interrupted (nanosleep, futex with a timeout) through restart_syscall, and SIGURG preemption interrupts them"},
-	{"execve", "procd jail/jail.c (openwrt/procd master): the in-process path installs the filter before execve; which path the procd of 24.10 and 25.12 takes is not established, so it is allowed"},
 	{"socket", "syscall/netlink_linux.go: NetlinkRIB, which net.Interfaces runs at start and in every reconcile; internal/transport/route_linux.go: the route lookup before every unicast; every listener"},
 	{"bind", "syscall/netlink_linux.go: NetlinkRIB; internal/transport/route_linux.go; every listener"},
 	{"getsockname", "syscall/netlink_linux.go: NetlinkRIB"},
@@ -399,6 +406,13 @@ func init() {
 				})
 			},
 			outcome: wantFail, expect: "not JSON",
+		},
+		toothCase{
+			name: "seccomp_execve_allowed", gate: "TestSeccompProfilesPerArch",
+			plant: func(t *testing.T, dst string) {
+				appendFile(t, filepath.Join(dst, "packaging", "seccomp", "common.txt"), "execve\n")
+			},
+			outcome: wantFail, expect: "x86_64: the profile allows execve or execveat",
 		},
 		toothCase{
 			name: "seccomp_no_generator", gate: "TestSeccompProfilesPerArch",

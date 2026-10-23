@@ -233,11 +233,15 @@ jobs:
           grep -q 'usr/bin/planted: user nobody' "$t/out.txt" || { cat "$t/out.txt"; echo "the owner check failed, but not on the planted file"; exit 1; }
           echo "the owner check fails on the planted nobody-owned file, as it must"
 
-  # Each shipped seccomp profile installed as a real kernel filter (kill the process on any call
-  # it does not list) by tools/seccomp-run, with rollcalld run under it: the profile without each
-  # call the gate names as made at start must kill the daemon by SIGSYS, and the whole profile
-  # must let it start, serve the control socket, bind UDP and TCP 7432, start a node after
-  # rollcall init, route a heartbeat to a static peer and stop cleanly (tools/seccomp-run/prove.sh).
+  # rollcalld started directly, as procd starts it on a router, with no loader: it installs its own
+  # seccomp filter (internal/sandbox) from the shipped list of its architecture, because procd
+  # cannot filter a statically linked program. The job requires that filter in force on every
+  # thread (Seccomp 2, NoNewPrivs 1, one filter more than the harness) and the daemon to start,
+  # serve the control socket, bind UDP and TCP 7432, start a node after rollcall init, route a
+  # heartbeat to a static peer, run discovery and stop cleanly; then daemons built with one call
+  # left out of the list must be killed by SIGSYS (tools/seccomp-run/prove.sh). Before that, the
+  # sandbox tests re-execute a child that installs the filter and makes a forbidden call, on the
+  # main thread and on a second one (TSYNC), on this runner's kernel.
   # The configuration is laid out as on OpenWrt 25.12: network and system root's alone (0600), so
   # the daemon, run unprivileged, starts only from the snapshot root writes (rollcall snapshot).
   # Both runner types are free for a public repository. linux/arm runs on the arm64 runner only
@@ -276,10 +280,10 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Loader tests on this runner's architecture
-        run: go test ./tools/seccomp-run -count=1 -v
+      - name: Sandbox tests on this runner's kernel
+        run: go test ./internal/sandbox -count=1 -v
 
-      - name: Run rollcalld under the profile
+      - name: Run rollcalld with its own filter
         env:
           OPENWRT_ARCH: ${{ matrix.openwrt }}
           RUN_GOARCH: ${{ matrix.goarch }}

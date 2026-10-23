@@ -180,6 +180,8 @@ Expected: `{'state': 'ok', 'last_ok': '<time>'}`. `not_bound` means the chat has
 for h in flint2 beryl1 beryl2; do
   echo "== $h"
   lab_ssh $h 'grep -E "NoNewPrivs|Seccomp|Cap" /proc/$(pidof rollcalld)/status'
+  lab_ssh $h 'for t in /proc/$(pidof rollcalld)/task/*; do grep -h "^Seccomp:" $t/status; done | sort | uniq -c'
+  lab_ssh $h 'logread -e rollcalld | grep "seccomp filter installed" | tail -n 1'
   lab_ssh $h 'grep -E "^(Uid|Gid)" /proc/$(pidof rollcalld)/status; grep "^rollcall:" /etc/passwd'
   lab_ssh $h 'ls -l /proc/$(pidof rollcalld)/root/'
 done
@@ -187,7 +189,9 @@ done
 
 Expected, per router:
 
-- `NoNewPrivs: 1` and `Seccomp: 2`.
+- `NoNewPrivs: 1`, `Seccomp: 2` and `Seccomp_filters: 1`: the filter is the daemon's own (procd installs none, it cannot filter a static program).
+- Every thread shows `Seccomp: 2` (one count line, `Seccomp:` with 2), none another value.
+- The log line `rollcalld: seccomp filter installed on every thread: N system calls of linux/arm64 allowed, any other ends the process`, N the number of names in `sh packaging/seccomp/generate.sh aarch64_cortex-a53` (74 when this line was written).
 - All five `Cap` lines (`CapInh`, `CapPrm`, `CapEff`, `CapBnd`, `CapAmb`) read `0000000000000000`, because `option icmp '0'` is the default. A non-zero line is a finding: record it, do not count it as a pass.
 - `Uid` and `Gid` read `1660`, and `/etc/passwd` has a `rollcall` line with uid 1660.
 - The listing of `/proc/<pid>/root/` is the jail: a few directories the init script mounts. It is not the router's root. Compare it with `ls -l /`, which the operator can run on the same router.
