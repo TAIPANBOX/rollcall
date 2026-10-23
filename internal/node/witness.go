@@ -185,7 +185,15 @@ func (n *Node) raiseLocked(id string, subject ids.MemberID, at clock.Stamp, now 
 // in the own chain.
 func (n *Node) forkLocked(p history.ForkProof, now clock.Stamp) {
 	o := p.A.Origin
-	if o == n.id.ID || n.inc.loading {
+	if n.inc.loading {
+		return
+	}
+	if len(n.log.Forks()) > n.forksSaved {
+		// On flash at once: a proof lost in a power cut may never be found
+		// again (D7). A failed write is retried by the next flush.
+		_ = n.writeForksLocked()
+	}
+	if o == n.id.ID {
 		return
 	}
 	at := n.localStamp(now)
@@ -234,9 +242,11 @@ func (n *Node) alarmIn(e history.Entry, b EventBody, now clock.Stamp) {
 		return
 	}
 	if e.Origin == n.id.ID {
-		// The node's own record, read back after a restart: that proof's
-		// alarm was raised.
-		n.inc.alarmed[alarmID(b.Detail["proof"], a, h)] = true
+		// The node's own record, read back after a restart: the alarm is
+		// raised again, and queued unless it was acknowledged (D7).
+		if p := b.Detail["proof"]; p == "fork" || p == "falsehood" {
+			n.raiseLocked(alarmID(p, a, h), b.Subject, b.At.Stamp(), now)
+		}
 		return
 	}
 	switch b.Detail["proof"] {

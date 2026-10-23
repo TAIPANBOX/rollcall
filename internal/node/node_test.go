@@ -173,6 +173,14 @@ type chat struct {
 	clk   *fakeClock
 	msgs  []chatMsg
 	pings map[string][]time.Duration
+	down  bool // Telegram cannot be reached: every call fails
+}
+
+// setDown makes Telegram unreachable, or reachable again.
+func (c *chat) setDown(down bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.down = down
 }
 
 type chatMsg struct {
@@ -189,6 +197,9 @@ type fakeChannel struct {
 func (f *fakeChannel) Send(_ context.Context, text string) error {
 	f.c.mu.Lock()
 	defer f.c.mu.Unlock()
+	if f.c.down {
+		return errUnreachable
+	}
 	f.c.msgs = append(f.c.msgs, chatMsg{by: f.by, text: text, at: f.c.clk.Mono()})
 	return nil
 }
@@ -196,6 +207,9 @@ func (f *fakeChannel) Send(_ context.Context, text string) error {
 func (f *fakeChannel) Ping(_ context.Context) error {
 	f.c.mu.Lock()
 	defer f.c.mu.Unlock()
+	if f.c.down {
+		return errUnreachable
+	}
 	f.c.pings[f.by] = append(f.c.pings[f.by], f.c.clk.Mono())
 	return nil
 }

@@ -55,7 +55,9 @@ type evRec struct {
 	ev       events.Event
 	seen     time.Duration
 	assigned bool
-	single   bool // an incident of its own: a roster announcement
+	single   bool         // an incident of its own: a roster announcement
+	origin   ids.MemberID // the history entry it came from; zero for a roster announcement
+	seq      uint64
 }
 
 type incRec struct {
@@ -110,7 +112,7 @@ func (c *incidents) eventIn(e history.Entry, b EventBody, now clock.Stamp) {
 	if b.At == (At{}) || b.Type == events.UnderFlood || b.Type == events.Fork {
 		return
 	}
-	c.add(e.Hash(), &evRec{ev: eventOf(e, b), seen: now.Mono})
+	c.add(e.Hash(), &evRec{ev: eventOf(e, b), seen: now.Mono, origin: e.Origin, seq: e.Seq})
 }
 
 // eventOf returns the event the entry e with body b records. A start
@@ -236,7 +238,7 @@ func decodeDropped(e history.Entry) (droppedOf, bool) {
 	return d, true
 }
 
-func (c *incidents) droppedIn(d droppedOf, now clock.Stamp) {
+func (c *incidents) droppedIn(e history.Entry, d droppedOf, now clock.Stamp) {
 	if _, ok := c.evs[d.Tip]; ok {
 		return
 	}
@@ -245,7 +247,8 @@ func (c *incidents) droppedIn(d droppedOf, now clock.Stamp) {
 		cs = append(cs, deliver.Change{Kind: deliver.ChangeKind(m.Kind), Member: m.Member, By: m.By})
 	}
 	c.changes[d.Tip] = cs
-	c.add(d.Tip, &evRec{ev: events.Event{Type: events.RosterChangesDropped, Ref: d.Tip, At: fixedStamp}, seen: now.Mono, single: true})
+	c.add(d.Tip, &evRec{ev: events.Event{Type: events.RosterChangesDropped, Ref: d.Tip, At: fixedStamp}, seen: now.Mono, single: true,
+		origin: e.Origin, seq: e.Seq})
 }
 
 // droppedLocked records that the node undid ours, its own branch after
@@ -332,6 +335,7 @@ func (n *Node) queueLocked(inc events.Incident, evs []events.Event, components [
 	if !n.inc.ackedIDs[inc.ID] {
 		n.queue.Add(inc, now.Wall)
 	}
+	n.flusher.Mark()
 }
 
 // returns are the types that end a member's absence.

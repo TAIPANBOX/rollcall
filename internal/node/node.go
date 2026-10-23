@@ -107,6 +107,7 @@ var (
 	ErrRemoved    = errors.New("node: this router was removed from the group")
 	ErrNotAdmin   = errors.New("node: this router is not an admin of the group")
 	ErrArgument   = errors.New("node: invalid argument")
+	ErrStopped    = errors.New("node: stopped")
 )
 
 const (
@@ -209,6 +210,7 @@ type Node struct {
 	nextRestore time.Duration
 	writes      []ownWrite    // own records waiting for the own chain's head
 	ownRetry    time.Duration // when to retry writes that failed to reach flash; 0 for none
+	forksSaved  int           // the fork proofs on flash
 
 	jobs       []job
 	out        []outPacket
@@ -230,10 +232,14 @@ type peer struct {
 	epoch     uint32 // the epoch of its last packet the node admitted
 	silent    bool
 	suspect   bool
-	nextRost  time.Duration // earliest next roster fetch from it
-	nextSync  time.Duration // earliest next catch-up with it
-	nextAsk   time.Duration // earliest next answer to its own boot-seq question
-	asked     bool          // asked for this router's own boot sequence number
+	// restored is true while the node knows the peer only from its state
+	// file (state.go), and toldSilent whether the file had it silent.
+	restored   bool
+	toldSilent bool
+	nextRost   time.Duration // earliest next roster fetch from it
+	nextSync   time.Duration // earliest next catch-up with it
+	nextAsk    time.Duration // earliest next answer to its own boot-seq question
+	asked      bool          // asked for this router's own boot sequence number
 }
 
 type outPacket struct {
@@ -397,6 +403,11 @@ func (n *Node) start() error {
 	}})
 	n.nextBeat = now.Mono
 	n.nextPing = now.Mono
+	// A fork proof loaded without its alarm (lost with the RAM) raises it
+	// now; one whose own record was loaded is raised already.
+	for _, p := range n.log.Forks() {
+		n.forkLocked(p, now)
+	}
 	n.flushWritesLocked(now)
 	return nil
 }

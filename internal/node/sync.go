@@ -212,7 +212,7 @@ func (n *Node) entryIn(e history.Entry, now clock.Stamp) {
 		return
 	}
 	if d, ok := decodeDropped(e); ok {
-		n.inc.droppedIn(d, now)
+		n.inc.droppedIn(e, d, now)
 		return
 	}
 	b, err := DecodeEvent(e)
@@ -252,14 +252,24 @@ func (n *Node) writeHistory() error {
 		}
 		delete(n.dirty, o)
 	}
-	if fs := n.log.Forks(); len(fs) > 0 {
-		b, err := json.Marshal(fs)
-		if err == nil {
-			err = n.st.WriteFileAtomic(fileForks, b)
-		}
-		errs = append(errs, err)
+	if len(n.log.Forks()) > 0 {
+		errs = append(errs, n.writeForksLocked())
 	}
+	errs = append(errs, n.writeStateLocked())
 	return errors.Join(errs...)
+}
+
+// writeForksLocked writes the fork proofs the log holds.
+func (n *Node) writeForksLocked() error {
+	fs := n.log.Forks()
+	b, err := json.Marshal(fs)
+	if err == nil {
+		err = n.st.WriteFileAtomic(fileForks, b)
+	}
+	if err == nil {
+		n.forksSaved = len(fs)
+	}
+	return err
 }
 
 // loadHistory reads the stored chains of the current roster's members.
@@ -290,8 +300,10 @@ func (n *Node) loadHistory(now clock.Stamp) {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		_ = err // a bad proof file is rebuilt by the next flush
 	}
-	// What was loaded is history, not news.
-	n.inc.settleAll()
+	n.forksSaved = len(n.log.Forks())
+	// What was loaded is history, not news, except what the state file
+	// says was not taken yet (state.go).
+	n.loadStateLocked(now)
 	n.inc.loading = false
 }
 

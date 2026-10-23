@@ -146,7 +146,7 @@ func correctionClass(t events.Type) bool {
 func (n *Node) updateIn(e history.Entry, b EventBody, now clock.Stamp) {
 	switch ok, retry := n.updateBacked(e, b); {
 	case ok:
-		n.inc.add(e.Hash(), &evRec{ev: eventOf(e, b), seen: now.Mono, single: true})
+		n.inc.add(e.Hash(), &evRec{ev: eventOf(e, b), seen: now.Mono, single: true, origin: e.Origin, seq: e.Seq})
 	case retry && len(n.inc.waiting) < keepPending:
 		n.inc.waiting = append(n.inc.waiting, pendingUpdate{e: e, b: b, until: now.Mono + updateWait})
 	}
@@ -186,7 +186,7 @@ func (n *Node) checkWaitingLocked(now clock.Stamp) {
 	n.inc.waiting = slices.DeleteFunc(n.inc.waiting, func(p pendingUpdate) bool {
 		ok, retry := n.updateBacked(p.e, p.b)
 		if ok {
-			n.inc.add(p.e.Hash(), &evRec{ev: eventOf(p.e, p.b), seen: now.Mono, single: true})
+			n.inc.add(p.e.Hash(), &evRec{ev: eventOf(p.e, p.b), seen: now.Mono, single: true, origin: p.e.Origin, seq: p.e.Seq})
 		}
 		return ok || !retry || now.Mono > p.until
 	})
