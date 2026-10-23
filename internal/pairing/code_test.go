@@ -172,6 +172,64 @@ func TestCodeTypo(t *testing.T) {
 	}
 }
 
+// TestCodeNonCanonicalRefused: a code text with one more trailing symbol
+// than its bytes need, all its bits padding, is a typo, never the same code
+// written another way (decode32 refuses five or more bits left over). A real
+// code has 4 (IPv4) or 3 (IPv6) padding bits, so a symbol added there always
+// adds a byte, which the checksum catches; the boundary is reached by
+// checksummed byte strings of the other lengths, here 50, 48 and 51 bytes,
+// whose encodings end with 0, 1 and 2 padding bits, so the added symbol
+// leaves 5, 6 and 7 bits over. Without that symbol each one passes the
+// checksum and is refused only as an invalid body.
+func TestCodeNonCanonicalRefused(t *testing.T) {
+	c := testCode(fmtTestBootstrap)
+	full := handCodeBody(1, c.Bootstrap, c.AdminFP, c.Secret, c.Expires.Unix())
+	for _, bodyLen := range []int{46, 44, 47} {
+		body := full[:bodyLen]
+		canonical := handCodeText(body)
+		if _, err := ParseCode(canonical); !errors.Is(err, ErrCodeInvalid) {
+			t.Fatalf("measured nothing: the canonical %d-byte text gives %v, want ErrCodeInvalid past the checksum", bodyLen+checksumSize, err)
+		}
+		for _, extra := range []string{"0", "-0"} {
+			if _, err := ParseCode(canonical + extra); !errors.Is(err, ErrCodeTypo) {
+				left := (len(strings.ReplaceAll(canonical, "-", ""))+1)*5 - (bodyLen+checksumSize)*8
+				t.Errorf("%d bytes and a padding symbol %q (%d bits left over): err = %v, want ErrCodeTypo", bodyLen+checksumSize, extra, left, err)
+			}
+		}
+	}
+}
+
+// TestDecode32Canonical: every symbol string decode32 accepts is the one
+// encode32 writes for its bytes, for every string of up to 9 symbols drawn
+// from 0, 1, 16 and 31, so no byte string has a second accepted encoding.
+func TestDecode32Canonical(t *testing.T) {
+	vals := []byte{0, 1, 16, 31}
+	accepted := 0
+	var walk func(syms []byte)
+	walk = func(syms []byte) {
+		if b, ok := decode32(syms); ok {
+			accepted++
+			var want strings.Builder
+			for _, v := range syms {
+				want.WriteByte(alphabet[v])
+			}
+			if got := encode32(b); got != want.String() {
+				t.Errorf("decode32 accepts %s as %x, which encodes to %s", want.String(), b, got)
+			}
+		}
+		if len(syms) == 9 {
+			return
+		}
+		for _, v := range vals {
+			walk(append(syms, v))
+		}
+	}
+	walk(nil)
+	if accepted < 100 {
+		t.Fatalf("measured nothing: decode32 accepted %d strings", accepted)
+	}
+}
+
 // TestParseCodeLengthCap pins the cap on the text ParseCode reads: dashes
 // may pad a code to maxCodeText bytes, one more is refused, and a refused
 // oversized text costs no allocation.
