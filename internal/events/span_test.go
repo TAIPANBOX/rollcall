@@ -73,6 +73,18 @@ func TestAbsenceSpans(t *testing.T) {
 		}
 	})
 
+	t.Run("back-to-back absences with close starts share no moment", func(t *testing.T) {
+		// a is back 20 s after its start; b goes 10 s later and comes back
+		// 100 s after a: starts 40 s apart, but nobody was away with both.
+		incs := Coalesce([]Event{
+			f.own(RebootUnplanned, a, -10*time.Second, 20*time.Second, true),
+			f.own(RebootUnplanned, b, 30*time.Second, 2*min, true),
+		}, DefaultWindow)
+		if len(incs) != 2 {
+			t.Fatalf("%d incidents, want 2:\n%s", len(incs), dump(incs))
+		}
+	})
+
 	t.Run("a long absence does not take in another member's short one", func(t *testing.T) {
 		week := 7 * 24 * time.Hour
 		incs := Coalesce([]Event{
