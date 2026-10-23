@@ -12,46 +12,61 @@ import (
 // primary before it accepts the backup's takeover (spec 6.1).
 const TakeoverAfter = 10 * time.Minute
 
-// Prefer returns the one of two rosters of a split group that every member
-// keeps once the split heals: the one whose signer has the higher
-// authority, the recovery key, then the primary, then a backup, then anyone
-// else; at equal authority the higher version; at equal version the one
-// whose Hash is lower, compared byte by byte. Authority comes before the
+// Branch is one side of a split group's roster chain after the last roster
+// both sides share: its first roster and its tip, the newest one, with the
+// tip's version. A branch of one roster has First and Tip the same.
+type Branch struct {
+	First   Signed // the roster that started the branch, version common+1
+	Tip     Signed // the newest roster of the branch
+	Version uint64 // the tip's version, as Verify returned it
+}
+
+// Prefer returns the one of two branches of a split group that every
+// member keeps once the split heals: the one started with the higher
+// authority, the signer of its First roster ranked as the recovery key,
+// then the primary, then a backup, then anyone else; at equal authority
+// the one whose tip has the higher version; at equal version the one whose
+// tip's Hash is lower, compared byte by byte. Authority comes before the
 // version so that a side cannot win by making more rosters: a backup that
 // takes over during a split and then signs version after version still
 // loses to a single change by the live primary once the network heals.
 // This refines spec 6.1, which put the version first.
 //
-// a and b are the tips of two branches that leave common, the last roster
-// both chains contain, and neither branch contains the other; each must have
-// been verified link by link from common, and ra and rb are the rosters
-// Verify returned for them. When one chain merely extends the other there
-// is nothing to settle: Verify accepts the extension link by link, and
-// Prefer must not be asked, since it could keep the older tip.
+// Authority is judged by the First rosters, since a branch belongs to
+// whoever started it: judged by the tips, a branch the primary started
+// would rank lowest once its tip is signed by a member it made backup after
+// the split. The version is judged by the tips: the First rosters of two
+// branches are always version common+1, so their versions never differ.
 //
-// Authority is the place of each tip's signer in common.Admins, Admins[0]
-// the primary and the rest backups, not its place in ra or rb: a backup that
-// took over during the split still ranks as the backup, and a member made
-// admin on one side only ranks below both admins.
+// a and b leave common, the last roster both chains contain, and neither
+// contains the other; each must have been verified link by link from
+// common. When one chain merely extends the other there is nothing to
+// settle: Verify accepts the extension link by link, and Prefer must not be
+// asked, since it could keep the older tip.
 //
-// Prefer orders rosters one way: Prefer(a, b, ra, rb, common) and
-// Prefer(b, a, rb, ra, common) return the same roster, and folding Prefer
-// over any number of candidates picks the same one in every order. It
-// returns a or b as given, a when they are equal.
-func Prefer(a, b Signed, ra, rb, common Roster) Signed {
-	if wa, wb := authority(a, common), authority(b, common); wa != wb {
+// Authority is the place of each First's signer in common.Admins,
+// Admins[0] the primary and the rest backups, not its place in the branch:
+// a backup that took over during the split still ranks as the backup, and
+// a member made admin on one side only ranks below both admins.
+//
+// Prefer orders branches one way: Prefer(a, b, common) and Prefer(b, a,
+// common) return the same branch, and folding Prefer over any number of
+// candidates picks the same one in every order. It returns a or b as given,
+// a when their tips are equal.
+func Prefer(a, b Branch, common Roster) Branch {
+	if wa, wb := authority(a.First, common), authority(b.First, common); wa != wb {
 		if wa > wb {
 			return a
 		}
 		return b
 	}
-	if ra.Version != rb.Version {
-		if ra.Version > rb.Version {
+	if a.Version != b.Version {
+		if a.Version > b.Version {
 			return a
 		}
 		return b
 	}
-	ha, hb := a.Hash(), b.Hash()
+	ha, hb := a.Tip.Hash(), b.Tip.Hash()
 	if bytes.Compare(ha[:], hb[:]) <= 0 {
 		return a
 	}

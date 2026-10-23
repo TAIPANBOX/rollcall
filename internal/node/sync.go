@@ -480,10 +480,10 @@ func (n *Node) planProbe(helper, target ids.MemberID) {
 // from the node's tip on. A tip that does not continue the node's chain
 // means the group split and both sides changed the roster: the node walks
 // back version by version until it finds the last roster both chains hold,
-// fetches the peer's branch from there, and decides with roster.Prefer
-// called with the first roster of each branch after that common ancestor
-// (the branch belongs to whoever started it), then adopts the winning
-// branch's tip. The changes of the losing branch are announced as undone,
+// fetches the peer's branch from there, and decides with roster.Prefer:
+// the authority of the first roster of each branch after that common
+// ancestor (the branch belongs to whoever started it), then the version of
+// each branch's tip; it adopts the winning branch's tip. The changes of the losing branch are announced as undone,
 // once (RosterChangesDropped).
 //
 // A takeover (a backup naming itself primary) is adopted only if the node
@@ -684,12 +684,16 @@ func (n *Node) resolveLocked(base int, theirs []roster.Signed, now clock.Stamp) 
 }
 
 // preferTheirs decides between two branches that leave common, theirs
-// and ours, each with its verified rosters: by the FIRST roster of each,
-// since a branch belongs to whoever started it. Judged by the tips, a
-// branch the primary started would rank lowest once its tip is signed by
-// a member it made backup after the split.
+// and ours, each with its verified rosters (roster.Prefer): the authority
+// by the FIRST roster of each, since a branch belongs to whoever started
+// it (judged by the tips, a branch the primary started would rank lowest
+// once its tip is signed by a member it made backup after the split); the
+// version, and then the hash, by the tips, since the first rosters are
+// always one version past common.
 func preferTheirs(theirs, ours []roster.Signed, rTheirs, rOurs []roster.Roster, common roster.Roster) bool {
-	return roster.Prefer(theirs[0], ours[0], rTheirs[0], rOurs[0], common).Hash() == theirs[0].Hash()
+	t := roster.Branch{First: theirs[0], Tip: theirs[len(theirs)-1], Version: rTheirs[len(rTheirs)-1].Version}
+	o := roster.Branch{First: ours[0], Tip: ours[len(ours)-1], Version: rOurs[len(rOurs)-1].Version}
+	return roster.Prefer(t, o, common).Tip.Hash() == t.Tip.Hash()
 }
 
 // # Removal of self

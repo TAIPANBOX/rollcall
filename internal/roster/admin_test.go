@@ -607,13 +607,18 @@ type candidate struct {
 	r    Roster
 }
 
-// preferBoth runs Prefer in both orders and requires want each time.
+// one returns c as a branch of one roster: c is both its first roster and
+// its tip.
+func one(c candidate) Branch { return Branch{First: c.s, Tip: c.s, Version: c.r.Version} }
+
+// preferBoth runs Prefer in both orders, on x and y as branches of one
+// roster, and requires want each time.
 func preferBoth(t *testing.T, what string, x, y candidate, common Roster, want candidate) {
 	t.Helper()
-	if got := Prefer(x.s, y.s, x.r, y.r, common); !reflect.DeepEqual(got, want.s) {
+	if got := Prefer(one(x), one(y), common).Tip; !reflect.DeepEqual(got, want.s) {
 		t.Errorf("%s: Prefer(%s, %s) did not pick %s", what, x.name, y.name, want.name)
 	}
-	if got := Prefer(y.s, x.s, y.r, x.r, common); !reflect.DeepEqual(got, want.s) {
+	if got := Prefer(one(y), one(x), common).Tip; !reflect.DeepEqual(got, want.s) {
 		t.Errorf("%s: Prefer(%s, %s) did not pick %s", what, y.name, x.name, want.name)
 	}
 }
@@ -776,7 +781,7 @@ func TestPreferHashAtEqualAuthority(t *testing.T) {
 		preferBoth(t, "two forks by "+name, x, y, c.r1, want)
 	}
 	same := forkOf(t, "same", c.r1, c.s1, &P, 0, nil)
-	if got := Prefer(same.s, same.s, same.r, same.r, c.r1); !reflect.DeepEqual(got, same.s) {
+	if got := Prefer(one(same), one(same), c.r1).Tip; !reflect.DeepEqual(got, same.s) {
 		t.Error("Prefer of a roster with itself did not return it")
 	}
 }
@@ -830,7 +835,7 @@ func TestPreferIsAnOrder(t *testing.T) {
 	}
 	for i, x := range cands {
 		for _, y := range cands[i:] {
-			p, q := Prefer(x.s, y.s, x.r, y.r, c.r1), Prefer(y.s, x.s, y.r, x.r, c.r1)
+			p, q := Prefer(one(x), one(y), c.r1).Tip, Prefer(one(y), one(x), c.r1).Tip
 			if !reflect.DeepEqual(p, q) {
 				t.Errorf("Prefer(%s, %s) differs from Prefer(%s, %s)", x.name, y.name, y.name, x.name)
 			}
@@ -845,7 +850,7 @@ func TestPreferIsAnOrder(t *testing.T) {
 		rng.Shuffle(len(order), func(i, j int) { order[i], order[j] = order[j], order[i] })
 		win := order[0]
 		for _, x := range order[1:] {
-			s := Prefer(win.s, x.s, win.r, x.r, c.r1)
+			s := Prefer(one(win), one(x), c.r1).Tip
 			if reflect.DeepEqual(s, x.s) {
 				win = x
 			}
@@ -855,4 +860,54 @@ func TestPreferIsAnOrder(t *testing.T) {
 		}
 	}
 	t.Logf("winner of %d candidates: %s", len(cands), want.name)
+}
+
+// branchOf returns the branch from first to tip, both candidates.
+func branchOf(first, tip candidate) Branch {
+	return Branch{First: first.s, Tip: tip.s, Version: tip.r.Version}
+}
+
+// TestPreferVersionFromTheTips (A2): at equal authority the branch whose
+// tip has the higher version wins, even when its first roster has the
+// higher hash. The first rosters of two branches are always one version
+// past common, so a version read from them could never decide.
+func TestPreferVersionFromTheTips(t *testing.T) {
+	c := newTakeoverChain(t)
+	P := c.P
+	for k := 0; k < 64; k++ {
+		long1 := forkOf(t, "long v2", c.r1, c.s1, &P, 1000+k, nil)
+		short := forkOf(t, "short v2", c.r1, c.s1, &P, 2000+k, nil)
+		if !higherHash(long1.s, short.s) {
+			continue
+		}
+		long3 := chainOf(t, "long v4", long1.r, long1.s, &P, 2)
+		long, shortB := branchOf(long1, long3), one(short)
+		for _, got := range []Branch{Prefer(long, shortB, c.r1), Prefer(shortB, long, c.r1)} {
+			if !reflect.DeepEqual(got, long) {
+				t.Fatalf("the primary's branch at version %d lost to the primary's branch at version %d", long.Version, shortB.Version)
+			}
+		}
+		return
+	}
+	t.Fatal("no fork pair with the hashes against the version in 64 tries")
+}
+
+// TestPreferAuthorityFromTheFirstRoster (A2, the ruling of task 18): a
+// branch belongs to whoever started it. The primary starts one and makes O
+// backup on it, and O signs its tip; the backup starts the other, longer
+// one and signs its tip. The primary's branch wins: judged by the tips, O,
+// no admin of the common roster, would rank below the backup.
+func TestPreferAuthorityFromTheFirstRoster(t *testing.T) {
+	c := newTakeoverChain(t)
+	P, B, O := c.P, c.B, c.O
+	q2 := forkOf(t, "primary makes O backup", c.r1, c.s1, &P, 0, func(r *Roster) { setAdmins(r, P.ID, O.ID) })
+	q3 := forkOf(t, "O v3", q2.r, q2.s, &O, 0, nil)
+	b2 := forkOf(t, "backup v2", c.r1, c.s1, &B, 0, nil)
+	b4 := chainOf(t, "backup v4", b2.r, b2.s, &B, 2)
+	byP, byB := branchOf(q2, q3), branchOf(b2, b4)
+	for _, got := range []Branch{Prefer(byP, byB, c.r1), Prefer(byB, byP, c.r1)} {
+		if !reflect.DeepEqual(got, byP) {
+			t.Fatal("the branch the primary started, its tip signed by a backup it appointed, lost to the backup's longer branch")
+		}
+	}
 }

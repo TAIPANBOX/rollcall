@@ -337,14 +337,18 @@ boot sequences raise a `duplicate_identity` alert.
   from the replaced primary; a confirmation that needs the recovery code was weighed and
   not chosen, because it adds an owner step and puts the recovery code to routine use.
 - **Conflicts.** If the network splits and both sides change the roster, after healing
-  the branch whose latest roster was signed with the higher authority wins: recovery
-  key, then primary, then backup, judged against the last roster both sides shared.
-  At equal authority the higher version wins, then the lower hash. Authority comes
-  first so that a compromised backup cannot win by making many changes during the
-  split. Changes from the branch that lost are not dropped silently: the chat gets one
-  message listing what was undone and which router made it, so a person can repeat
-  what was wanted. (Refined during implementation on 2026-10-22; the first draft ranked
-  the version first.)
+  the branch whose first roster after the split was signed with the higher authority
+  wins: recovery key, then primary, then backup, judged against the last roster both
+  sides shared. A branch belongs to whoever started it, so a branch the primary started
+  keeps the primary's rank even when a backup it appointed on that side signs its later
+  rosters. At equal authority the branch whose newest roster has the higher version
+  wins, then the lower hash of that newest roster. Authority comes first so that a
+  compromised backup cannot win by making many changes during the split. Changes from
+  the branch that lost are not dropped silently: the chat gets one message listing what
+  was undone and which router made it, so a person can repeat what was wanted.
+  (Refined during implementation on 2026-10-22; the first draft ranked the version
+  first. Refined again on 2026-10-23: the version is read from each branch's newest
+  roster, since the first rosters of two branches always share one version.)
 - **Visibility.** Every roster change, role change and takeover is announced in the
   chat with the name of the router that signed it ("ap-office removed by admin
   gateway"). If an admin router is taken over by an attacker, its changes are seen at
