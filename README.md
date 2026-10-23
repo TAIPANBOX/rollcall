@@ -11,15 +11,16 @@ your Telegram chat, once per incident.
 [![ci](https://github.com/TAIPANBOX/rollcall/actions/workflows/ci.yml/badge.svg)](https://github.com/TAIPANBOX/rollcall/actions/workflows/ci.yml)
 ![OpenWrt 25.12](https://img.shields.io/badge/OpenWrt-25.12-2dd4bf)
 ![Go 1.27](https://img.shields.io/badge/Go-1.27-4493f8)
-![status: not released](https://img.shields.io/badge/status-not%20released-e3b341)
+![status: release candidate](https://img.shields.io/badge/status-1.0.0--rc1-e3b341)
 ![license MIT](https://img.shields.io/badge/license-MIT-9aa7b8)
 
 </div>
 
 ![Three routers exchange heartbeats; one goes silent and comes back; the sender tells the chat in one line](docs/hero.svg)
 
-**Status: not released.** There is no package feed yet. To try it today you build the packages and
-install them by hand on a test router, as [below](#install).
+**Status: release candidate [1.0.0-rc1](https://github.com/TAIPANBOX/rollcall/releases/tag/v1.0.0-rc1).**
+The packages come from a signed apk feed for OpenWrt 25.12. The final 1.0.0 follows a longer run on
+routers.
 
 ## What it does
 
@@ -87,31 +88,32 @@ PPPoE passwords and WireGuard keys. The daemon never reads them. Root writes the
 
 ![Install as it is today: build, install, create the group, add the others, roles, the token, bind the chat, check](docs/install-flow.svg)
 
-You need OpenWrt 25.12 with apk on each router, Go 1.27 and Docker on the machine that builds,
-and a bot token from @BotFather. Only `aarch64_cortex-a53` has run on a router so far; the other
-targets build. An AI agent doing this should follow [docs/agent-install.md](docs/agent-install.md),
-which has a check after every step.
+You need OpenWrt 25.12 with apk on each router and a bot token from @BotFather. Only
+`aarch64_cortex-a53` has run on a router so far; the other targets build and pass the tests. An AI
+agent doing this should follow [docs/agent-install.md](docs/agent-install.md), which has a check
+after every step.
 
-**1. Build the packages.**
+**1. Trust the feed**, on every router:
 
 ```sh
-make apk luci VERSION=0.0.0-rc1 TARGETS=aarch64_cortex-a53
-ls dist/pkg/aarch64_cortex-a53/*.apk dist/pkg/luci/*.apk
+wget -O /etc/apk/keys/rollcall.pem https://taipanbox.github.io/rollcall/rollcall.pem
+sha256sum /etc/apk/keys/rollcall.pem
+echo "https://taipanbox.github.io/rollcall/25.12/$(cat /etc/apk/arch)/packages.adb" >> /etc/apk/repositories.d/customfeeds.list
 ```
 
-Or run the `ci` workflow by hand in your fork (Actions, ci, Run workflow) and download the
-`lab-packages` artifact. `luci-app-rollcall` is optional and pulls in `luci-base`.
+The sum must be `1dd696c7afce0464688a5106229723f60c8cfb9bd2f6ec296ee5fec24f57ff39`. If it is not,
+delete the file and stop. apk checks every package and the index against this key, so no
+`--allow-untrusted` is ever needed. How the feed is built and signed: [docs/feed.md](docs/feed.md).
 
-**2. Install them on every router.** The packages are not signed yet, so apk needs
-`--allow-untrusted` for these files. Use it only for files you built, never for a feed.
+**2. Install**, on every router:
 
 ```sh
-cat dist/pkg/aarch64_cortex-a53/rollcall-*.apk | ssh root@<router> 'cat > /tmp/rollcall.apk'
-ssh root@<router> 'apk add --allow-untrusted /tmp/rollcall.apk'
+apk update && apk add rollcall
 ```
 
 apk pulls in `procd-ujail`, `procd-seccomp` and `ca-bundle` from the OpenWrt feeds. The service is
-enabled and not started.
+enabled and not started. `luci-app-rollcall` is optional and pulls in `luci-base`. To build the
+packages yourself instead: `make apk luci VERSION=<version>` (Go 1.27 and Docker).
 
 **3. Create the group on the first router.** In an SSH session on that router:
 
@@ -205,7 +207,8 @@ and four defects the lab run found and fixed: [docs/measured.md](docs/measured.m
 
 ## Not yet
 
-- No release and no signed package feed.
+- No final 1.0.0 yet: this is a release candidate. No feed for OpenWrt 24.10 (opkg) yet.
+- Installed from the feed on a router: not yet; the feed was proven in an OpenWrt 25.12 container.
 - Only `aarch64_cortex-a53` on a router; MIPS has not run anywhere, OpenWrt 24.10 not on a router.
 - A mesh, separate LANs with their own DHCP, and NAT: only in the simulator so far.
 - sysupgrade, a pulled power cord and flash wear over days: not run yet.
@@ -217,6 +220,7 @@ and four defects the lab run found and fixed: [docs/measured.md](docs/measured.m
 |---|---|
 | [docs/agent-install.md](docs/agent-install.md) | the install as an AI agent runs it, with a check after each step |
 | [docs/measured.md](docs/measured.md) | what was run on routers and in CI, and what it printed |
+| [docs/feed.md](docs/feed.md) | the signed apk feed: the key, how a release reaches it |
 | [docs/superpowers/specs](docs/superpowers/specs/) | the design and the security architecture |
 | [docs/lab/runbook.md](docs/lab/runbook.md) | the lab runbook for the three test routers |
 | [packaging/README.md](packaging/README.md) | what the package installs, the filter, the jail, the snapshot |

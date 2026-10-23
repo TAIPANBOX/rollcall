@@ -4,6 +4,8 @@
 *.ipk
 *.apk
 coverage.out
+# the feed: release assets downloaded, signed copies and the publishable tree
+/build/
 # agent scratch
 /.superpowers/
 # never commit secrets
@@ -13,5 +15,9 @@ coverage.out
 .env.*
 *.secret
 secrets/
-keys/
+# keys/ holds the feed's signing pair. Only the public half is committed; the private half,
+# keys/*.private.pem, never is (internal/gates/feedkey_test.go fails if one is committable).
+keys/*
+!keys/rollcall.pem
+keys/*.private.pem
 .DS_Store
