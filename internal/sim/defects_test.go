@@ -21,9 +21,6 @@ import (
 var knownDefects = map[string]string{
 	"D8": "the chat tells a silence 45 to 55 s after a power cut (detection at 30 s, then the 20 s coalescing settle); " +
 		"the bound is 30 s of detection and 15 s (TestPowerLossReported)",
-	"D14": "a router that restarts while a peer is away forgets the peer (its last boot and version live in RAM only): it " +
-		"reports the peer silent from its own start, a second message for an absence already told, and tells the peer's " +
-		"return as 'went silent ..., back after' counted from its own start, never as the reboot or upgrade it was (sweep I2)",
 }
 
 // strict reports whether known defects fail rather than skip.
