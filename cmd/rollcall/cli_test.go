@@ -926,6 +926,7 @@ func decode(t *testing.T, s string) any {
 var nullable = map[string]bool{
 	"sender": true, "self.admin": true, "members[].last_seen": true, "members[].last_seen_seconds": true,
 	"storage.error": true, "telegram.last_ok": true, "group_key": true,
+	"confirmation": true, "confirmation.of": true, "confirmation.from": true,
 }
 
 // sameShape compares got with want, the example: the same keys at every
@@ -1143,6 +1144,42 @@ func TestStatusTextShowsFlood(t *testing.T) {
 		}
 		if got := strings.Contains(out.String(), "Under a flood:"); got != flood {
 			t.Errorf("under_flood %v: the text says a flood %v:\n%s", flood, got, out.String())
+		}
+	}
+}
+
+// confirmationCases are the three states of the confirmation field of the
+// status report, with the line a person must see for each (nothing for null).
+var confirmationCases = []struct {
+	name string
+	conf any
+	want string
+}{
+	{"none", nil, ""},
+	{"held", map[string]any{"state": "held", "of": "gateway", "from": "2026-10-24T10:00:00+01:00"},
+		"Confirmation of the takeover waits until 2026-10-24T10:00:00+01:00"},
+	{"lapsed", map[string]any{"state": "lapsed", "of": nil, "from": nil},
+		"Confirmation of the takeover lapsed: the former primary was heard"},
+}
+
+// TestStatusTextShowsConfirmation (A4): the text form of status says until
+// when a confirmation of a takeover is held, or that it lapsed, and says
+// nothing of one when there is none.
+func TestStatusTextShowsConfirmation(t *testing.T) {
+	for _, tc := range confirmationCases {
+		report := fullReport(t, func(m map[string]any) { m["confirmation"] = tc.conf })
+		b, _ := json.Marshal(report)
+		var out, errb bytes.Buffer
+		c := &cli{stdout: &out, stderr: &errb, call: func(context.Context, string, ...string) ([]byte, error) { return b, nil }}
+		if code := c.run([]string{"status"}); code != 0 {
+			t.Fatalf("%s: status: exit %d, %q", tc.name, code, errb.String())
+		}
+		got := out.String()
+		if tc.want == "" && strings.Contains(got, "onfirmation") {
+			t.Errorf("%s: the text speaks of a confirmation:\n%s", tc.name, got)
+		}
+		if tc.want != "" && !strings.Contains(got, tc.want) {
+			t.Errorf("%s: the text lacks %q:\n%s", tc.name, tc.want, got)
 		}
 	}
 }

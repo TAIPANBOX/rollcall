@@ -246,6 +246,24 @@ function telegramText(tg) {
 	return label;
 }
 
+/* The line for a confirmation of a takeover made on this router (security
+ * spec 6.1), or null when there is none: held until the replaced primary has
+ * been silent for a day, or lapsed because it was heard before. */
+function confirmationText(conf) {
+	if (!conf || typeof conf !== 'object') {
+		return null;
+	}
+	if (conf.state === 'held') {
+		var of = conf.of ? String(conf.of) : _('the former primary');
+		return _('Confirmation of the takeover waits until %s, a day after %s was last heard; it lapses if %s is heard before.')
+			.format(text(conf.from), of, of);
+	}
+	if (conf.state === 'lapsed') {
+		return _('Confirmation of the takeover lapsed: the former primary was heard, or the takeover ended, before a day of silence.');
+	}
+	return null;
+}
+
 function buildPage(st) {
 	var nodes = [];
 
@@ -302,11 +320,17 @@ function buildPage(st) {
 	var self = st.self || {};
 	var selfRoles = Array.isArray(self.roles) ? roleNames(self.roles) : [];
 
-	nodes.push(E('h3', {}, [ _('This router') ]));
-	nodes.push(E('table', { 'class': 'table' }, [
+	var selfRows = [
 		labelRow(_('Name'), [ T(text(self.name)) ]),
 		labelRow(_('Roles'), [ T(selfRoles.length ? selfRoles.join(', ') : _('member')) ])
-	]));
+	];
+	var confirmation = confirmationText(st.confirmation);
+	if (confirmation) {
+		selfRows.push(labelRow(_('Takeover'), [ T(confirmation) ]));
+	}
+
+	nodes.push(E('h3', {}, [ _('This router') ]));
+	nodes.push(E('table', { 'class': 'table' }, [].concat(selfRows)));
 
 	nodes.push(E('h3', {}, [ _('Group') ]));
 	nodes.push(E('table', { 'class': 'table' }, [

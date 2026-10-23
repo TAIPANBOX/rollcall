@@ -70,6 +70,7 @@ A set-up router prints every field below.
 | `generated` | time | when the report was made |
 | `site` | string | the group's site name, as in the messages (`Home`) |
 | `self` | object | this router, see below |
+| `confirmation` | object or null | a confirmation of a takeover made on this router that is held or lapsed, see below; `null` when there is none |
 | `members` | array | the roster, this router included, at most 32 entries |
 | `sender` | string or null | name of the member that sends to Telegram now; `null` when no member can reach Telegram |
 | `incidents` | array | newest first, at most 20 entries, see below |
@@ -93,6 +94,27 @@ A set-up router prints every field below.
 - `admin`: `"primary"`, `"backup"` or `null`.
 - `takeover`: `true` while a takeover by the backup admin is provisional and not
   yet confirmed.
+
+### `confirmation`
+
+```json
+{"state": "held", "of": "gateway", "from": "2026-10-24T10:00:00+01:00"}
+```
+
+A takeover confirmed with `admin confirm` before the replaced primary has
+been silent for a day is held on this router and takes effect once the day
+has passed (security document, section 6.1). The field is `null` when this
+router holds no confirmation and none lapsed.
+
+- `state`: `held` while it waits, `lapsed` when the replaced primary was heard
+  before the day was over, or the takeover ended (the primary restored itself,
+  or the recovery key decided). A lapsed confirmation stays reported until the
+  next one is held.
+- `of`: the replaced primary's name while `held`; `null` when `lapsed`, or
+  when the roster no longer names it.
+- `from`: the earliest time the confirmation takes effect, while `held`: a day
+  after the replaced primary was last heard, or after this router's start when
+  that is later, so a restart moves it later; `null` when `lapsed`.
 
 ### `members`
 
@@ -185,6 +207,7 @@ warning while it is `true`; the chat never hears of a flood.
   "generated": "2026-10-23T14:02:05+01:00",
   "site": "Home",
   "self": {"name": "gateway", "roles": ["sender", "primary"], "admin": "primary", "takeover": false},
+  "confirmation": null,
   "members": [
     {"name": "gateway", "roles": ["sender", "primary"], "state": "up", "last_seen": "2026-10-23T14:02:05+01:00", "last_seen_seconds": 0},
     {"name": "ap-office", "roles": [], "state": "silent", "last_seen": "2026-10-23T14:00:00+01:00", "last_seen_seconds": 125}

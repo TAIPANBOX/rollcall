@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/TAIPANBOX/rollcall/internal/node"
 )
@@ -32,6 +33,7 @@ type report struct {
 	Generated     string                `json:"generated"`
 	Site          string                `json:"site"`
 	Self          *node.SelfStatus      `json:"self"`
+	Confirmation  *confirmationStatus   `json:"confirmation"`
 	Members       []node.MemberStatus   `json:"members"`
 	Sender        *string               `json:"sender"`
 	Incidents     []node.IncidentStatus `json:"incidents"`
@@ -87,7 +89,7 @@ func (d *Daemon) status() ([]byte, error) {
 		Self: s.Self, Members: nonNil(s.Members), Sender: s.Sender, Incidents: nonNil(s.Incidents),
 		Discovery: d.discovery(), Topology: topology(d.o.Devices, switched),
 		Storage: s.Storage, Telegram: s.Telegram, GroupKey: s.GroupKey, BackupWarning: s.BackupWarning,
-		UnderFlood: s.UnderFlood,
+		UnderFlood: s.UnderFlood, Confirmation: confirmationOf(nd.HeldConfirmation(), d.loc),
 	}
 	if d.o.Sandbox != nil {
 		r.Sandbox = d.o.Sandbox()
@@ -96,6 +98,33 @@ func (d *Daemon) status() ([]byte, error) {
 	}
 	r.Telegram.State = telegramState(s, d.o.Config.Sender, token, chat)
 	return json.Marshal(r)
+}
+
+// confirmationStatus is the confirmation of a takeover this router holds
+// (security spec 6.1, STATUS-JSON.md "confirmation"): held until the
+// replaced primary has been silent for a day, or lapsed because it was heard
+// before, or the takeover ended. The report carries null when there is none.
+type confirmationStatus struct {
+	State string  `json:"state"` // held or lapsed
+	Of    *string `json:"of"`    // the replaced primary's name, while held
+	From  *string `json:"from"`  // when it takes effect at the earliest, while held
+}
+
+// confirmationOf is the confirmation object of the report, with its time in
+// the router's time zone.
+func confirmationOf(c node.Confirmation, loc *time.Location) *confirmationStatus {
+	switch {
+	case c.Held:
+		from := c.From.In(loc).Format(time.RFC3339)
+		cs := &confirmationStatus{State: "held", From: &from}
+		if c.Of != "" {
+			cs.Of = &c.Of
+		}
+		return cs
+	case c.Lapsed:
+		return &confirmationStatus{State: "lapsed"}
+	}
+	return nil
 }
 
 // whyNot is the error a not-set-up report carries: none when init or join

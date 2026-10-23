@@ -85,7 +85,8 @@ type textStatus struct {
 		Roles    []string `json:"roles"`
 		Takeover bool     `json:"takeover"`
 	} `json:"self"`
-	Members []struct {
+	Confirmation *textConfirmation `json:"confirmation"`
+	Members      []struct {
 		Name            string   `json:"name"`
 		Roles           []string `json:"roles"`
 		State           string   `json:"state"`
@@ -129,6 +130,9 @@ func (c *cli) printStatus(out []byte) {
 	if s.Self != nil && s.Self.Takeover {
 		fmt.Fprintln(w, "A takeover by this router is provisional until rollcall admin confirm runs here.")
 	}
+	if line := confirmationLine(s.Confirmation); line != "" {
+		fmt.Fprintln(w, line)
+	}
 	fmt.Fprintln(w, "Members:")
 	for _, m := range s.Members {
 		line := fmt.Sprintf("  %-32s %-10s %s", m.Name, m.State, strings.Join(m.Roles, ","))
@@ -158,4 +162,35 @@ func (c *cli) printStatus(out []byte) {
 		}
 		fmt.Fprintf(w, "%s  %s%s\n", inc.Time, inc.Text, mark)
 	}
+}
+
+// textConfirmation is what the text form reads of the confirmation of a
+// takeover made here (security spec 6.1).
+type textConfirmation struct {
+	State string  `json:"state"`
+	Of    *string `json:"of"`
+	From  *string `json:"from"`
+}
+
+// confirmationLine says what became of a confirmation of a takeover made
+// here: held until the replaced primary has been silent for a day, or
+// lapsed. It is empty when there is none.
+func confirmationLine(c *textConfirmation) string {
+	if c == nil {
+		return ""
+	}
+	switch c.State {
+	case "held":
+		from, of := "an unknown time", "the former primary"
+		if c.From != nil {
+			from = *c.From
+		}
+		if c.Of != nil && *c.Of != "" {
+			of = *c.Of
+		}
+		return fmt.Sprintf("Confirmation of the takeover waits until %s, a day after %s was last heard; it lapses if %s is heard before.", from, of, of)
+	case "lapsed":
+		return "Confirmation of the takeover lapsed: the former primary was heard, or the takeover ended, before a day of silence."
+	}
+	return ""
 }

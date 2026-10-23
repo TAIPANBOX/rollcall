@@ -144,6 +144,27 @@ func TestLuCIStatusShowsFlood(t *testing.T) {
 	}
 }
 
+// TestLuCIStatusShowsConfirmation (A4): the status page shows until when a
+// confirmation of a takeover is held, or that it lapsed, as text, and no such
+// line when there is none.
+func TestLuCIStatusShowsConfirmation(t *testing.T) {
+	for _, tc := range confirmationCases {
+		p := renderLuCI(t, luciStatusJS, fullReport(t, func(m map[string]any) { m["confirmation"] = tc.conf }), nil)
+		if tc.want == "" && strings.Contains(p.Page, "onfirmation") {
+			t.Errorf("%s: the page speaks of a confirmation:\n%s", tc.name, p.Page)
+		}
+		if tc.want != "" && !strings.Contains(p.Page, tc.want) {
+			t.Errorf("%s: the page lacks %q:\n%s", tc.name, tc.want, p.Page)
+		}
+	}
+	// A name or time carrying markup stays text: the renderer fails on any
+	// child E() would insert as markup.
+	evil := map[string]any{"state": "held", "of": "<b>x</b>", "from": "<img src=x>"}
+	if p := renderLuCI(t, luciStatusJS, fullReport(t, func(m map[string]any) { m["confirmation"] = evil }), nil); !strings.Contains(p.Page, "<img src=x>") {
+		t.Errorf("the time is not shown as text:\n%s", p.Page)
+	}
+}
+
 // TestLuCIStatusHighlightsOldGroupKey: a group key older than its rotation
 // period (30 days) is highlighted on the status page, since rotation may
 // have stopped; a key within the period is shown plainly.

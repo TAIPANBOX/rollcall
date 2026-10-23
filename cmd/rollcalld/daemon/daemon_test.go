@@ -1176,3 +1176,64 @@ func TestInternetEventsTakeTheClockState(t *testing.T) {
 		t.Fatalf("the internet restoration after clock-synced: trusted %v, want [true]", got)
 	}
 }
+
+// TestStatusShowsHeldConfirmation (A4, security spec 6.1): a confirmation of
+// a takeover made before the replaced primary has been silent for a day is
+// held, and the status says until when, in the router's time zone; before
+// any takeover the field is null.
+func TestStatusShowsHeldConfirmation(t *testing.T) {
+	f := backupFixture(t)
+	h := start(t, f.dir, func(o *Options) { o.Config.TZ = "Europe/London" })
+	if c, ok := h.status()["confirmation"]; !ok || c != nil {
+		t.Fatalf("confirmation before any takeover: %v (present %v), want null", c, ok)
+	}
+	h.run(11 * time.Minute)
+	if _, err := h.handle("admin-takeover"); err != nil {
+		t.Fatal(err)
+	}
+	if c := h.status()["confirmation"]; c != nil {
+		t.Fatalf("confirmation after a takeover not yet confirmed: %v, want null", c)
+	}
+	if _, err := h.handle("admin-confirm"); err == nil || !strings.Contains(err.Error(), "held") {
+		t.Fatalf("a confirmation eleven minutes into the silence: %v, want it held", err)
+	}
+	// gateway was never heard, so its silence counts from the node's start,
+	// tStart; a day later is 2026-10-24 10:00 in London (BST).
+	want := map[string]any{"state": "held", "of": "gateway", "from": "2026-10-24T10:00:00+01:00"}
+	if got := h.status()["confirmation"]; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("confirmation while held: %v, want %v", got, want)
+	}
+}
+
+// TestConfirmationOf: the three states of node.HeldConfirmation become the
+// report's object: held with the replaced primary and the time in the
+// router's zone, lapsed with neither, and null when there is none.
+func TestConfirmationOf(t *testing.T) {
+	london, err := time.LoadLocation("Europe/London")
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc := func(c node.Confirmation, loc *time.Location) string {
+		b, err := json.Marshal(confirmationOf(c, loc))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	from := time.Date(2026, 12, 24, 9, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		c    node.Confirmation
+		loc  *time.Location
+		want string
+	}{
+		{node.Confirmation{}, time.UTC, `null`},
+		{node.Confirmation{Held: true, Of: "gateway", From: from}, time.UTC, `{"state":"held","of":"gateway","from":"2026-12-24T09:00:00Z"}`},
+		{node.Confirmation{Held: true, Of: "gateway", From: tStart.Add(24 * time.Hour)}, london, `{"state":"held","of":"gateway","from":"2026-10-24T10:00:00+01:00"}`},
+		{node.Confirmation{Held: true, From: from}, time.UTC, `{"state":"held","of":null,"from":"2026-12-24T09:00:00Z"}`},
+		{node.Confirmation{Lapsed: true}, london, `{"state":"lapsed","of":null,"from":null}`},
+	} {
+		if got := enc(tc.c, tc.loc); got != tc.want {
+			t.Errorf("%+v: %s, want %s", tc.c, got, tc.want)
+		}
+	}
+}
