@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1212,8 +1213,14 @@ func (n *Node) SetClockTrusted(ok bool) {
 	n.trusted = ok
 }
 
+// downCopies is how many times GoingDown sends its announcement.
+const downCopies = 3
+
 // GoingDown announces a planned shutdown: every heartbeat from now on says
-// so, and one goes out at once.
+// so, and it goes out at once, three times, to the multicast group and by
+// unicast to every peer whose address the node knows, so one lost packet
+// does not turn the planned reboot into an unexpected one (D18). Then
+// everything the node keeps on flash is written (flushAllLocked).
 func (n *Node) GoingDown() {
 	n.mu.Lock()
 	if !n.running() {
@@ -1223,10 +1230,37 @@ func (n *Node) GoingDown() {
 	n.goingDown = true
 	now := n.stamp()
 	n.announcedLocked(now)
-	n.beatLocked(now)
+	for range downCopies {
+		n.announceDownLocked(now)
+	}
+	_ = n.flushAllLocked(now)
 	out := n.takeOut()
 	n.mu.Unlock()
 	n.send(out)
+}
+
+// announceDownLocked queues one announcement of the shutdown: a heartbeat
+// to the multicast group, and one to every peer address the node knows.
+func (n *Node) announceDownLocked(now clock.Stamp) {
+	if p, err := n.heartbeat(now); err == nil {
+		n.out = append(n.out, outPacket{multicast: true, b: p})
+	}
+	seen := map[netip.AddrPort]bool{}
+	addrs := slices.Clone(n.cfg.Peers)
+	for _, m := range n.cur().Members {
+		if p := n.peers[m.ID]; p != nil && p.addr.IsValid() && m.ID != n.id.ID {
+			addrs = append(addrs, p.addr)
+		}
+	}
+	for _, a := range addrs {
+		if seen[a] {
+			continue
+		}
+		seen[a] = true
+		if p, err := n.heartbeat(now); err == nil {
+			n.out = append(n.out, outPacket{to: a, b: p})
+		}
+	}
 }
 
 // LocalEvent records an event this router saw itself: an interface going

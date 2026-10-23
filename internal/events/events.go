@@ -71,6 +71,7 @@ type Event struct {
 	Witness ids.MemberID      // the member that saw it and stamped it
 	At      clock.Stamp       // when, on the witness's clocks
 	Since   clock.Stamp       // on a member's own account of its return: when its absence began (see Own)
+	Back    ids.BootID        // on a return: the boot its subject came back in; zero when unknown
 	Ref     ids.Hash          // the hash of the history entry that records it
 	Detail  map[string]string // what the rendering needs (versions, probe target); not interpreted here
 }

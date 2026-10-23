@@ -152,7 +152,10 @@ func roleOf(e Event) role {
 //     records of that member's absence (a silence, a return, their guess at
 //     its cause) whose stamp lies within the span, widened by window on
 //     each side, join the own account's incident wherever it is, however
-//     far they are from its other events: one absence, one incident. An own
+//     far they are from its other events: one absence, one incident. So does
+//     another member's guess at the return that names the boot the own
+//     account came back in (Event.Back), with or without a start, whenever
+//     the guesser heard it. An own
 //     account of a kind rule (d) shares also joins, beyond the window, an
 //     incident of that one kind, about other members, that holds own
 //     accounts with spans, when every one of those spans and its own cover
@@ -227,11 +230,12 @@ func Coalesce(evs []Event, window time.Duration) []Incident {
 	return out
 }
 
-// links returns, for each item, the index of the own account with a span
-// whose absence it records (rule (e)), or -1: an absence of the account's
-// subject, reported by another member, stamped within the span widened by
-// window. Of several such accounts it takes the earliest. A negative window
-// links nothing.
+// links returns, for each item, the index of the own account whose absence
+// it records (rule (e)), or -1: an absence of the account's subject,
+// reported by another member, stamped within the account's span widened by
+// window, or a guess at its return that names the boot the account came
+// back in (sameReturn). Of several such accounts it takes the earliest. A
+// negative window links nothing.
 func links(items []item, window time.Duration) []int {
 	link := make([]int, len(items))
 	for i := range link {
@@ -245,10 +249,11 @@ func links(items []item, window time.Duration) []int {
 			continue
 		}
 		for j, u := range items {
-			if !u.span || u.ev.Subject != it.ev.Subject {
+			if !Own(u.ev) || u.ev.Subject != it.ev.Subject {
 				continue
 			}
-			if it.at.Before(u.from.Add(-window)) || it.at.After(u.at.Add(window)) {
+			within := u.span && !it.at.Before(u.from.Add(-window)) && !it.at.After(u.at.Add(window))
+			if !within && !sameReturn(it.ev, u.ev) {
 				continue
 			}
 			link[i] = j
@@ -256,6 +261,17 @@ func links(items []item, window time.Duration) []int {
 		}
 	}
 	return link
+}
+
+// sameReturn reports whether e, another member's guess at a return of
+// own's subject in a new boot, names the boot own came back in: the same
+// return, whenever the guesser heard it.
+func sameReturn(e, own Event) bool {
+	switch e.Type {
+	case RebootUnplanned, RebootPlanned, Upgraded, MemberBack:
+		return e.Back != (ids.BootID{}) && e.Back == own.Back
+	}
+	return false
 }
 
 // item is one event placed on its timeline.

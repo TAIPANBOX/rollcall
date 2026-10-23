@@ -58,6 +58,7 @@ type evRec struct {
 	single   bool         // an incident of its own: a roster announcement
 	origin   ids.MemberID // the history entry it came from; zero for a roster announcement
 	seq      uint64
+	back     ids.BootID // for a return: the boot its subject came back in
 }
 
 type incRec struct {
@@ -77,11 +78,13 @@ type incidents struct {
 	byID       map[string]*incRec
 	ackedIDs   map[string]bool
 	ackPending map[string]bool
-	alarmed    map[string]bool   // alarm incident IDs raised, one per proof
-	witnessed  map[ids.Hash]bool // events this node has stated a view on
-	pending    []pendingAlarm    // falsehood alarms of others, not yet checkable
-	waiting    []pendingUpdate   // updates whose claims have not arrived yet
-	updates    map[ids.Hash]bool // corrections whose update was recorded
+	alarmed    map[string]bool     // alarm incident IDs raised, one per proof
+	witnessed  map[ids.Hash]bool   // events this node has stated a view on
+	pending    []pendingAlarm      // falsehood alarms of others, not yet checkable
+	waiting    []pendingUpdate     // updates whose claims have not arrived yet
+	updates    map[ids.Hash]bool   // corrections whose update was recorded
+	boots      map[ids.BootID]bool // the boots a boot record in the log names
+	ownBacks   map[ids.BootID]bool // the boots a member's own account of its return names
 	loading    bool
 }
 
@@ -95,6 +98,8 @@ func (c *incidents) init() {
 	c.alarmed = map[string]bool{}
 	c.witnessed = map[ids.Hash]bool{}
 	c.updates = map[ids.Hash]bool{}
+	c.boots = map[ids.BootID]bool{}
+	c.ownBacks = map[ids.BootID]bool{}
 }
 
 // settleAll marks every event held as taken: what was loaded at start is
@@ -112,14 +117,66 @@ func (c *incidents) eventIn(e history.Entry, b EventBody, now clock.Stamp) {
 	if b.At == (At{}) || b.Type == events.UnderFlood || b.Type == events.Fork {
 		return
 	}
-	c.add(e.Hash(), &evRec{ev: eventOf(e, b), seen: now.Mono, origin: e.Origin, seq: e.Seq})
+	ev := eventOf(e, b)
+	if events.Own(ev) && ev.Back != (ids.BootID{}) {
+		if len(c.ownBacks) >= keepEvents {
+			clear(c.ownBacks)
+		}
+		c.ownBacks[ev.Back] = true
+	}
+	c.add(e.Hash(), &evRec{ev: ev, seen: now.Mono, origin: e.Origin, seq: e.Seq, back: b.Back.ID})
+}
+
+// bootIn notes the boot a boot record names.
+func (c *incidents) bootIn(b BootBody) {
+	if len(c.boots) >= keepEvents {
+		clear(c.boots)
+	}
+	c.boots[b.Boot.ID] = true
+}
+
+// guessed are the returns a member guesses from another member's heartbeats
+// when that member came back in a new boot.
+var guessed = []events.Type{events.RebootUnplanned, events.RebootPlanned, events.Upgraded, events.MemberBack}
+
+// ownWait bounds how long a guessed return waits for its subject's own
+// account: the subject writes it once its own chain is caught up, at the
+// latest ownCatchUp after its start.
+const ownWait = ownCatchUp + settle
+
+// toldByOwnLocked reports whether r is another member's guess at a return
+// whose own account, which names the same boot, is already in an incident
+// (D18): the account told it, and the guess would tell it again, maybe as
+// another kind.
+func (n *Node) toldByOwnLocked(r *evRec) bool {
+	e := r.ev
+	if r.back == (ids.BootID{}) || e.Witness == e.Subject || !slices.Contains(guessed, e.Type) || !n.inc.ownBacks[r.back] {
+		return false
+	}
+	for _, o := range n.inc.evs {
+		if o.assigned && events.Own(o.ev) && o.ev.Subject == e.Subject && o.ev.Back == r.back {
+			return true
+		}
+	}
+	return false
+}
+
+// awaitsOwnLocked reports whether r is another member's guess at the return
+// of a member in a new boot whose boot record is not in the log yet: the
+// member's own account follows that record, tells how its boot before
+// ended (planned or not, the shutdown marker), and the incident waits for
+// it, so the account wins over the guess (D18).
+func (n *Node) awaitsOwnLocked(r *evRec, now clock.Stamp) bool {
+	e := r.ev
+	return !r.single && r.back != (ids.BootID{}) && e.Witness != e.Subject && slices.Contains(guessed, e.Type) &&
+		!n.inc.boots[r.back] && now.Mono-r.seen < ownWait
 }
 
 // eventOf returns the event the entry e with body b records. A start
 // (Since) counts only on an entry whose origin is its subject: a member
 // says when its own absence began, never another's.
 func eventOf(e history.Entry, b EventBody) events.Event {
-	ev := events.Event{Type: b.Type, Subject: b.Subject, Witness: e.Origin, At: b.At.Stamp(), Ref: e.Hash(), Detail: b.Detail}
+	ev := events.Event{Type: b.Type, Subject: b.Subject, Witness: e.Origin, At: b.At.Stamp(), Back: b.Back.ID, Ref: e.Hash(), Detail: b.Detail}
 	if e.Origin == b.Subject && b.Since != (At{}) {
 		ev.Since = b.Since.Stamp()
 	}
@@ -285,6 +342,9 @@ func (n *Node) incidentsLocked(now clock.Stamp) {
 			r.assigned = true
 		case !r.single && now.Mono-r.seen >= settle && n.cutOffViewLocked(r.ev):
 			r.assigned = true
+		case !r.single && n.toldByOwnLocked(r):
+			// A guess at a return the member's own account told already.
+			r.assigned = true
 		case r.single:
 			r.assigned = true
 			incs := events.Coalesce([]events.Event{r.ev}, events.DefaultWindow)
@@ -305,7 +365,7 @@ func (n *Node) incidentsLocked(now clock.Stamp) {
 		ready := true
 		for _, ref := range inc.Refs {
 			r := n.inc.evs[ref]
-			if r == nil || now.Mono-r.seen < settle {
+			if r == nil || now.Mono-r.seen < settle || n.awaitsOwnLocked(r, now) {
 				ready = false
 				break
 			}

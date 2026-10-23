@@ -200,6 +200,12 @@ func (n *Node) appendLocked(e history.Entry, now clock.Stamp) bool {
 
 // entryIn handles an entry the log accepted.
 func (n *Node) entryIn(e history.Entry, now clock.Stamp) {
+	if e.Kind == history.KindBoot {
+		if b, err := DecodeBoot(e); err == nil {
+			n.inc.bootIn(b)
+		}
+		return
+	}
 	if e.Kind == history.KindWitness {
 		if w, err := history.DecodeWitness(e); err == nil && e.Origin == n.id.ID {
 			n.inc.witnessed[w.Ref] = true

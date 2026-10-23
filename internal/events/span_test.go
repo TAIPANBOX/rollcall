@@ -282,3 +282,26 @@ func coveredEarlier(evs []Event, u, e Event) bool {
 	}
 	return false
 }
+
+// TestGuessJoinsOwnAccountOfItsBoot: another member's guess at a member's
+// return that names the boot the member came back in joins the member's own
+// account of that return, however far apart their stamps are (the guesser
+// heard it only after a partition healed), so the account is what is told.
+// A guess that names another boot stays apart.
+func TestGuessJoinsOwnAccountOfItsBoot(t *testing.T) {
+	a := newRouter(0x0a)
+	f := &fixture{}
+	mine := f.own(RebootPlanned, a, -time.Minute, 0, true)
+	mine.Back = a.boot
+	guess := f.ev(RebootUnplanned, a.id, ap3, 40*time.Second)
+	guess.Back = a.boot
+	inc := one(t, []Event{mine, guess})
+	if !slices.Equal(inc.Events, []Type{RebootPlanned}) {
+		t.Fatalf("Events %v; want the member's own [reboot_planned]", inc.Events)
+	}
+	other := guess
+	other.Back = boot(0x77)
+	if incs := Coalesce([]Event{mine, other}, DefaultWindow); len(incs) != 2 {
+		t.Fatalf("%d incidents, want 2: a guess about another boot is another absence:\n%s", len(incs), dump(incs))
+	}
+}
