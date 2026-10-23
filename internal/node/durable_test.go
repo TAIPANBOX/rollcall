@@ -60,3 +60,32 @@ func stateOf(st Status, name string) string {
 	}
 	return ""
 }
+
+// TestCorrectionsThenUpdates (D6): one reconciliation corrects two absences
+// and the first changes what was told. Its update is signed after every
+// correction Reconcile chained, not between them, so the router never signs
+// two entries at one sequence number of its own chain.
+func TestCorrectionsThenUpdates(t *testing.T) {
+	g := newGroup(t, setup{n: 4, running: []bool{true, true, true, false}, senders: map[int]int{0: 1}})
+	g.run(40 * sec)
+	g.stop(2)
+	g.run(40 * sec)
+	g.reboot(2)
+	g.run(40 * sec)
+	c, liar := g.ids[2].ID, g.ids[3]
+	now := AtOf(g.clk.stampNow())
+	b1, b2 := Boot{ID: bootN(2, 1), Seq: 1}, Boot{ID: bootN(2, 2), Seq: 2}
+	inject(g.nodes[0], forge(t, liar, history.Head{},
+		EventBody{Subject: c, Type: events.RebootUnplanned, Last: b1, Back: b1, At: shift(now, -20*sec)},
+		EventBody{Subject: c, Type: events.RebootPlanned, Last: b2, Back: b2, At: shift(now, -10*sec)},
+	)...)
+	g.run(time.Minute)
+	for i, n := range g.nodes[:3] {
+		if fs := with(n, func() []history.ForkProof { return n.log.Forks() }); len(fs) != 0 {
+			t.Fatalf("r%02d holds a fork proof against r%02d's own chain at seq %d", i+1, 3, fs[0].A.Seq)
+		}
+	}
+	if us := updateEvents(g.nodes[2]); len(us) != 2 {
+		t.Fatalf("r03 recorded %d updates, want one per corrected absence", len(us))
+	}
+}

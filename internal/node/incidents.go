@@ -283,6 +283,8 @@ func (n *Node) incidentsLocked(now clock.Stamp) {
 			// between the routers that saw its different faces, and is left
 			// out (witness.go).
 			r.assigned = true
+		case !r.single && now.Mono-r.seen >= settle && n.cutOffViewLocked(r.ev):
+			r.assigned = true
 		case r.single:
 			r.assigned = true
 			incs := events.Coalesce([]events.Event{r.ev}, events.DefaultWindow)
@@ -329,6 +331,57 @@ func (n *Node) incidentsLocked(now clock.Stamp) {
 		}
 		n.queueLocked(inc, evs, nil, now)
 	}
+}
+
+// cutOffViewLocked reports whether e, a member's record of another member's
+// absence, is only what a router that was cut off itself saw (D9): a third
+// member recorded the witness silent over the moment of e, and no member but
+// the witness and the subject recorded the subject absent then. A router
+// that loses its own link sees every other member go silent and come back;
+// the others, who heard each other all along, recorded its absence, which is
+// the one incident. In a group of two nobody is a third, and both views stay.
+func (n *Node) cutOffViewLocked(e events.Event) bool {
+	w, x := e.Witness, e.Subject
+	if !absence(e.Type) || events.Own(e) || w == x || x == (ids.MemberID{}) {
+		return false
+	}
+	win := events.DefaultWindow
+	at := e.At.Wall
+	// The witness's absence as each third member saw it: from its silence
+	// record to its next return record, if any.
+	var from, to time.Time
+	cut := false
+	for _, f := range n.inc.evs {
+		g := f.ev
+		if g.Subject != w || g.Witness == w || g.Witness == x || g.Type != events.MemberSilent || g.At.Wall.After(at.Add(win)) {
+			continue
+		}
+		end := time.Time{}
+		for _, h := range n.inc.evs {
+			b := h.ev
+			if b.Subject == w && b.Witness == g.Witness && b.Type != events.MemberSilent && absence(b.Type) &&
+				!b.At.Wall.Before(g.At.Wall) && (end.IsZero() || b.At.Wall.Before(end)) {
+				end = b.At.Wall
+			}
+		}
+		if end.IsZero() || !end.Before(at.Add(-win)) {
+			cut, from, to = true, g.At.Wall, end
+			break
+		}
+	}
+	if !cut {
+		return false
+	}
+	for _, f := range n.inc.evs {
+		g := f.ev
+		if g.Subject != x || g.Witness == w || g.Witness == x || !absence(g.Type) {
+			continue
+		}
+		if !g.At.Wall.Before(from.Add(-win)) && (to.IsZero() || !g.At.Wall.After(to.Add(win))) {
+			return false // a third member saw the subject absent too
+		}
+	}
+	return true
 }
 
 // distrustedLocked returns, for every member whose chain forked in the log,

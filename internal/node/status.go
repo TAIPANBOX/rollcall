@@ -25,8 +25,10 @@ import (
 // marked "update" in its Detail, which every member makes into the same
 // incident of its own, so the chat gets one update; a correction that
 // changes nothing told records none, and neither does one whose class this
-// router's own record of the absence already told (boot.go). A claim proven
-// false raises one alarm (witness.go). Nobody is expelled.
+// router's own record of the absence already told (boot.go), nor one of a
+// link loss that only silence claims missed, which the claimants' own record
+// of its return tells (toldByReturnLocked). A claim proven false raises one
+// alarm (witness.go). Nobody is expelled.
 
 type recon struct {
 	claims     []history.Entry
@@ -59,6 +61,10 @@ func (n *Node) reconcileLocked(now clock.Stamp) {
 	if err != nil {
 		return
 	}
+	// Reconcile chained every correction after the head: all of them are
+	// appended before any update is signed, or an update would take the
+	// sequence number of a correction still to come and fork the own chain.
+	var done []Correction
 	for _, c := range res.Corrections {
 		ok := len(c.Entries) > 0
 		for _, e := range c.Entries {
@@ -67,9 +73,16 @@ func (n *Node) reconcileLocked(now clock.Stamp) {
 				break
 			}
 		}
-		if ok && c.Update && !n.inc.updates[c.Entries[0].Hash()] {
+		if !ok {
+			n.rec.dirty = true // the rest is chained after what failed: next time
+			break
+		}
+		done = append(done, c)
+	}
+	for _, c := range done {
+		if c.Update && !n.inc.updates[c.Entries[0].Hash()] {
 			n.inc.updates[c.Entries[0].Hash()] = true
-			if !n.toldOwnLocked(c) {
+			if !n.toldOwnLocked(c) && !n.toldByReturnLocked(c) {
 				n.updateLocked(c, now)
 			}
 		}
@@ -77,6 +90,35 @@ func (n *Node) reconcileLocked(now clock.Stamp) {
 	for _, f := range res.Falsehoods {
 		n.falsehoodLocked(f, now)
 	}
+}
+
+// toldByReturnLocked reports whether the absence a correction places is
+// told right without an update (D1): a link loss whose corrected claims say
+// only that this router went silent or answered again. Their authors
+// record its return in the same boot as a link loss when they hear it again,
+// and the group's message tells that, with the whole span; an update would
+// tell it a second time, from the moment of the claim.
+func (n *Node) toldByReturnLocked(c Correction) bool {
+	if c.Class != history.ClassLinkLost {
+		return false
+	}
+	refs := map[ids.Hash]bool{}
+	for _, e := range c.Entries {
+		if b, err := history.DecodeCorrection(e); err == nil {
+			for _, r := range b.Refs {
+				refs[r] = true
+			}
+		}
+	}
+	for _, cl := range n.rec.claims {
+		if !refs[cl.Hash()] {
+			continue
+		}
+		if b, err := DecodeEvent(cl); err != nil || !causeless(b.Type) {
+			return false
+		}
+	}
+	return true
 }
 
 // updateLocked records the update a correction that changed the incident's
