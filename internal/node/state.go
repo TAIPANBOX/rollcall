@@ -201,11 +201,6 @@ func (n *Node) restorePeerLocked(s peerState) {
 	p.heardWall, p.restored, p.toldSilent = s.Heard, true, s.Silent
 }
 
-// deliveredLocked reports whether incident id was acknowledged.
-func (n *Node) deliveredLocked(id string) bool {
-	return n.inc.ackedIDs[id]
-}
-
 // openAbsenceLocked reports whether the newest record of an absence of x in
 // the log, by any member, is a silence not followed by its end: the
 // absence was already told before this start.

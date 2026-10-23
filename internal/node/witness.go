@@ -45,8 +45,13 @@ import (
 // A fork proof (two entries of one origin at one seq) and a proven falsehood
 // (Reconcile: another member's claim that this node's signed chain
 // contradicts) each raise one alarm incident naming the suspicious member,
-// whose ID is fixed by the proof alone, so every member that raises it
-// raises the same incident and the group sends it once. The node also
+// whose ID is fixed by the forked member alone for a fork (members may find
+// different proofs of one equivocation) and by the proof for a falsehood,
+// so every member that raises it raises the same incident and the group
+// sends it once. Once a member is proven suspicious, its events are left
+// out of the incidents still to be made (incidentsLocked): routers that saw
+// its different faces hold different events of it, and would otherwise
+// make different incidents of one cause. The node also
 // records the alarm in its own chain, as an event of type fork whose Detail
 // names the proof ("proof": "fork" or "falsehood", "a" and "b" the entry
 // hashes, "a_seq" and "b_seq" their positions). A member that reads such an
@@ -154,6 +159,15 @@ func (n *Node) confirmations(evs []events.Event) (confirmed, of int) {
 	return len(agree), len(n.cur().Members) - 1
 }
 
+// forkAlarmID is the incident ID of the alarm about a fork of origin o's
+// chain: one per forked member, whichever proof a member found.
+func forkAlarmID(o ids.MemberID) string {
+	h := sha256.New()
+	h.Write([]byte("rollcall/v1 alarm\x00fork\x00"))
+	h.Write(o[:])
+	return hex.EncodeToString(h.Sum(nil)[:8])
+}
+
 // alarmID is the incident ID of the alarm about one proof: fixed by the
 // proof's kind and its two entry hashes, in either order.
 func alarmID(kind string, a, b ids.Hash) string {
@@ -189,15 +203,19 @@ func (n *Node) forkLocked(p history.ForkProof, now clock.Stamp) {
 		return
 	}
 	if len(n.log.Forks()) > n.forksSaved {
-		// On flash at once: a proof lost in a power cut may never be found
-		// again (D7). A failed write is retried by the next flush.
+		// On flash at once, with the forked chain up to the proof, so that
+		// a restart restores the proof in the log and the node can show it
+		// to a peer that checks its alarm: a proof lost in a power cut may
+		// never be found again (D7). A failed write is retried by the next
+		// flush.
+		_ = n.writeChainLocked(o)
 		_ = n.writeForksLocked()
 	}
 	if o == n.id.ID {
 		return
 	}
 	at := n.localStamp(now)
-	if !n.raiseLocked(alarmID("fork", p.A.Hash(), p.B.Hash()), o, at, now) {
+	if !n.raiseLocked(forkAlarmID(o), o, at, now) {
 		return
 	}
 	n.recordEvent(events.Event{Type: events.Fork, Subject: o, At: at, Detail: map[string]string{
@@ -244,14 +262,17 @@ func (n *Node) alarmIn(e history.Entry, b EventBody, now clock.Stamp) {
 	if e.Origin == n.id.ID {
 		// The node's own record, read back after a restart: the alarm is
 		// raised again, and queued unless it was acknowledged (D7).
-		if p := b.Detail["proof"]; p == "fork" || p == "falsehood" {
-			n.raiseLocked(alarmID(p, a, h), b.Subject, b.At.Stamp(), now)
+		switch b.Detail["proof"] {
+		case "fork":
+			n.raiseLocked(forkAlarmID(b.Subject), b.Subject, b.At.Stamp(), now)
+		case "falsehood":
+			n.raiseLocked(alarmID("falsehood", a, h), b.Subject, b.At.Stamp(), now)
 		}
 		return
 	}
 	switch b.Detail["proof"] {
 	case "fork":
-		if n.inc.alarmed[alarmID("fork", a, h)] {
+		if n.inc.alarmed[forkAlarmID(b.Subject)] {
 			return
 		}
 		seq, err := strconv.ParseUint(b.Detail["a_seq"], 10, 64)

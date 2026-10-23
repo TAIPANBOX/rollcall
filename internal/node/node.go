@@ -220,6 +220,7 @@ type Node struct {
 	inc  incidents
 	rec  recon
 	join joinWindow
+	turn senderTurn
 }
 
 // peer is what the node knows of another member.
@@ -1173,6 +1174,7 @@ func (n *Node) beatLocked(now clock.Stamp) {
 	p, err := n.heartbeat(now)
 	if err == nil {
 		n.out = append(n.out, outPacket{multicast: true, b: p})
+		n.announceTurnLocked(now)
 	}
 	for _, a := range n.cfg.Peers {
 		if p, err := n.heartbeat(now); err == nil {
@@ -1268,6 +1270,7 @@ func (n *Node) deliver() {
 	}
 	now := n.stamp()
 	sender, _ := n.senderLocked(now)
+	sender = n.turnLocked(sender, now)
 	own := n.hasChannel()
 	ch := n.ch
 	ping := own && now.Mono >= n.nextPing

@@ -52,7 +52,10 @@ func TestAlarmSurvivesRestart(t *testing.T) {
 		t.Fatalf("the fork proof is not on flash once found: %v", err)
 	}
 	g.stop(0)
-	g.reboot(0)
+	a = g.reboot(0)
+	if fs := with(a, func() []history.ForkProof { return a.log.Forks() }); len(fs) != 1 {
+		t.Fatalf("after the restart r01 holds %d fork proofs, want the one it found: a peer that asks cannot check its alarm", len(fs))
+	}
 	g.chat.setDown(false)
 	g.run(time.Minute)
 	t.Logf("chat:\n%s", strings.Join(g.chat.all(), "\n"))

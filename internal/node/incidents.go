@@ -274,9 +274,14 @@ func (n *Node) droppedLocked(base roster.Roster, ours []roster.Signed, oursR []r
 // incidentsLocked turns settled events into incidents and queues them.
 func (n *Node) incidentsLocked(now clock.Stamp) {
 	var list []events.Event
+	distrusted := n.distrustedLocked()
 	for _, r := range n.inc.evs {
 		switch {
 		case r.assigned:
+		case !r.single && distrusted[r.ev.Witness]:
+			// Proven to show different histories: its word is left out
+			// (witness.go).
+			r.assigned = true
 		case r.single:
 			r.assigned = true
 			incs := events.Coalesce([]events.Event{r.ev}, events.DefaultWindow)
@@ -320,6 +325,20 @@ func (n *Node) incidentsLocked(now clock.Stamp) {
 	}
 }
 
+// distrustedLocked returns the members proven suspicious: a fork of their
+// chain in the log, or an alarm this node raised about them.
+func (n *Node) distrustedLocked() map[ids.MemberID]bool {
+	out := map[ids.MemberID]bool{}
+	for _, p := range n.log.Forks() {
+		out[p.A.Origin] = true
+	}
+	for id := range n.rec.suspicious {
+		out[id] = true
+	}
+	delete(out, n.id.ID)
+	return out
+}
+
 // queueLocked keeps inc and queues it for delivery.
 func (n *Node) queueLocked(inc events.Incident, evs []events.Event, components []string, now clock.Stamp) {
 	r := &incRec{inc: inc, events: evs, components: components, queuedAt: now.Wall}
@@ -332,10 +351,98 @@ func (n *Node) queueLocked(inc events.Incident, evs []events.Event, components [
 		n.inc.recent = slices.Clone(n.inc.recent[over:])
 	}
 	n.inc.byID[inc.ID] = r
-	if !n.inc.ackedIDs[inc.ID] {
+	if !n.deliveredLocked(inc.ID) {
 		n.queue.Add(inc, now.Wall)
 	}
 	n.flusher.Mark()
+}
+
+// deliveredLocked reports whether incident id was acknowledged: its own ID,
+// or, for a return merged with the silence it ends, the return's (another
+// member told the return alone, and the merged incident would tell it
+// again).
+func (n *Node) deliveredLocked(id string) bool {
+	if n.inc.ackedIDs[id] {
+		return true
+	}
+	r := n.inc.byID[id]
+	return r != nil && len(r.components) > 1 && n.inc.ackedIDs[r.components[len(r.components)-1]]
+}
+
+// ackedLocked takes the acknowledgement of incident id by member by, and
+// with it that of every merged incident whose return id is.
+func (n *Node) ackedLocked(id string, by ids.MemberID) {
+	n.queue.Ack(id, by)
+	n.inc.acked(id)
+	for _, r := range n.inc.recent {
+		if c := r.components; len(c) > 1 && c[len(c)-1] == id && !n.inc.ackedIDs[r.inc.ID] {
+			n.queue.Ack(r.inc.ID, by)
+			n.inc.acked(r.inc.ID)
+		}
+	}
+}
+
+// # Whose turn it is to send (D2)
+//
+// Every member elects the sender from its own view (elect.Sender), and two
+// members whose views differ can both take themselves for it: after an
+// outage both reach Telegram again within a heartbeat, or the sender of
+// higher priority comes back while another sends. So a member that becomes
+// the sender in its own view sends nothing until its peers have heard it
+// can: until a heartbeat with its fresh Telegram call has gone out, and one
+// heartbeat interval after it, in which every peer answers with its own
+// state and a peer that outranks it takes the turn. When another member is
+// eligible meanwhile (it may have been sending), the wait after that
+// heartbeat is handover instead: that member stops within a tick of hearing
+// it, and the wait keeps the two members' messages the delivery grace apart
+// and lets the other's acknowledgements arrive.
+
+// handover is the wait after the announcing heartbeat when another member
+// may have been sending.
+const handover = deliver.Grace + 2*time.Second
+
+// senderTurn is this node's turn as the sender.
+type senderTurn struct {
+	on        bool          // the node is the sender in its own view
+	announced bool          // a heartbeat with its fresh Telegram call went out since
+	at        time.Duration // when it went out
+	handover  bool          // another member was eligible meanwhile
+}
+
+// turnLocked returns the sender the queue is to act on: sender, unless it
+// is this node and its turn has not begun yet, as the doc above says.
+func (n *Node) turnLocked(sender ids.MemberID, now clock.Stamp) ids.MemberID {
+	if sender != n.id.ID {
+		n.turn = senderTurn{}
+		return sender
+	}
+	t := &n.turn
+	t.on = true
+	if _, other := elect.Sender(n.othersLocked(), now.Wall); other {
+		t.handover = true
+	}
+	wait := n.cfg.Heartbeat
+	if t.handover {
+		wait = handover
+	}
+	if !t.announced || now.Mono < t.at+wait {
+		return ids.MemberID{}
+	}
+	return sender
+}
+
+// announceTurnLocked notes a heartbeat that tells the peers this node can
+// send: it is the sender in its own view and its last Telegram call is
+// fresh.
+func (n *Node) announceTurnLocked(now clock.Stamp) {
+	if t := &n.turn; t.on && !t.announced && !n.telegramOK.IsZero() && now.Wall.Sub(n.telegramOK) <= elect.Window {
+		t.announced, t.at = true, now.Mono
+	}
+}
+
+// othersLocked returns the election's view of the other members.
+func (n *Node) othersLocked() []elect.View {
+	return slices.DeleteFunc(n.views(), func(v elect.View) bool { return v.ID == n.id.ID })
 }
 
 // returns are the types that end a member's absence.

@@ -210,8 +210,7 @@ func (n *Node) entryIn(e history.Entry, now clock.Stamp) {
 		return
 	}
 	if id, by, ok := deliver.AckOf(e); ok {
-		n.queue.Ack(id, by)
-		n.inc.acked(id)
+		n.ackedLocked(id, by)
 		return
 	}
 	if d, ok := decodeDropped(e); ok {
@@ -244,22 +243,27 @@ func (n *Node) writeHistory() error {
 			delete(n.dirty, o)
 			continue
 		}
-		es := n.log.Range(o, 1, n.log.Head(o).Seq)
-		b, err := json.Marshal(es)
-		if err == nil {
-			err = n.st.WriteFileAtomic(filePrefix+o.String()+".json", b)
-		}
-		if err != nil {
+		if err := n.writeChainLocked(o); err != nil {
 			errs = append(errs, err)
-			continue
 		}
-		delete(n.dirty, o)
 	}
 	if len(n.log.Forks()) > 0 {
 		errs = append(errs, n.writeForksLocked())
 	}
 	errs = append(errs, n.writeStateLocked())
 	return errors.Join(errs...)
+}
+
+// writeChainLocked writes origin o's chain as the log holds it.
+func (n *Node) writeChainLocked(o ids.MemberID) error {
+	b, err := json.Marshal(n.log.Range(o, 1, n.log.Head(o).Seq))
+	if err == nil {
+		err = n.st.WriteFileAtomic(filePrefix+o.String()+".json", b)
+	}
+	if err == nil {
+		delete(n.dirty, o)
+	}
+	return err
 }
 
 // writeForksLocked writes the fork proofs the log holds.
