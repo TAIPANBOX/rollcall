@@ -53,6 +53,12 @@ const (
 	// boot that told its peers it was going down. It lives on flash, in the
 	// state directory, so that it survives the reboot it announces.
 	fileShutdown = "shutdown.json"
+	// transientFor bounds how long a daemon without a working node looks
+	// again at state it is not allowed to read. rollcall init writes the
+	// state as root and gives it to the rollcall user only afterwards
+	// (cmd/rollcall handOver), so a poll can land in between; a permission
+	// error that lasts longer is not that, and is left in the status.
+	transientFor = time.Minute
 )
 
 // Options are what the daemon runs with.
@@ -104,6 +110,13 @@ type Daemon struct {
 	binding  context.CancelFunc
 	switched bool // the default route moved to another interface in this run
 	trusted  bool // ntpd reported a synchronised clock in this boot
+
+	// unreadable is set while the last build failed for lack of permission
+	// to read the state, since the moment in unreadableSince; gaveUp once
+	// that lasted transientFor.
+	unreadable      bool
+	unreadableSince time.Duration
+	gaveUp          bool
 
 	// secMu orders the changes of the secrets: set-token and the end of a
 	// binding.
@@ -182,8 +195,12 @@ func (d *Daemon) Step() {
 }
 
 // waitingLocked reports whether there is no working node only because
-// init or join has not run yet.
+// init or join has not run yet, or has not yet given its files to the
+// rollcall user (for at most transientFor).
 func (d *Daemon) waitingLocked() bool {
+	if d.unreadable && !d.gaveUp {
+		return true
+	}
 	if d.nd == nil {
 		return errors.Is(d.ndErr, fs.ErrNotExist)
 	}
@@ -197,6 +214,7 @@ func (d *Daemon) buildLocked() {
 		id, err := identity.Load(d.o.StateDir)
 		if err != nil {
 			d.ndErr = err
+			d.unreadableLocked(err)
 			return
 		}
 		d.id = id
@@ -218,6 +236,7 @@ func (d *Daemon) buildLocked() {
 	}
 	nd, err := node.New(cfg, d.st, d.id, d.o.Net, d.o.Clock, d.channelFor(d.token, d.chatID))
 	d.nd, d.ndErr, d.ran = nd, err, err == nil
+	d.unreadableLocked(err)
 	if err == nil {
 		d.planned = false
 		nd.SetClockTrusted(d.trusted)
@@ -225,6 +244,25 @@ func (d *Daemon) buildLocked() {
 	}
 	if !d.waitingLocked() {
 		d.o.Logf("rollcalld: the node does not run: %v", err)
+	}
+}
+
+// unreadableLocked follows how long the state has been unreadable for lack
+// of permission; err is what the last build returned. It logs the first
+// such error and the moment the daemon stops looking again.
+func (d *Daemon) unreadableLocked(err error) {
+	if !errors.Is(err, fs.ErrPermission) {
+		d.unreadable, d.gaveUp = false, false
+		return
+	}
+	now := d.o.Clock.Mono()
+	switch {
+	case !d.unreadable:
+		d.unreadable, d.unreadableSince, d.gaveUp = true, now, false
+		d.o.Logf("rollcalld: the state cannot be read yet, looking again for up to %s (init may still be handing it over): %v", transientFor, err)
+	case !d.gaveUp && now-d.unreadableSince >= transientFor:
+		d.gaveUp = true
+		d.o.Logf("rollcalld: the state could not be read for %s; looking no more until rollcalld restarts: %v", transientFor, err)
 	}
 }
 

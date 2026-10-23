@@ -932,6 +932,109 @@ func TestStatusDiscoveryAndTopology(t *testing.T) {
 	}
 }
 
+// TestUnreadableStateIsWaitedFor: init writes the state as root and gives it
+// to the rollcall user only afterwards (cmd/rollcall handOver), so a poll can
+// land on an identity or a roster the daemon may not read yet. The daemon
+// keeps looking and starts the node once the files can be read.
+func TestUnreadableStateIsWaitedFor(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a file whatever its mode")
+	}
+	for _, file := range []string{"identity.json", node.FileRoster} {
+		t.Run(file, func(t *testing.T) {
+			f := newFixture(t, false, false)
+			path := filepath.Join(f.dir, file)
+			if err := os.Chmod(path, 0); err != nil {
+				t.Fatal(err)
+			}
+			h := start(t, f.dir, nil)
+			h.run(pollEvery + time.Second)
+			if st := h.status(); st["initialised"] != false {
+				t.Fatalf("a node from a file it cannot read: %v", st)
+			}
+			if err := os.Chmod(path, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			h.run(pollEvery + time.Second)
+			if st := h.status(); st["initialised"] != true {
+				t.Fatalf("the node did not start once %s could be read: %v", file, st)
+			}
+		})
+	}
+}
+
+// TestUnreadableStateIsBounded: a permission error that lasts past
+// transientFor is not init handing its files over: the daemon logs once
+// that it looks again and once that it stopped, looks no more, and the
+// status keeps the reason.
+func TestUnreadableStateIsBounded(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a file whatever its mode")
+	}
+	f := newFixture(t, false, false)
+	path := filepath.Join(f.dir, "identity.json")
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var logs []string
+	h := start(t, f.dir, func(o *Options) {
+		o.Logf = func(format string, args ...any) {
+			mu.Lock()
+			defer mu.Unlock()
+			logs = append(logs, fmt.Sprintf(format, args...))
+		}
+	})
+	h.run(transientFor + 2*pollEvery)
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.run(2 * pollEvery)
+	st := h.status()
+	if st["initialised"] != false || !strings.Contains(fmt.Sprint(st["error"]), "permission denied") {
+		t.Fatalf("after a permission error that lasted: %v", st)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	var again, stopped int
+	for _, l := range logs {
+		again += strings.Count(l, "looking again")
+		stopped += strings.Count(l, "looking no more")
+	}
+	if again != 1 || stopped != 1 {
+		t.Fatalf("%d lines say it looks again and %d that it stopped, want 1 and 1: %q", again, stopped, logs)
+	}
+}
+
+// TestCorruptStateIsNotWaitedFor: only a permission error is waited for; an
+// identity that is there but corrupt is reported at once, never retried.
+func TestCorruptStateIsNotWaitedFor(t *testing.T) {
+	f := newFixture(t, false, false)
+	if err := os.WriteFile(filepath.Join(f.dir, "identity.json"), []byte("{\"version\":1}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var logs []string
+	h := start(t, f.dir, func(o *Options) {
+		o.Logf = func(format string, args ...any) {
+			mu.Lock()
+			defer mu.Unlock()
+			logs = append(logs, fmt.Sprintf(format, args...))
+		}
+	})
+	h.run(3 * pollEvery)
+	if st := h.status(); st["initialised"] != false || !strings.Contains(fmt.Sprint(st["error"]), "corrupt") {
+		t.Fatalf("a corrupt identity: %v", st)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, l := range logs {
+		if strings.Contains(l, "looking again") {
+			t.Fatalf("a corrupt identity is waited for: %q", l)
+		}
+	}
+}
+
 // TestStatusUnderFlood: a burst of packets that fail authentication shows in
 // the status report as under_flood (security spec 5.2: local status only),
 // and the flag clears once the burst has been over for a while.
