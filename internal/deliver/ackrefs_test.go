@@ -32,6 +32,9 @@ func TestAckRefsRoundTrip(t *testing.T) {
 	if AckRefs(history.Entry{Origin: a, Kind: history.KindEvent, Body: short}) != nil {
 		t.Fatal("AckRefs of the short form is not nil")
 	}
+	if AckRefs(history.Entry{Origin: a, Kind: history.KindWitness, Body: body}) != nil {
+		t.Fatal("AckRefs of an entry that is not an event is not nil")
+	}
 	many := make([]ids.Hash, MaxAckRefs+1)
 	for i := range many {
 		many[i] = ids.Hash{byte(i + 1)}

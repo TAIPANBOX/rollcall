@@ -1,6 +1,7 @@
 package deliver
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -97,6 +98,23 @@ func TestOverflowNotToldWithoutDrop(t *testing.T) {
 	}
 	if _, sent := ch.count(); len(sent) != 1 || strings.Contains(sent[0], "dropped") {
 		t.Fatalf("sent %q, want the oldest incident and no notice", sent)
+	}
+}
+
+// TestOverflowNoticeRetried (Q1): a notice the channel refused is not lost:
+// the next attempt sends it, before any incident.
+func TestOverflowNoticeRetried(t *testing.T) {
+	q := NewQueue()
+	ch := &fakeChannel{errs: []error{errors.New("connection reset")}}
+	fill(t, q, 1, t0)
+	if _, err := q.Deliver(t.Context(), ch, a, a, t0, renderAll); err == nil {
+		t.Fatal("the first attempt did not fail: the case did not happen")
+	}
+	if _, err := q.Deliver(t.Context(), ch, a, a, t0.Add(2*Spacing), renderAll); err != nil {
+		t.Fatal(err)
+	}
+	if _, sent := ch.count(); len(sent) != 1 || !strings.HasPrefix(sent[0], "Home: incidents were dropped") {
+		t.Fatalf("sent %q after the failed notice, want the notice", sent)
 	}
 }
 
