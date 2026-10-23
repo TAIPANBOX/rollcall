@@ -1185,9 +1185,11 @@ func (n *Node) tickLocked(now clock.Stamp) {
 		p := n.peer(e.Subject)
 		p.silent, p.suspect = true, false
 		n.flusher.Mark()
-		if p.restored && !p.heard && (p.toldSilent || n.openAbsenceLocked(e.Subject)) {
-			// Away since before this start, and its absence was recorded
-			// then: not again from this start (D14).
+		if !p.heard && (p.toldSilent || n.openAbsenceLocked(e.Subject)) {
+			// Not heard since this start, and its absence was recorded
+			// before it: not again from this start (D14). The history
+			// answers also for a peer the state file does not name, which
+			// it was last written before this node first heard.
 			p.toldSilent = true
 			continue
 		}

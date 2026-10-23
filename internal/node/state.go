@@ -52,8 +52,11 @@ import (
 // A peer known from the file is not heard until its next heartbeat. When it
 // comes back from an absence the node had already seen begin, its return is
 // classified against the boot and version the file names, not told as a
-// bare "answered again", and a silence the node or another member already
-// recorded is not recorded again from the node's start (D14).
+// bare "answered again". A silence the node or another member already
+// recorded is not recorded again from the node's start (D14), whether or
+// not the file names the peer: the history says whether its absence is
+// open (openAbsenceLocked), and the file, written at most once a minute,
+// may predate the node's first hearing of it.
 
 const (
 	fileState    = "state.json"
