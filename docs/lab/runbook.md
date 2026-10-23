@@ -20,7 +20,7 @@ Every router command goes through `lab_ssh <router> '<command>'`. It is Tailscal
 cd ~/Development/rollcall
 RUN="$HOME/rollcall-lab/$(date +%Y%m%d-%H%M)"
 mkdir -p "$RUN"
-lab_ssh() { h=$1; shift; ${LAB_SSH:-tailscale ssh} "root@$h" "$@"; }
+lab_ssh() { h=$1; shift; sh -c "${LAB_SSH:-tailscale ssh}"' "$0" "$@"' "root@$h" "$@"; }
 for h in flint2 beryl1 beryl2; do
   echo "== $h"
   lab_ssh $h 'grep -E "DISTRIB_(RELEASE|ARCH)" /etc/openwrt_release'
