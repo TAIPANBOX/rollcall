@@ -62,6 +62,7 @@ type evRec struct {
 	origin   ids.MemberID // the history entry it came from; zero for a roster announcement
 	seq      uint64
 	back     ids.BootID // for a return: the boot its subject came back in
+	last     ids.BootID // the boot its subject was last heard in (or left), when known
 }
 
 type incRec struct {
@@ -147,7 +148,7 @@ func (c *incidents) eventIn(e history.Entry, b EventBody, now clock.Stamp) {
 		}
 		c.ownBacks[ev.Back] = true
 	}
-	c.add(e.Hash(), &evRec{ev: ev, seen: now.Mono, origin: e.Origin, seq: e.Seq, back: b.Back.ID})
+	c.add(e.Hash(), &evRec{ev: ev, seen: now.Mono, origin: e.Origin, seq: e.Seq, back: b.Back.ID, last: b.Last.ID})
 }
 
 // bootIn notes the boot a boot record names.
@@ -182,6 +183,67 @@ func (n *Node) toldByOwnLocked(r *evRec) bool {
 		}
 	}
 	return false
+}
+
+// inToldSpanLocked reports whether r is another member's record of a
+// member's silence that came after the member's own account of that absence
+// was taken into an incident: the silence names the boot the account says
+// the member left (or names none), and is stamped within the absence the
+// account spans, from its Since, less the coalescing window, to its At.
+// Rule (e) of Coalesce would have joined it there, and the chat was told
+// that absence (Q4: a router back from its own restart records a silence
+// from its start, or a record held up by the network arrives after the
+// incident was made). A silence that names the boot the member came back
+// in, or is stamped after the account, is a new absence. An account of a
+// forked origin, left out of the incidents, absorbs nothing.
+func (n *Node) inToldSpanLocked(r *evRec, distrusted map[ids.MemberID]uint64) bool {
+	e := r.ev
+	if e.Type != events.MemberSilent || e.Subject == (ids.MemberID{}) || e.Witness == e.Subject {
+		return false
+	}
+	at := e.At.Wall
+	for _, o := range n.inc.evs {
+		a := o.ev
+		if !o.assigned || !events.Own(a) || a.Subject != e.Subject || a.Since == (clock.Stamp{}) ||
+			(r.last != (ids.BootID{}) && r.last != o.last) ||
+			(distrusted[o.origin] > 0 && o.seq >= distrusted[o.origin]) {
+			continue
+		}
+		if !at.Before(a.Since.Wall.Add(-events.DefaultWindow)) && !at.After(a.At.Wall) {
+			return true
+		}
+	}
+	return false
+}
+
+// ownAccountOf returns x's own account of its return in evs that gives the
+// start of its absence (Since), if any.
+func ownAccountOf(evs []events.Event, x string) (events.Event, bool) {
+	for _, e := range evs {
+		if events.Own(e) && e.Subject.String() == x && e.Since != (clock.Stamp{}) {
+			return e, true
+		}
+	}
+	return events.Event{}, false
+}
+
+// withinOwnSpanLocked reports whether evs are silences of own's member that
+// own's absence spans, as inToldSpanLocked judges one.
+func (n *Node) withinOwnSpanLocked(evs []events.Event, own events.Event) bool {
+	left := ids.BootID{}
+	if o := n.inc.evs[own.Ref]; o != nil {
+		left = o.last
+	}
+	for _, e := range evs {
+		at := e.At.Wall
+		if e.Type != events.MemberSilent || at.Before(own.Since.Wall.Add(-events.DefaultWindow)) || at.After(own.At.Wall) {
+			return false
+		}
+		if r := n.inc.evs[e.Ref]; r != nil && r.last != (ids.BootID{}) && left != (ids.BootID{}) && r.last != left {
+			return false
+		}
+	}
+	return len(evs) > 0
 }
 
 // awaitsOwnLocked reports whether r is another member's guess at the return
@@ -368,6 +430,9 @@ func (n *Node) incidentsLocked(now clock.Stamp) {
 			r.assigned = true
 		case !r.single && n.toldByOwnLocked(r):
 			// A guess at a return the member's own account told already.
+			r.assigned = true
+		case !r.single && n.inToldSpanLocked(r, distrusted):
+			// A late silence inside an absence the member's own account told.
 			r.assigned = true
 		case r.single:
 			r.assigned = true
@@ -823,6 +888,21 @@ func (n *Node) pairLocked(inc events.Incident, evs []events.Event) (events.Incid
 		match = func(r *incRec) bool {
 			return r.inc.Causes == 1 && r.inc.Members[0] == x && has(r.inc, events.MemberSilent) &&
 				!slices.ContainsFunc(returns, func(t events.Type) bool { return has(r.inc, t) })
+		}
+	case inc.Causes == 1 && slices.ContainsFunc(returns, func(t events.Type) bool { return has(inc, t) }):
+		// The incident tells a whole absence, a silence and a return. A
+		// silence kept on its own is that same absence only when the
+		// member's own account here spans it (Q4): it then goes out once,
+		// in this incident, not again on its own.
+		x := inc.Members[0]
+		own, ok := ownAccountOf(evs, x)
+		if !ok {
+			return events.Incident{}, nil, nil, false
+		}
+		match = func(r *incRec) bool {
+			return r.inc.Causes == 1 && r.inc.Members[0] == x && has(r.inc, events.MemberSilent) &&
+				!slices.ContainsFunc(returns, func(t events.Type) bool { return has(r.inc, t) }) &&
+				n.withinOwnSpanLocked(r.events, own)
 		}
 	case inc.Causes == 0 && has(inc, events.InternetRestored) && !has(inc, events.InternetLost):
 		match = func(r *incRec) bool {
