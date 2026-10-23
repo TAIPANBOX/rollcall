@@ -15,6 +15,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"maps"
 	"net"
 	"net/netip"
 	"os"
@@ -49,14 +50,7 @@ const (
 	ControlSocketPath = "/var/run/rollcall/control.sock"
 )
 
-const (
-	// listenRetry and listenFor bound the wait for the peer-zone addresses at
-	// boot: an IPv6 address is not bindable until duplicate address detection
-	// ends, and ListenPeers binds all or nothing.
-	listenRetry = 5 * time.Second
-	listenFor   = 2 * time.Minute
-	tickEvery   = time.Second
-)
+const tickEvery = time.Second
 
 func main() {
 	var f flags
@@ -123,18 +117,22 @@ func run(ctx context.Context, f flags) error {
 		}
 		return false
 	}
-	tr, err := listen(ctx, cfg.Port, devices, auth)
+	tr, err := openPeers(cfg.Port, devices, auth)
 	if err != nil {
 		return err
 	}
 	log.Printf("rollcalld %s: listening on port %d on %s; SO_BINDTODEVICE applied: %v",
 		version, cfg.Port, strings.Join(devices, ", "), tr.BoundToDevice())
+	devs := tr.Devices()
+	for _, line := range deviceNotes(nil, devs) {
+		log.Print(line)
+	}
 
 	dd, err := daemon.New(daemon.Options{
 		StateDir: f.state, Config: cfg, Devices: devices, Net: tr, Clock: daemon.SystemClock("/"),
 		Boot: boot, Versions: [2]string{release, version},
 		TelegramURL: channel.TelegramBaseURL, HTTP: channel.GuardedClient([]string{"api.telegram.org"}),
-		Discovery: func() map[string]error { return transport.Discovery(devices) },
+		Discovery: func() map[string]error { return discoveryWith(transport.Discovery(devices), tr.Devices()) },
 		Sandbox:   func() node.SandboxStatus { s, _ := daemon.ReadSandbox("/"); return s },
 		Addrs:     func() []netip.Addr { return deviceAddrs(devices) },
 	})
@@ -155,7 +153,7 @@ func run(ctx context.Context, f flags) error {
 		}
 	})
 	wg.Go(func() {
-		if err := control.Serve(ctx, f.control, dd.Handle, control.WithSecrets(dd.Secrets)); err != nil {
+		if err := control.Serve(ctx, f.control, refreshOnIface(dd.Handle, tr.Refresh), control.WithSecrets(dd.Secrets)); err != nil {
 			errs <- err
 		}
 	})
@@ -173,6 +171,11 @@ loop:
 			break loop
 		case <-t.C:
 			dd.Step()
+			now := tr.Devices()
+			for _, line := range deviceNotes(devs, now) {
+				log.Print(line)
+			}
+			devs = now
 		}
 	}
 	cancel()
@@ -217,28 +220,80 @@ func sandboxGate(root string) error {
 	return nil
 }
 
-// listen binds the peer-zone sockets, retrying while the addresses are not
-// bindable yet.
-func listen(ctx context.Context, port int, devices []string, auth func([]byte) bool) (*transport.Transport, error) {
+// openPeers opens the transport on the devices of the peer zones. It binds
+// what they carry now and follows them from then on: a device that does not
+// exist yet (wg0 not up), an address still in duplicate address detection, or
+// one that failed it, is reported in status and the log and tried again on
+// every pass, and stops none of the others.
+func openPeers(port int, devices []string, auth func([]byte) bool) (*transport.Transport, error) {
 	if len(devices) == 0 {
 		return nil, errors.New("the peer zones have no network devices")
 	}
-	deadline := time.Now().Add(listenFor)
-	for {
-		tr, err := transport.ListenPeers(port, devices, auth)
-		if err == nil {
-			return tr, nil
+	tr, err := transport.Open(port, devices, auth)
+	if err != nil {
+		return nil, fmt.Errorf("listening on the peer zones: %w", err)
+	}
+	return tr, nil
+}
+
+// refreshOnIface passes each control command to h; after an interface event
+// from hotplug (rollcall notify iface ...) it also asks the transport for a
+// pass over the peer-zone devices, so an address that came or went, or a
+// device netifd recreated, is bound again at once.
+func refreshOnIface(h control.Handler, refresh func()) control.Handler {
+	return func(cmd string, args []string, uid uint32) ([]byte, error) {
+		out, err := h(cmd, args, uid)
+		if cmd == "notify" && len(args) > 0 && args[0] == "iface" {
+			refresh()
 		}
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("listening on the peer zones: %w", err)
-		}
-		log.Printf("rollcalld: listening on the peer zones failed, retrying in %s: %v", listenRetry, err)
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(listenRetry):
+		return out, err
+	}
+}
+
+// discoveryWith adds to disc, the discovery state of each device, what the
+// transport could not bind there, so status shows a peer-zone device that is
+// not listened on. A device whose lookup already failed keeps that one error.
+func discoveryWith(disc map[string]error, devs map[string]transport.DeviceStatus) map[string]error {
+	for name, st := range devs {
+		switch cur := disc[name]; {
+		case st.Err == nil:
+		case cur == nil:
+			disc[name] = st.Err
+		case errors.Is(cur, transport.ErrNoLinkLocal):
+			disc[name] = errors.Join(cur, st.Err)
 		}
 	}
+	return disc
+}
+
+// deviceNotes are the log lines for what changed on the peer-zone devices
+// since prev: one when a device cannot be listened on (or fully), and one
+// when it is listened on again.
+func deviceNotes(prev, cur map[string]transport.DeviceStatus) []string {
+	var out []string
+	for _, name := range slices.Sorted(maps.Keys(cur)) {
+		was, now := errText(prev[name].Err), errText(cur[name].Err)
+		if was == now && prev != nil {
+			continue
+		}
+		if now != "" {
+			out = append(out, fmt.Sprintf("rollcalld: %s: %s; tried again every %s and on each interface event", name, now, transport.ReconcileEvery))
+			continue
+		}
+		var addrs []string
+		for _, a := range cur[name].Addrs {
+			addrs = append(addrs, a.String())
+		}
+		out = append(out, fmt.Sprintf("rollcalld: %s: listening on %s", name, strings.Join(addrs, ", ")))
+	}
+	return out
+}
+
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return strings.ReplaceAll(err.Error(), "\n", "; ")
 }
 
 // watchHost runs the internet probe and the default-route watch.

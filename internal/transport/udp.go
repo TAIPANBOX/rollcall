@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 )
 
 // MaxDatagram is the largest UDP payload in bytes. A received datagram above it
@@ -25,6 +26,7 @@ type endpoint struct {
 	ifindex   int  // the kernel's index of iface when the socket was bound
 	group     bool // bound to the discovery group: receives multicast
 	linkLocal bool // IPv6 link-local unicast: multicast leaves from here
+	pinned    bool // SO_BINDTODEVICE was accepted
 }
 
 // Multicast sends b to ff02::114 on each interface that has an IPv6 link-local
@@ -37,7 +39,7 @@ func (t *Transport) Multicast(b []byte) error {
 	var errs []error
 	sent := 0
 	seen := make(map[string]bool)
-	for _, ep := range t.endpoints {
+	for _, ep := range t.unicastEndpoints() {
 		if !ep.linkLocal || seen[ep.iface] {
 			continue
 		}
@@ -73,11 +75,17 @@ func (t *Transport) Unicast(to netip.AddrPort, b []byte) error {
 	return err
 }
 
-// unicastEndpoints is the list sender picks from.
-func (t *Transport) unicastEndpoints() []*endpoint { return t.endpoints }
+// unicastEndpoints is a copy of the UDP sockets held now, for a send. A
+// socket a pass closes after the copy fails that one send.
+func (t *Transport) unicastEndpoints() []*endpoint {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return slices.Clone(t.endpoints)
+}
 
-// readLoop passes each datagram to onPacket. A datagram larger than MaxDatagram
-// is dropped whole; the buffer is one byte longer than the limit, so a larger
+// readLoop passes each datagram to onPacket until ep is closed, by Close or
+// by a pass that no longer wants it. A datagram larger than MaxDatagram is
+// dropped whole; the buffer is one byte longer than the limit, so a larger
 // datagram shows up as one.
 func (t *Transport) readLoop(ep *endpoint, onPacket func(netip.AddrPort, []byte)) {
 	defer t.wg.Done()
@@ -85,7 +93,7 @@ func (t *Transport) readLoop(ep *endpoint, onPacket func(netip.AddrPort, []byte)
 	for {
 		n, from, err := ep.conn.ReadFromUDPAddrPort(buf)
 		if err != nil {
-			if !t.pause() {
+			if errors.Is(err, net.ErrClosed) || !t.pause() {
 				return
 			}
 			continue

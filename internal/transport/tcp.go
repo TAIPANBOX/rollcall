@@ -44,14 +44,15 @@ func (t *Transport) Stream(to netip.AddrPort, b []byte) ([]byte, error) {
 	return readFrame(c)
 }
 
-// acceptLoop accepts connections on ln until the transport closes. A connection
-// past the MaxConns limit is closed at once.
+// acceptLoop accepts connections on ln until ln is closed, by Close or by a
+// pass that no longer wants it. A connection past the MaxConns limit is
+// closed at once.
 func (t *Transport) acceptLoop(ln *net.TCPListener, onStream func(netip.AddrPort, []byte) []byte) {
 	defer t.wg.Done()
 	for {
 		c, err := ln.AcceptTCP()
 		if err != nil {
-			if !t.pause() {
+			if errors.Is(err, net.ErrClosed) || !t.pause() {
 				return
 			}
 			continue

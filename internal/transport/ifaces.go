@@ -21,13 +21,25 @@ var ErrNoLinkLocal = errors.New("no IPv6 link-local address")
 // interface without a link-local address.
 var ifaceAddrs = func(ifi *net.Interface) ([]net.Addr, error) { return ifi.Addrs() }
 
+// lookupIface finds a device by name. Tests replace it.
+var lookupIface = net.InterfaceByName
+
+// joinGroupFn and multicastIfFn set the group membership and the outgoing
+// multicast interface of a socket. Tests replace them.
+var (
+	joinGroupFn   = joinGroup
+	multicastIfFn = func(fd, ifindex int) error {
+		return syscall.SetsockoptInt(fd, syscall.IPPROTO_IPV6, syscall.IPV6_MULTICAST_IF, ifindex)
+	}
+)
+
 // Discovery reports, for each interface, whether discovery can run there: nil,
 // or ErrNoLinkLocal. An interface that cannot be looked up reports that error.
 // Static peers do not depend on this result.
 func Discovery(ifaces []string) map[string]error {
 	out := make(map[string]error, len(ifaces))
 	for _, name := range ifaces {
-		ifi, err := net.InterfaceByName(name)
+		ifi, err := lookupIface(name)
 		if err != nil {
 			out[name] = err
 			continue
@@ -89,79 +101,183 @@ func unicastAddrs(raw []net.Addr) []netip.Addr {
 	return out
 }
 
-// listenIface binds the sockets of one interface. It gets a UDP socket and a
-// TCP listener on each unicast address, and when it has an IPv6 link-local
-// address, a group socket joined to ff02::114.
-func (t *Transport) listenIface(name string) error {
-	ifi, err := net.InterfaceByName(name)
-	if err != nil {
-		return fmt.Errorf("transport: interface %s: %w", name, err)
-	}
-	raw, err := ifaceAddrs(ifi)
-	if err != nil {
-		return fmt.Errorf("transport: interface %s: %w", name, err)
-	}
-	addrs := unicastAddrs(raw)
-	for _, a := range addrs {
-		if err := t.listenUnicast(ifi, a); err != nil {
-			return err
-		}
-	}
-	if _, ok := linkLocalOf(addrs); ok {
-		return t.listenGroup(ifi)
-	}
-	return nil
+// sockKey names one socket the transport wants: an address of a device as
+// the kernel indexes it now. A device recreated under a new index, or an
+// address that left, no longer matches the key of its old socket.
+type sockKey struct {
+	iface   string
+	ifindex int
+	addr    netip.Addr // with the zone for link-local; the group for a group socket
+	group   bool
 }
 
-// listenUnicast binds a UDP socket and a TCP listener on addr, which belongs
-// to ifi. A link-local address gets the interface as its zone.
-func (t *Transport) listenUnicast(ifi *net.Interface, addr netip.Addr) error {
-	if isLinkLocal(addr) {
-		addr = addr.WithZone(ifi.Name)
+func (ep *endpoint) key() sockKey {
+	return sockKey{iface: ep.iface, ifindex: ep.ifindex, addr: ep.addr, group: ep.group}
+}
+
+// listener is one TCP listener, beside the UDP socket of the same key.
+type listener struct {
+	ln     *net.TCPListener
+	key    sockKey
+	pinned bool
+}
+
+// scan reads what the configured devices carry now: the sockets wanted, in
+// order, and each device's index or the reason it has none. It reads the
+// kernel and holds no lock.
+func (t *Transport) scan() ([]sockKey, map[string]DeviceStatus) {
+	var want []sockKey
+	devs := make(map[string]DeviceStatus, len(t.devices))
+	for _, name := range t.devices {
+		ifi, err := lookupIface(name)
+		if err != nil {
+			devs[name] = DeviceStatus{Err: fmt.Errorf("transport: interface %s: %w", name, err)}
+			continue
+		}
+		raw, err := ifaceAddrs(ifi)
+		if err != nil {
+			devs[name] = DeviceStatus{Index: ifi.Index, Err: fmt.Errorf("transport: interface %s: %w", name, err)}
+			continue
+		}
+		addrs := unicastAddrs(raw)
+		st := DeviceStatus{Index: ifi.Index}
+		if len(addrs) == 0 {
+			st.Err = fmt.Errorf("transport: interface %s: %w", name, errNoAddress)
+		}
+		devs[name] = st
+		for _, a := range addrs {
+			if isLinkLocal(a) {
+				a = a.WithZone(ifi.Name)
+			}
+			want = append(want, sockKey{iface: ifi.Name, ifindex: ifi.Index, addr: a})
+		}
+		if _, ok := linkLocalOf(addrs); ok {
+			want = append(want, sockKey{iface: ifi.Name, ifindex: ifi.Index, addr: group.WithZone(ifi.Name), group: true})
+		}
 	}
+	return want, devs
+}
+
+// reconcile is one pass over the devices: it closes the sockets no device
+// wants any more (the address left, or the device was recreated under a new
+// index) and binds the wanted ones it does not hold. A bind that fails is
+// recorded in the device's status and tried again on the next pass.
+func (t *Transport) reconcile() {
+	want, devs := t.scan()
+	wanted := make(map[sockKey]bool, len(want))
+	for _, k := range want {
+		wanted[k] = true
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed {
+		return
+	}
+	held := make(map[sockKey]bool)
+	var eps []*endpoint
+	for _, ep := range t.endpoints {
+		if wanted[ep.key()] {
+			eps = append(eps, ep)
+			held[ep.key()] = true
+			continue
+		}
+		ep.conn.Close()
+	}
+	var lns []*listener
+	for _, l := range t.listeners {
+		if wanted[l.key] {
+			lns = append(lns, l)
+			continue
+		}
+		l.ln.Close()
+	}
+	t.endpoints, t.listeners = eps, lns
+
+	failed := make(map[string][]error)
+	for _, k := range want {
+		if held[k] {
+			continue
+		}
+		var err error
+		if k.group {
+			err = t.bindGroupLocked(k)
+		} else {
+			err = t.bindUnicastLocked(k)
+		}
+		if err != nil {
+			failed[k.iface] = append(failed[k.iface], err)
+		}
+	}
+
+	for name, st := range devs {
+		if errs := failed[name]; len(errs) > 0 {
+			st.Err = errors.Join(append([]error{st.Err}, errs...)...)
+		}
+		for _, ep := range t.endpoints {
+			if ep.iface != name || ep.ifindex != st.Index {
+				continue
+			}
+			if ep.group {
+				st.Group = true
+			} else {
+				st.Addrs = append(st.Addrs, ep.addr)
+			}
+		}
+		devs[name] = st
+	}
+	t.devs = devs
+}
+
+// bindUnicastLocked binds a UDP socket and a TCP listener on k.addr, pinned to
+// k.iface, and starts their loops once Serve runs. t.mu is held.
+func (t *Transport) bindUnicastLocked(k sockKey) error {
 	network, tcpNetwork := "udp4", "tcp4"
-	if addr.Is6() {
+	if k.addr.Is6() {
 		network, tcpNetwork = "udp6", "tcp6"
 	}
-	ap := netip.AddrPortFrom(addr, uint16(t.port))
-	ll := isLinkLocal(addr)
+	ap := netip.AddrPortFrom(k.addr, uint16(t.port))
+	ll := isLinkLocal(k.addr)
 
 	// A link-local socket is where multicast leaves from, so its outgoing
 	// interface is pinned as well.
-	plan := &bindPlan{iface: ifi.Name, ifindex: ifi.Index, txIface: ll}
+	plan := &bindPlan{iface: k.iface, ifindex: k.ifindex, txIface: ll}
 	lc := net.ListenConfig{Control: plan.control}
 	pc, err := lc.ListenPacket(context.Background(), network, ap.String())
 	if err != nil {
-		return fmt.Errorf("transport: listen %s on %s: %w", ap, ifi.Name, err)
+		return fmt.Errorf("transport: listen %s on %s: %w", ap, k.iface, err)
 	}
-	t.noteBind(plan.pinned)
-	t.endpoints = append(t.endpoints, &endpoint{conn: pc.(*net.UDPConn), addr: addr, iface: ifi.Name, ifindex: ifi.Index, linkLocal: ll})
-
-	tplan := &bindPlan{iface: ifi.Name, ifindex: ifi.Index}
+	tplan := &bindPlan{iface: k.iface, ifindex: k.ifindex}
 	tl := net.ListenConfig{Control: tplan.control}
 	ln, err := tl.Listen(context.Background(), tcpNetwork, ap.String())
 	if err != nil {
-		return fmt.Errorf("transport: listen tcp %s on %s: %w", ap, ifi.Name, err)
+		pc.Close()
+		return fmt.Errorf("transport: listen tcp %s on %s: %w", ap, k.iface, err)
 	}
-	t.noteBind(tplan.pinned)
-	t.listeners = append(t.listeners, ln.(*net.TCPListener))
+	ep := &endpoint{conn: pc.(*net.UDPConn), addr: k.addr, iface: k.iface, ifindex: k.ifindex, linkLocal: ll, pinned: plan.pinned}
+	l := &listener{ln: ln.(*net.TCPListener), key: k, pinned: tplan.pinned}
+	t.endpoints = append(t.endpoints, ep)
+	t.listeners = append(t.listeners, l)
+	t.startReadLocked(ep)
+	t.startAcceptLocked(l)
 	return nil
 }
 
-// listenGroup binds the discovery group on ifi and joins it there. The socket
-// shares the port with the other interfaces' group sockets (SO_REUSEADDR), and
-// receives only what arrives on the interfaces it joined.
-func (t *Transport) listenGroup(ifi *net.Interface) error {
-	g := group.WithZone(ifi.Name)
-	plan := &bindPlan{iface: ifi.Name, ifindex: ifi.Index, join: true, reuse: true}
+// bindGroupLocked binds the discovery group on k.iface and joins it on
+// k.ifindex. The socket shares the port with the other interfaces' group
+// sockets (SO_REUSEADDR), and receives only what arrives on the interfaces it
+// joined. t.mu is held.
+func (t *Transport) bindGroupLocked(k sockKey) error {
+	plan := &bindPlan{iface: k.iface, ifindex: k.ifindex, join: true, reuse: true}
 	lc := net.ListenConfig{Control: plan.control}
-	ap := netip.AddrPortFrom(g, uint16(t.port))
+	ap := netip.AddrPortFrom(k.addr, uint16(t.port))
 	pc, err := lc.ListenPacket(context.Background(), "udp6", ap.String())
 	if err != nil {
-		return fmt.Errorf("transport: join %s on %s: %w", group, ifi.Name, err)
+		return fmt.Errorf("transport: join %s on %s: %w", group, k.iface, err)
 	}
-	t.noteBind(plan.pinned)
-	t.endpoints = append(t.endpoints, &endpoint{conn: pc.(*net.UDPConn), addr: g, iface: ifi.Name, ifindex: ifi.Index, group: true})
+	ep := &endpoint{conn: pc.(*net.UDPConn), addr: k.addr, iface: k.iface, ifindex: k.ifindex, group: true, pinned: plan.pinned}
+	t.endpoints = append(t.endpoints, ep)
+	t.startReadLocked(ep)
 	return nil
 }
 
@@ -170,7 +286,7 @@ func (t *Transport) listenGroup(ifi *net.Interface) error {
 type bindPlan struct {
 	iface   string
 	ifindex int
-	join    bool // join the discovery group on iface
+	join    bool // join the discovery group on ifindex
 	reuse   bool // SO_REUSEADDR, so one group socket per interface can share the port
 	txIface bool // pin the outgoing multicast interface
 	pinned  bool // result: SO_BINDTODEVICE was accepted
@@ -184,10 +300,10 @@ func (p *bindPlan) control(_, _ string, c syscall.RawConn) error {
 			opErr = syscall.SetsockoptInt(sock, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
 		}
 		if opErr == nil && p.join {
-			opErr = joinGroup(sock, p.ifindex)
+			opErr = joinGroupFn(sock, p.ifindex)
 		}
 		if opErr == nil && p.txIface {
-			opErr = syscall.SetsockoptInt(sock, syscall.IPPROTO_IPV6, syscall.IPV6_MULTICAST_IF, p.ifindex)
+			opErr = multicastIfFn(sock, p.ifindex)
 		}
 		if opErr == nil {
 			p.pinned, opErr = bindToDevice(fd, p.iface)
