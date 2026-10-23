@@ -325,8 +325,17 @@ boot sequences raise a `duplicate_identity` alert.
   So a compromised backup cannot take over while the primary is alive and reachable.
   A takeover is provisional: if the former primary comes back, it restores itself as
   primary with the next roster version (announced in the chat), unless the owner has
-  confirmed the takeover as root on the backup or has used the recovery code. A
-  backup cannot keep the role by cutting the primary off for ten minutes.
+  confirmed the takeover or has used the recovery code. A confirmation made as root on
+  the backup takes effect only after a day: a member accepts it only when it has itself
+  heard nothing from the replaced primary for at least 24 hours, so a primary that
+  returns within that day still restores itself and the pending confirmation lapses.
+  The backup holds a confirmation made earlier and announces it once its own day of
+  silence has passed. A backup therefore cannot keep the role by cutting the primary
+  off for ten minutes: it would have to cut it off from every member for a whole day
+  while the takeover stands announced in the chat. The recovery code confirms at once.
+  @decided 2026-10-23: a confirmation by root on the backup waits for a day of silence
+  from the replaced primary; a confirmation that needs the recovery code was weighed and
+  not chosen, because it adds an owner step and puts the recovery code to routine use.
 - **Conflicts.** If the network splits and both sides change the roster, after healing
   the branch whose latest roster was signed with the higher authority wins: recovery
   key, then primary, then backup, judged against the last roster both sides shared.
