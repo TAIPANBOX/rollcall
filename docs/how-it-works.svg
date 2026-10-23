@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="470" viewBox="0 0 1280 470" role="img" aria-label="How it works: heartbeats over the LAN, a signed roster and a signed history on every router, the same rule on every router chooses the sender, and the sender delivers one message per incident">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0a0e16"/><stop offset="1" stop-color="#0d1117"/></linearGradient>
+  <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#4493f8"/></linearGradient>
+  <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#161b22" stroke-width="1"/></pattern>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#4493f8"/></marker>
+</defs>
+<rect width="1280" height="470" fill="url(#bg)"/><rect width="1280" height="470" fill="url(#grid)" opacity="0.5"/>
+<rect width="1280" height="4" fill="url(#accent)"/>
+<style>@keyframes flow{to{stroke-dashoffset:-24}}.flow{stroke-dasharray:8 4;animation:flow 1.2s linear infinite}@media (prefers-reduced-motion:reduce){.flow{animation:none}}</style>
+<text x="48" y="58" font-family="ui-sans-serif,system-ui,sans-serif" font-size="26" fill="#e6edf3" font-weight="600">How it works</text>
+<text x="48" y="84" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#69788b">Every router runs the same daemon. There is no server and no vote; each router works the answer out from what it holds.</text>
+
+<rect x="48" y="116" width="266" height="220" rx="10" fill="#0f1520" stroke="#30363d"/>
+<rect x="48" y="116" width="4" height="220" rx="2" fill="#2dd4bf"/>
+<text x="70" y="150" font-family="ui-sans-serif,system-ui,sans-serif" font-size="17" fill="#e6edf3" font-weight="600">1  Heartbeats</text>
+<text x="70" y="186" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">every 5 s, UDP 7432</text>
+<text x="70" y="208" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">encrypted, group key</text>
+<text x="70" y="230" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">on the peer zones only</text>
+<text x="70" y="252" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">replays dropped</text>
+<text x="70" y="274" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">silent after 30 s</text>
+<text x="70" y="316" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="#3fb950">never shown in the chat</text>
+<path class="flow" d="M318,226 L346,226" stroke="#4493f8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+<rect x="352" y="116" width="266" height="220" rx="10" fill="#0f1520" stroke="#30363d"/>
+<rect x="352" y="116" width="4" height="220" rx="2" fill="#2dd4bf"/>
+<text x="374" y="150" font-family="ui-sans-serif,system-ui,sans-serif" font-size="17" fill="#e6edf3" font-weight="600">2  Signed records</text>
+<text x="374" y="186" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">roster: who, which role</text>
+<text x="374" y="208" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">signed by an admin</text>
+<text x="374" y="230" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">history: a signed chain</text>
+<text x="374" y="252" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">per router, copied to all</text>
+<text x="374" y="274" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">a rewrite shows as a fork</text>
+<text x="374" y="316" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="#3fb950">survives the router's loss</text>
+<path class="flow" d="M622,226 L650,226" stroke="#4493f8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+<rect x="656" y="116" width="266" height="220" rx="10" fill="#0f1520" stroke="#30363d"/>
+<rect x="656" y="116" width="4" height="220" rx="2" fill="#2dd4bf"/>
+<text x="678" y="150" font-family="ui-sans-serif,system-ui,sans-serif" font-size="17" fill="#e6edf3" font-weight="600">3  Who sends</text>
+<text x="678" y="186" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">has the sender role</text>
+<text x="678" y="208" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">reaches the internet</text>
+<text x="678" y="230" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">Telegram OK in last 60 s</text>
+<text x="678" y="252" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">of those: the lowest ID</text>
+<text x="678" y="274" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">same rule on every router</text>
+<text x="678" y="316" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="#3fb950">one sender at a time</text>
+<path class="flow" d="M926,226 L954,226" stroke="#4493f8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+<rect x="960" y="116" width="266" height="220" rx="10" fill="#0f1520" stroke="#30363d"/>
+<rect x="960" y="116" width="4" height="220" rx="2" fill="#2dd4bf"/>
+<text x="982" y="150" font-family="ui-sans-serif,system-ui,sans-serif" font-size="17" fill="#e6edf3" font-weight="600">4  Delivery</text>
+<text x="982" y="186" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">one line per incident</text>
+<text x="982" y="208" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">oldest first, then acked</text>
+<text x="982" y="230" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">sender gone: next sends</text>
+<text x="982" y="252" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">no way out: sent later</text>
+<text x="982" y="274" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#9aa7b8">with start, end, length</text>
+<text x="982" y="316" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="#3fb950">plain text, no links</text>
+
+<line x1="48" y1="376" x2="1226" y2="376" stroke="#222b38" stroke-width="1"/>
+<text x="48" y="408" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">Nothing listens on the WAN side. Only routers with the sender role hold the bot token.</text>
+<text x="48" y="432" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">A router that comes back checks what the others recorded about it, and a wrong claim is corrected in its own chain.</text>
+</svg>
