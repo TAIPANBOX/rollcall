@@ -73,8 +73,9 @@ type incRec struct {
 	queuedAt   time.Time
 	// held is set once the sender began holding the incident back for its
 	// end (heldLocked), at heldAt; RAM only.
-	held   bool
-	heldAt time.Duration
+	held    bool
+	heldAt  time.Duration
+	requeue bool // restored, to be queued once its age is judged (state.go)
 }
 
 type incidents struct {
@@ -95,6 +96,7 @@ type incidents struct {
 	ownBacks   map[ids.BootID]bool     // the boots a member's own account of its return names
 	forkSeqs   map[ids.MemberID]uint64 // the lowest sequence number a fork alarm names, per forked member
 	loading    bool
+	restoreBy  time.Duration // when restored incidents are queued without a trusted clock (state.go)
 }
 
 func (c *incidents) init() {
@@ -347,6 +349,7 @@ func (n *Node) droppedLocked(base roster.Roster, ours []roster.Signed, oursR []r
 
 // incidentsLocked turns settled events into incidents and queues them.
 func (n *Node) incidentsLocked(now clock.Stamp) {
+	n.queueRestoredLocked(now)
 	var list []events.Event
 	distrusted := n.distrustedLocked()
 	for _, r := range n.inc.evs {

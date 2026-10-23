@@ -31,11 +31,23 @@ import (
 //
 // At a start, after the history is loaded, an event above the head its
 // origin had in the file, or pending in it, is news again; every other
-// loaded event was taken. Every kept incident not acknowledged is queued
-// again (D19), so an incident held while Telegram or the internet was out
-// survives a restart of its sender, and a return after a restart still
-// pairs with the silence it ends. A kept alarm stays raised. Without the
-// file (the first start) every loaded event counts as taken.
+// loaded event was taken. Every kept incident is kept again, so a return
+// after a restart still pairs with the silence it ends, and one not
+// acknowledged is queued again (D19), so an incident held while Telegram or
+// the internet was out survives a restart of its sender. A kept alarm stays
+// raised. Without the file (the first start) every loaded event counts as
+// taken.
+//
+// An incident is queued again only while it is news (N3): one whose end
+// happened, on a trusted clock, more than maxIncidentAge before now stays
+// kept and is not queued, as incidentsLocked does not queue one made of
+// events that old, so a router that was down for days does not send what
+// it held then. The wall clock at a start is not trusted yet (ntpd has not
+// answered and no peer has been heard), so the age is judged at the first
+// tick on a trusted clock (the node's own, or a trusted peer's offset);
+// without one by restoreJudge after the start the incident is queued, its
+// age unknown. A start already merged with its end (Paired) is not queued:
+// the merged incident tells it.
 //
 // A peer known from the file is not heard until its next heartbeat. When it
 // comes back from an absence the node had already seen begin, its return is
@@ -47,6 +59,11 @@ const (
 	fileState    = "state.json"
 	stateVersion = 1
 	maxStateFile = 1 << 20
+	// restoreJudge bounds the wait for a trusted clock before a restored
+	// incident is queued with its age unknown: ample for ntpd's first answer
+	// on a router whose internet works, which a sender needs anyway, and for
+	// a trusted peer's heartbeat, which teaches the offset at once.
+	restoreJudge = 2 * time.Minute
 )
 
 type stateFile struct {
@@ -143,6 +160,7 @@ func (n *Node) loadStateLocked(now clock.Stamp) {
 		}
 		r.assigned = true
 	}
+	n.inc.restoreBy = now.Mono + restoreJudge
 	for _, s := range f.Recent {
 		n.restoreIncidentLocked(s, now)
 	}
@@ -151,8 +169,8 @@ func (n *Node) loadStateLocked(now clock.Stamp) {
 	}
 }
 
-// restoreIncidentLocked keeps the incident s again, and queues it unless it
-// was acknowledged.
+// restoreIncidentLocked keeps the incident s again; queueRestoredLocked
+// queues it, unless it was acknowledged, merged or is too old.
 func (n *Node) restoreIncidentLocked(s incState, now clock.Stamp) {
 	id := s.Inc.ID
 	if len(id) != 16 || n.inc.byID[id] != nil {
@@ -183,8 +201,30 @@ func (n *Node) restoreIncidentLocked(s incState, now clock.Stamp) {
 			n.rec.suspicious[o] = true
 		}
 	}
-	if !n.deliveredLocked(id) {
-		n.queue.Add(s.Inc, now.Wall)
+	r.requeue = !n.deliveredLocked(id) && !s.Paired
+}
+
+// queueRestoredLocked queues the restored incidents still to be queued,
+// once their age can be judged, as the package doc of this file describes.
+func (n *Node) queueRestoredLocked(now clock.Stamp) {
+	t := n.localStamp(now)
+	for _, r := range n.inc.recent {
+		if !r.requeue {
+			continue
+		}
+		switch {
+		case n.deliveredLocked(r.inc.ID) || r.paired:
+			r.requeue = false
+		case t.Trusted:
+			r.requeue = false
+			if r.inc.End.Trusted && t.Wall.Sub(r.inc.End.Wall) > maxIncidentAge {
+				continue // kept, not news any more
+			}
+			n.queue.Add(r.inc, now.Wall)
+		case now.Mono >= n.inc.restoreBy:
+			r.requeue = false
+			n.queue.Add(r.inc, now.Wall)
+		}
 	}
 }
 
