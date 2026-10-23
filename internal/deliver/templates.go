@@ -17,6 +17,10 @@ import (
 // Telegram counts the 4096 characters it allows in one message.
 const MaxMessage = 4096
 
+// QueueFull is the type of the notice a sender sends when its queue refused
+// incidents (Queue, "A full queue"). It is never an event in the history.
+const QueueFull events.Type = "queue_full"
+
 // The words of every message, kept together so that a translation replaces
 // this block and nothing else. A message is plain text: Telegram gets it
 // without a parse mode, so nothing here is escaped for Markdown or HTML and
@@ -59,6 +63,7 @@ const (
 	wordRoles         = "%s roles changed"
 	wordChanged       = "%s changed"
 	wordBy            = " (by %s)"
+	wordQueueFull     = "incidents were dropped: more than %d were waiting to be sent"
 	wordOther         = "event %s at %s"
 	wordUnknownEvent  = "an unknown event at %s"
 
@@ -134,9 +139,12 @@ type Change struct {
 //
 // It says what happened from the incident's types, Start and End, and names
 // from f. An absence is told from its cause's return: the incident's span runs
-// from Start to End, and its start is known only when the incident holds the
+// from Start to End, and its start is known when the incident holds the
 // MemberSilent (the node pairs a return with the silence before it by merging
-// the two incidents, from Incident.Refs). Link changes are told for the site,
+// the two incidents) or says that Start is when the absence began
+// (Incident.Began, which Coalesce also sets when a cause's own account of its
+// return gives Start from its Since). Otherwise only the return is told.
+// Link changes are told for the site,
 // with the members that saw them. An incident whose times are approximate,
 // or whose span the clocks cannot measure exactly, says so.
 //
@@ -187,7 +195,7 @@ func (m *message) describe(inc events.Incident) (string, []string) {
 		if n := min(max(inc.Causes, 0), len(inc.Members)); n > 0 {
 			who = m.names(inc.Members[:n])
 		}
-		return m.absence(kind, has(inc.Events, events.MemberSilent), who, inc), nil
+		return m.absence(kind, inc.Began || has(inc.Events, events.MemberSilent), who, inc), nil
 	}
 	seen := m.seenBy(inc.Witnesses)
 	at := m.at(inc.Start.Wall)
@@ -228,6 +236,8 @@ func (m *message) describe(inc events.Incident) (string, []string) {
 			return wordUndoneNone, []string{wordUndoneRepeat}
 		}
 		return fmt.Sprintf(wordUndone, changes(m.f.Changes)), []string{wordUndoneRepeat}
+	case QueueFull:
+		return fmt.Sprintf(wordQueueFull, MaxQueued), nil
 	}
 	if plainType(typ) {
 		return fmt.Sprintf(wordOther, typ, at), nil

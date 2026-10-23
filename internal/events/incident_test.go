@@ -848,6 +848,7 @@ func TestIncidentFields(t *testing.T) {
 		ID:          wantID(lost, silent, crash),
 		Start:       ap2.at(0),
 		End:         ap2.at(7 * time.Second),
+		Began:       true, // the silence tells when the absence began
 		Members:     names(gw.id, ap2.id),
 		Causes:      1,
 		Events:      []Type{InternetLost, MemberSilent, RebootUnplanned},

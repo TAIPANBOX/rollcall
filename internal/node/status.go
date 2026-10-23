@@ -264,13 +264,20 @@ type Status struct {
 	// For the CLI's own text and for tests; not part of the JSON contract.
 	State string `json:"-"` // "running", "stopped" or "removed"
 	// UnderFlood is true while a burst of packets that fail authentication
-	// goes on (security spec 5.2); it is local status, never a chat message.
+	// goes on, or while the transport says it drops packets past its read
+	// rate limit (security spec 5.2); it is local status, never a chat
+	// message.
 	UnderFlood bool     `json:"-"`
 	Epoch      uint32   `json:"-"`
 	Version    uint64   `json:"-"`
 	Counters   Counters `json:"-"`
 	Queued     int      `json:"-"`
-	Delivery   string   `json:"-"` // what stops delivery, from the queue
+	Dropped    int      `json:"-"` // incidents the full queue refused (deliver.Status.Dropped)
+	// WitnessesDropped counts the witness statements this router did not
+	// make because their origin's events came faster than witnessEvery
+	// (witness.go).
+	WitnessesDropped uint64 `json:"-"`
+	Delivery         string `json:"-"` // what stops delivery, from the queue
 }
 
 type SelfStatus struct {
@@ -328,11 +335,22 @@ type GroupKeyStatus struct {
 // maxStatusIncidents is the most incidents a report lists.
 const maxStatusIncidents = 20
 
+// floodReporter is a Net that also tells whether it sees a flood of its
+// own: the transport drops packets past its read rate limit before the node
+// sees them (security spec 5.2).
+type floodReporter interface{ UnderFlood() bool }
+
 // Status returns the node's report, redacted.
 func (n *Node) Status() Status {
+	// Asked before the node's lock is taken: the transport takes its own
+	// lock and calls into the node with it held. n.net never changes.
+	netFlood := false
+	if f, ok := n.net.(floodReporter); ok {
+		netFlood = f.UnderFlood()
+	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	s := Status{Schema: 1, Running: true, Discovery: []DiscoveryEntry{}}
+	s := Status{Schema: 1, Running: true, Discovery: []DiscoveryEntry{}, UnderFlood: netFlood}
 	tz := n.cfg.TZ
 	if tz == nil {
 		tz = time.UTC
@@ -375,7 +393,7 @@ func (n *Node) Status() Status {
 	s.Version = cur.Version
 	s.Counters = n.counters
 	s.Counters.Heartbeats = n.table.Counters()
-	s.UnderFlood = n.flood.raised
+	s.UnderFlood = s.UnderFlood || n.flood.raised
 	if self, ok := memberOf(cur, n.id.ID); ok {
 		ss := &SelfStatus{Name: self.Name, Roles: roleNames(self.Roles), Takeover: cur.Takeover && !cur.OwnerConfirmed}
 		if a, ok := authority(cur, n.id.ID); ok {
@@ -428,7 +446,8 @@ func (n *Node) Status() Status {
 		}
 	}
 	qs := n.queue.Status()
-	s.Queued, s.Delivery = qs.Queued, qs.Problem
+	s.Queued, s.Dropped, s.Delivery = qs.Queued, qs.Dropped, qs.Problem
+	s.WitnessesDropped = n.inc.witnessDropped
 	for i := len(n.inc.recent) - 1; i >= 0 && len(s.Incidents) < maxStatusIncidents; i-- {
 		r := n.inc.recent[i]
 		start := r.inc.Start.Wall

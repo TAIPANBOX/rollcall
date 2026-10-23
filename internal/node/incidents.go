@@ -62,6 +62,7 @@ type evRec struct {
 	origin   ids.MemberID // the history entry it came from; zero for a roster announcement
 	seq      uint64
 	back     ids.BootID // for a return: the boot its subject came back in
+	last     ids.BootID // the boot its subject was last heard in (or left), when known
 }
 
 type incRec struct {
@@ -71,6 +72,11 @@ type incRec struct {
 	paired     bool
 	single     bool // an incident of its own: no count of confirmations
 	queuedAt   time.Time
+	// held is set once the sender began holding the incident back for its
+	// end (heldLocked), at heldAt; RAM only.
+	held    bool
+	heldAt  time.Duration
+	requeue bool // restored, to be queued once its age is judged (state.go)
 }
 
 type incidents struct {
@@ -91,7 +97,26 @@ type incidents struct {
 	ownBacks   map[ids.BootID]bool     // the boots a member's own account of its return names
 	forkSeqs   map[ids.MemberID]uint64 // the lowest sequence number a fork alarm names, per forked member
 	loading    bool
+	restoreBy  time.Duration // when restored incidents are queued without a trusted clock (state.go)
+
+	witnessBudget  map[ids.MemberID]*budget // statements left per origin (witness.go)
+	witnessDropped uint64                   // statements not made for lack of budget
+
+	ackNotes   []ackNote // acknowledgements that name what they told, newest last
+	coverDirty bool      // events arrived since the last look for incidents they tell
 }
+
+// ackNote is an acknowledgement of incident id by a member, with the events
+// its message told (deliver.AckRefs).
+type ackNote struct {
+	id   string
+	by   ids.MemberID
+	refs []ids.Hash
+}
+
+// keepAckNotes bounds the acknowledgements with events kept: the incidents
+// kept here (keepIncidents) are what they are compared with.
+const keepAckNotes = 4 * keepIncidents
 
 func (c *incidents) init() {
 	c.evs = map[ids.Hash]*evRec{}
@@ -106,6 +131,7 @@ func (c *incidents) init() {
 	c.boots = map[ids.BootID]bool{}
 	c.ownBacks = map[ids.BootID]bool{}
 	c.forkSeqs = map[ids.MemberID]uint64{}
+	c.witnessBudget = map[ids.MemberID]*budget{}
 }
 
 // forkAt notes that a fork alarm names seq of o's chain.
@@ -131,13 +157,14 @@ func (c *incidents) eventIn(e history.Entry, b EventBody, now clock.Stamp) {
 		return
 	}
 	ev := eventOf(e, b)
+	c.coverDirty = true
 	if events.Own(ev) && ev.Back != (ids.BootID{}) {
 		if len(c.ownBacks) >= keepEvents {
 			clear(c.ownBacks)
 		}
 		c.ownBacks[ev.Back] = true
 	}
-	c.add(e.Hash(), &evRec{ev: ev, seen: now.Mono, origin: e.Origin, seq: e.Seq, back: b.Back.ID})
+	c.add(e.Hash(), &evRec{ev: ev, seen: now.Mono, origin: e.Origin, seq: e.Seq, back: b.Back.ID, last: b.Last.ID})
 }
 
 // bootIn notes the boot a boot record names.
@@ -172,6 +199,67 @@ func (n *Node) toldByOwnLocked(r *evRec) bool {
 		}
 	}
 	return false
+}
+
+// inToldSpanLocked reports whether r is another member's record of a
+// member's silence that came after the member's own account of that absence
+// was taken into an incident: the silence names the boot the account says
+// the member left (or names none), and is stamped within the absence the
+// account spans, from its Since, less the coalescing window, to its At.
+// Rule (e) of Coalesce would have joined it there, and the chat was told
+// that absence (Q4: a router back from its own restart records a silence
+// from its start, or a record held up by the network arrives after the
+// incident was made). A silence that names the boot the member came back
+// in, or is stamped after the account, is a new absence. An account of a
+// forked origin, left out of the incidents, absorbs nothing.
+func (n *Node) inToldSpanLocked(r *evRec, distrusted map[ids.MemberID]uint64) bool {
+	e := r.ev
+	if e.Type != events.MemberSilent || e.Subject == (ids.MemberID{}) || e.Witness == e.Subject {
+		return false
+	}
+	at := e.At.Wall
+	for _, o := range n.inc.evs {
+		a := o.ev
+		if !o.assigned || !events.Own(a) || a.Subject != e.Subject || a.Since == (clock.Stamp{}) ||
+			(r.last != (ids.BootID{}) && r.last != o.last) ||
+			(distrusted[o.origin] > 0 && o.seq >= distrusted[o.origin]) {
+			continue
+		}
+		if !at.Before(a.Since.Wall.Add(-events.DefaultWindow)) && !at.After(a.At.Wall) {
+			return true
+		}
+	}
+	return false
+}
+
+// ownAccountOf returns x's own account of its return in evs that gives the
+// start of its absence (Since), if any.
+func ownAccountOf(evs []events.Event, x string) (events.Event, bool) {
+	for _, e := range evs {
+		if events.Own(e) && e.Subject.String() == x && e.Since != (clock.Stamp{}) {
+			return e, true
+		}
+	}
+	return events.Event{}, false
+}
+
+// withinOwnSpanLocked reports whether evs are silences of own's member that
+// own's absence spans, as inToldSpanLocked judges one.
+func (n *Node) withinOwnSpanLocked(evs []events.Event, own events.Event) bool {
+	left := ids.BootID{}
+	if o := n.inc.evs[own.Ref]; o != nil {
+		left = o.last
+	}
+	for _, e := range evs {
+		at := e.At.Wall
+		if e.Type != events.MemberSilent || at.Before(own.Since.Wall.Add(-events.DefaultWindow)) || at.After(own.At.Wall) {
+			return false
+		}
+		if r := n.inc.evs[e.Ref]; r != nil && r.last != (ids.BootID{}) && left != (ids.BootID{}) && r.last != left {
+			return false
+		}
+	}
+	return len(evs) > 0
 }
 
 // awaitsOwnLocked reports whether r is another member's guess at the return
@@ -343,6 +431,8 @@ func (n *Node) droppedLocked(base roster.Roster, ours []roster.Signed, oursR []r
 
 // incidentsLocked turns settled events into incidents and queues them.
 func (n *Node) incidentsLocked(now clock.Stamp) {
+	n.queueRestoredLocked(now)
+	n.coverLocked()
 	var list []events.Event
 	distrusted := n.distrustedLocked()
 	for _, r := range n.inc.evs {
@@ -357,6 +447,9 @@ func (n *Node) incidentsLocked(now clock.Stamp) {
 			r.assigned = true
 		case !r.single && n.toldByOwnLocked(r):
 			// A guess at a return the member's own account told already.
+			r.assigned = true
+		case !r.single && n.inToldSpanLocked(r, distrusted):
+			// A late silence inside an absence the member's own account told.
 			r.assigned = true
 		case r.single:
 			r.assigned = true
@@ -477,25 +570,56 @@ func (n *Node) toldAlreadyLocked(evs []events.Event) bool {
 
 // cutOffViewLocked reports whether e, a member's record of another member's
 // absence, is only what a router that was cut off itself saw (D9): a third
-// member recorded the witness silent over the moment of e, and no member but
+// member recorded the witness silent over the moment of e, the subject
+// itself recorded the witness silent over that moment too, and no member but
 // the witness and the subject recorded the subject absent then. A router
 // that loses its own link sees every other member go silent and come back;
 // the others, who heard each other all along, recorded its absence, which is
 // the one incident. In a group of two nobody is a third, and both views stay.
+//
+// The subject's own record is what tells a cut-off witness from a true
+// outage that one compromised member hides (N1): in a group of three, a
+// member that records the witness silent and keeps quiet about the subject
+// would otherwise drop the witness's true record of the subject's outage.
+// A subject that is really down records nobody silent; one that is up and
+// lost the witness, as every member that heard the others did, records it.
 func (n *Node) cutOffViewLocked(e events.Event) bool {
 	w, x := e.Witness, e.Subject
 	if !absence(e.Type) || events.Own(e) || w == x || x == (ids.MemberID{}) {
 		return false
 	}
-	win := events.DefaultWindow
 	at := e.At.Wall
-	// The witness's absence as each third member saw it: from its silence
-	// record to its next return record, if any.
-	var from, to time.Time
-	cut := false
+	from, to, cut := n.silentOverLocked(w, at, func(by ids.MemberID) bool { return by != w && by != x })
+	if !cut {
+		return false
+	}
+	if _, _, seen := n.silentOverLocked(w, at, func(by ids.MemberID) bool { return by == x }); !seen {
+		return false // the subject did not lose the witness: the witness saw a true absence
+	}
+	win := events.DefaultWindow
 	for _, f := range n.inc.evs {
 		g := f.ev
-		if g.Subject != w || g.Witness == w || g.Witness == x || g.Type != events.MemberSilent || g.At.Wall.After(at.Add(win)) {
+		if g.Subject != x || g.Witness == w || g.Witness == x || !absence(g.Type) {
+			continue
+		}
+		if !g.At.Wall.Before(from.Add(-win)) && (to.IsZero() || !g.At.Wall.After(to.Add(win))) {
+			return false // a third member saw the subject absent too
+		}
+	}
+	return true
+}
+
+// silentOverLocked reports whether a member that witness accepts recorded w
+// silent over the moment at, within the coalescing window: a silence record
+// of w stamped no later than the window after at, whose next return record
+// of w by the same member, if any, is not earlier than the window before at.
+// It returns the first such absence of w, from its silence to that return
+// (zero if none).
+func (n *Node) silentOverLocked(w ids.MemberID, at time.Time, witness func(ids.MemberID) bool) (from, to time.Time, ok bool) {
+	win := events.DefaultWindow
+	for _, f := range n.inc.evs {
+		g := f.ev
+		if g.Subject != w || g.Witness == w || !witness(g.Witness) || g.Type != events.MemberSilent || g.At.Wall.After(at.Add(win)) {
 			continue
 		}
 		end := time.Time{}
@@ -507,23 +631,10 @@ func (n *Node) cutOffViewLocked(e events.Event) bool {
 			}
 		}
 		if end.IsZero() || !end.Before(at.Add(-win)) {
-			cut, from, to = true, g.At.Wall, end
-			break
+			return g.At.Wall, end, true
 		}
 	}
-	if !cut {
-		return false
-	}
-	for _, f := range n.inc.evs {
-		g := f.ev
-		if g.Subject != x || g.Witness == w || g.Witness == x || !absence(g.Type) {
-			continue
-		}
-		if !g.At.Wall.Before(from.Add(-win)) && (to.IsZero() || !g.At.Wall.After(to.Add(win))) {
-			return false // a third member saw the subject absent too
-		}
-	}
-	return true
+	return time.Time{}, time.Time{}, false
 }
 
 // distrustedLocked returns, for every member whose chain forked in the log,
@@ -556,10 +667,162 @@ func (n *Node) queueLocked(inc events.Incident, evs []events.Event, components [
 		n.inc.recent = slices.Clone(n.inc.recent[over:])
 	}
 	n.inc.byID[inc.ID] = r
-	if !n.deliveredLocked(inc.ID) {
+	if !n.deliveredLocked(inc.ID) && !n.toldByAckLocked(r) {
 		n.queue.Add(inc, now.Wall)
 	}
 	n.flusher.Mark()
+}
+
+// # Acknowledgements that name what they told (Q4)
+//
+// Members that hold the same events make the same incidents, but not
+// always at once: a record that reaches one member after it made its
+// incident, and another in time, or an equivocator that shows each member
+// another face, leave them with incidents of one cause under different
+// IDs, and an acknowledgement of one ID does not stop the other. So an
+// acknowledgement names the events its message told (deliver.AckBodyRefs,
+// up to deliver.MaxAckRefs, one of each kind and member first), and a kept
+// incident not delivered counts as told by it when they share an event and
+// every other event of it has a twin among the named ones that this member
+// holds: the same type about the same member, or the same type of link
+// change. A guess at a return whose member's own account is in the incident
+// needs none: the incident tells the account. An incident that tells more,
+// a return after a silence that was told alone, is not told by it.
+
+// noteAckLocked keeps the events the acknowledgement of id by by names, when
+// it is the head of by's chain (entryIn hands each entry over right after
+// the log took it), and counts as told every kept incident they tell.
+func (n *Node) noteAckLocked(id string, by ids.MemberID) {
+	hd := n.log.Head(by)
+	es := n.log.Range(by, hd.Seq, hd.Seq)
+	if len(es) != 1 {
+		return
+	}
+	if aid, aby, ok := deliver.AckOf(es[0]); !ok || aid != id || aby != by {
+		return
+	}
+	refs := deliver.AckRefs(es[0])
+	if len(refs) == 0 {
+		return
+	}
+	note := ackNote{id: id, by: by, refs: refs}
+	n.inc.ackNotes = append(n.inc.ackNotes, note)
+	if over := len(n.inc.ackNotes) - keepAckNotes; over > 0 {
+		n.inc.ackNotes = slices.Clone(n.inc.ackNotes[over:])
+	}
+	for _, r := range n.inc.recent {
+		if !n.deliveredLocked(r.inc.ID) && n.coveredLocked(r, note) {
+			n.ackedLocked(r.inc.ID, by)
+		}
+	}
+}
+
+// toldByAckLocked reports whether a kept acknowledgement tells r, and counts
+// r as told by it then.
+func (n *Node) toldByAckLocked(r *incRec) bool {
+	for _, note := range n.inc.ackNotes {
+		if n.coveredLocked(r, note) {
+			n.ackedLocked(r.inc.ID, note.by)
+			return true
+		}
+	}
+	return false
+}
+
+// coverLocked looks again, once events arrived, for kept incidents the
+// kept acknowledgements tell: an acknowledgement may name events that
+// reach this member after it.
+func (n *Node) coverLocked() {
+	if !n.inc.coverDirty || len(n.inc.ackNotes) == 0 {
+		n.inc.coverDirty = false
+		return
+	}
+	n.inc.coverDirty = false
+	for _, r := range n.inc.recent {
+		if !n.deliveredLocked(r.inc.ID) {
+			n.toldByAckLocked(r)
+		}
+	}
+}
+
+// coveredLocked reports whether note's message told what r tells, as the
+// doc above says.
+func (n *Node) coveredLocked(r *incRec, note ackNote) bool {
+	if r.single || len(r.events) == 0 || r.inc.ID == note.id {
+		return false
+	}
+	named := map[ids.Hash]bool{}
+	var told []events.Event
+	for _, h := range note.refs {
+		named[h] = true
+		if e := n.inc.evs[h]; e != nil {
+			told = append(told, e.ev)
+		}
+	}
+	own := map[ids.MemberID]bool{}
+	for _, e := range r.events {
+		if !absence(e.Type) && !linkChange(e.Type) {
+			// An announcement or an alarm: its event's ref is a roster's
+			// hash or its proof, shared with other announcements of it.
+			return false
+		}
+		if events.Own(e) {
+			own[e.Subject] = true
+		}
+	}
+	shared := false
+	for _, e := range r.events {
+		switch {
+		case named[e.Ref]:
+			shared = true
+		case own[e.Subject] && !events.Own(e) && e.Type != events.MemberSilent && absence(e.Type):
+			// A guess the member's own account here overrides.
+		case !slices.ContainsFunc(told, func(f events.Event) bool { return twin(e, f) }):
+			return false
+		}
+	}
+	return shared
+}
+
+// twin reports whether e and f tell the same thing: one type about one
+// member, or one type of link change, which is told for the site.
+func twin(e, f events.Event) bool {
+	if e.Type != f.Type {
+		return false
+	}
+	return linkChange(e.Type) || e.Subject == f.Subject
+}
+
+// linkChange reports whether t is a change of a member's own link, which an
+// incident tells for the site.
+func linkChange(t events.Type) bool {
+	switch t {
+	case events.WanDown, events.WanUp, events.InternetLost, events.InternetRestored, events.UplinkSwitched:
+		return true
+	}
+	return false
+}
+
+// ackRefsLocked returns the events an acknowledgement of incident id names:
+// one of each type about each member (of each type of link change) first,
+// then the others, up to deliver.MaxAckRefs, each by its ref.
+func (n *Node) ackRefsLocked(id string) []ids.Hash {
+	r := n.inc.byID[id]
+	if r == nil {
+		return nil
+	}
+	evs := slices.Clone(r.events)
+	slices.SortFunc(evs, func(a, b events.Event) int { return compareHash(a.Ref, b.Ref) })
+	var first, rest []ids.Hash
+	for i, e := range evs {
+		if slices.ContainsFunc(evs[:i], func(f events.Event) bool { return twin(e, f) }) {
+			rest = append(rest, e.Ref)
+		} else {
+			first = append(first, e.Ref)
+		}
+	}
+	out := append(first, rest...)
+	return out[:min(len(out), deliver.MaxAckRefs)]
 }
 
 // deliveredLocked reports whether incident id was acknowledged: its own ID,
@@ -580,6 +843,7 @@ func (n *Node) deliveredLocked(id string) bool {
 func (n *Node) ackedLocked(id string, by ids.MemberID) {
 	n.queue.Ack(id, by)
 	n.inc.acked(id)
+	defer n.noteAckLocked(id, by)
 	if r := n.inc.byID[id]; r != nil {
 		for _, c := range r.components {
 			if !n.inc.ackedIDs[c] {
@@ -641,6 +905,7 @@ type senderTurn struct {
 // turnLocked returns the sender the queue is to act on: sender, unless it
 // is this node and its turn has not begun yet, as the doc above says.
 func (n *Node) turnLocked(sender ids.MemberID, now clock.Stamp) ids.MemberID {
+	n.queue.Hold(n.heldLocked(now))
 	if n.goingDown {
 		return ids.MemberID{}
 	}
@@ -669,9 +934,6 @@ func (n *Node) turnLocked(sender ids.MemberID, now clock.Stamp) ids.MemberID {
 	t.on, t.heard = true, heard
 	if _, other := elect.Sender(others, now.Wall); other {
 		t.handover = true
-	}
-	if n.endPendingLocked() {
-		return ids.MemberID{}
 	}
 	wait := n.cfg.Heartbeat
 	if t.handover {
@@ -721,32 +983,63 @@ func (n *Node) othersLocked() []elect.View {
 // returns are the types that end a member's absence.
 var returns = []events.Type{events.RebootUnplanned, events.RebootPlanned, events.Upgraded, events.LinkLost, events.MemberBack}
 
-// endPendingLocked reports whether an incident that reports only the start
-// of something (a silence, an internet or WAN loss) and was not sent yet
-// has its end recorded and not yet settled: the sender holds back until the
-// end joins it, so both go out as one message (D5).
-func (n *Node) endPendingLocked() bool {
-	has := func(i events.Incident, t events.Type) bool { return slices.Contains(i.Events, t) }
+// maxHold bounds how long the sender holds back one incident for its end
+// (heldLocked), from the first moment it held it. A true end is taken into
+// an incident settle after the node first saw it, and pairs with the start
+// at the next tick; the incident it makes is ready only once every event in
+// it has waited settle, so a companion record seen up to settle after the
+// end delays it by as much again. Two settles cover both. An end that takes
+// longer either waits on something else (a guess at a return that waits for
+// its member's own account, up to ownWait) or never joins at all (a
+// compromised member that writes a return every few seconds): then the start
+// goes out alone, and its end, if it comes, as a message of its own.
+const maxHold = 2 * settle
+
+// heldLocked returns the incidents the sender holds back now: each one that
+// reports only the start of something (a silence, an internet or WAN loss),
+// was not sent yet, and has its end recorded and not yet settled, so that
+// both go out as one message (D5). Each is held at most maxHold from the
+// first moment it was, once (N2): ends that keep arriving and never join
+// cannot hold it longer, and they never hold any other incident.
+func (n *Node) heldLocked(now clock.Stamp) []string {
+	var out []string
 	for _, r := range n.inc.recent {
-		if r.paired || r.single || n.deliveredLocked(r.inc.ID) {
+		if !n.endPendingLocked(r) {
 			continue
 		}
-		var ends func(e events.Event) bool
-		switch inc := r.inc; {
-		case inc.Causes == 1 && has(inc, events.MemberSilent) && !slices.ContainsFunc(returns, func(t events.Type) bool { return has(inc, t) }):
-			x := inc.Members[0]
-			ends = func(e events.Event) bool { return e.Subject.String() == x && slices.Contains(returns, e.Type) }
-		case inc.Causes == 0 && has(inc, events.InternetLost) && !has(inc, events.InternetRestored):
-			ends = func(e events.Event) bool { return e.Type == events.InternetRestored }
-		case inc.Causes == 0 && has(inc, events.WanDown) && !has(inc, events.WanUp):
-			ends = func(e events.Event) bool { return e.Type == events.WanUp }
-		default:
-			continue
+		if !r.held {
+			r.held, r.heldAt = true, now.Mono
 		}
-		for _, e := range n.inc.evs {
-			if !e.assigned && !e.single && ends(e.ev) {
-				return true
-			}
+		if now.Mono-r.heldAt < maxHold {
+			out = append(out, r.inc.ID)
+		}
+	}
+	return out
+}
+
+// endPendingLocked reports whether r reports only the start of something
+// (a silence, an internet or WAN loss), was not sent yet, and has its end
+// recorded and not yet settled.
+func (n *Node) endPendingLocked(r *incRec) bool {
+	has := func(i events.Incident, t events.Type) bool { return slices.Contains(i.Events, t) }
+	if r.paired || r.single || n.deliveredLocked(r.inc.ID) {
+		return false
+	}
+	var ends func(e events.Event) bool
+	switch inc := r.inc; {
+	case inc.Causes == 1 && has(inc, events.MemberSilent) && !slices.ContainsFunc(returns, func(t events.Type) bool { return has(inc, t) }):
+		x := inc.Members[0]
+		ends = func(e events.Event) bool { return e.Subject.String() == x && slices.Contains(returns, e.Type) }
+	case inc.Causes == 0 && has(inc, events.InternetLost) && !has(inc, events.InternetRestored):
+		ends = func(e events.Event) bool { return e.Type == events.InternetRestored }
+	case inc.Causes == 0 && has(inc, events.WanDown) && !has(inc, events.WanUp):
+		ends = func(e events.Event) bool { return e.Type == events.WanUp }
+	default:
+		return false
+	}
+	for _, e := range n.inc.evs {
+		if !e.assigned && !e.single && ends(e.ev) {
+			return true
 		}
 	}
 	return false
@@ -765,6 +1058,21 @@ func (n *Node) pairLocked(inc events.Incident, evs []events.Event) (events.Incid
 		match = func(r *incRec) bool {
 			return r.inc.Causes == 1 && r.inc.Members[0] == x && has(r.inc, events.MemberSilent) &&
 				!slices.ContainsFunc(returns, func(t events.Type) bool { return has(r.inc, t) })
+		}
+	case inc.Causes == 1 && slices.ContainsFunc(returns, func(t events.Type) bool { return has(inc, t) }):
+		// The incident tells a whole absence, a silence and a return. A
+		// silence kept on its own is that same absence only when the
+		// member's own account here spans it (Q4): it then goes out once,
+		// in this incident, not again on its own.
+		x := inc.Members[0]
+		own, ok := ownAccountOf(evs, x)
+		if !ok {
+			return events.Incident{}, nil, nil, false
+		}
+		match = func(r *incRec) bool {
+			return r.inc.Causes == 1 && r.inc.Members[0] == x && has(r.inc, events.MemberSilent) &&
+				!slices.ContainsFunc(returns, func(t events.Type) bool { return has(r.inc, t) }) &&
+				n.withinOwnSpanLocked(r.events, own)
 		}
 	case inc.Causes == 0 && has(inc, events.InternetRestored) && !has(inc, events.InternetLost):
 		match = func(r *incRec) bool {
@@ -812,7 +1120,7 @@ func (n *Node) recordAcksLocked(now clock.Stamp) {
 			if n.inc.ackedIDs[a] || n.inc.ackPending[a] {
 				continue
 			}
-			b, err := deliver.AckBody(a)
+			b, err := deliver.AckBodyRefs(a, n.ackRefsLocked(a))
 			if err != nil {
 				continue
 			}
@@ -839,12 +1147,6 @@ func (n *Node) renderLocked(inc events.Incident) string {
 	}
 	if r := n.inc.byID[inc.ID]; r != nil && !r.single && len(n.rosters) > 0 {
 		f.Confirmed, f.Of = n.confirmations(r.events)
-	}
-	if r := n.inc.byID[inc.ID]; r != nil && !slices.Contains(inc.Events, events.MemberSilent) && ownStart(r.events) {
-		// deliver tells an absence from its start when the incident holds
-		// the silence that began it; a router's own account of its return
-		// carries that start itself, and Start is it (events.Incident).
-		inc.Events = append(slices.Clone(inc.Events), events.MemberSilent)
 	}
 	if r := n.inc.byID[inc.ID]; r != nil && slices.Contains(inc.Events, events.Upgraded) {
 		for _, e := range r.events {

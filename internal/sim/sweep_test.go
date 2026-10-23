@@ -38,7 +38,12 @@ import (
 //   - I2: without a partition or a cut link, no message is sent twice. A
 //     copy sent after the sender of the first lost power within 30 s of
 //     sending it is allowed: its acknowledgement died with its RAM, and
-//     delivery is at least once by design.
+//     delivery is at least once by design. So is a copy whose sender could
+//     not have learned the acknowledgement: it lost power within 30 s of
+//     the first copy, before the acknowledgement reached it, and from its
+//     return until its copy no other honest router was powered, so the
+//     only router it heard was the equivocator, whose face it sees never
+//     held the acknowledgement (seed 814): a partition in all but name.
 //   - I3: the equivocating router is reported with a fork proof, and every
 //     honest router marks it suspicious.
 //   - I4: no honest router is marked suspicious, nor named in an alarm.
@@ -498,6 +503,36 @@ func (f facts) overlaps(i int, from, to time.Duration) bool {
 // off reports whether member i was off at t.
 func (f facts) off(i int, t time.Duration) bool { return f.overlaps(i, t, t) }
 
+// uninformed reports whether honest router j, which sent a copy at sent of
+// a message first sent at first, could not have learned its acknowledgement:
+// j lost power within ackLife of the first copy, and from its last return
+// before sent until sent every other honest router was off.
+func (f facts) uninformed(j int, first, sent time.Duration) bool {
+	if j < 0 || !f.cycled(j, first, first+ackLife) {
+		return false
+	}
+	back := time.Duration(-1)
+	for _, c := range f.cycles {
+		if c.Member == j && c.On >= 0 && c.On <= sent && c.On > back {
+			back = c.On
+		}
+	}
+	if back < 0 {
+		return false
+	}
+	for _, h := range f.honest {
+		if h == j {
+			continue
+		}
+		if !slices.ContainsFunc(f.cycles, func(c Cycle) bool {
+			return c.Member == h && c.Off <= back && (c.On < 0 || c.On >= sent)
+		}) {
+			return false // h was up at some moment j could hear it
+		}
+	}
+	return true
+}
+
 func (f facts) index(name string) int {
 	for _, i := range f.honest {
 		if f.s.Name(i) == name {
@@ -673,6 +708,9 @@ func check(s *Site, honest []int, eq int) []violation {
 			first := c[0]
 			if i := f.index(first.By); i >= 0 && f.cycled(i, first.At, first.At+ackLife) {
 				continue // its acknowledgement died with the sender's RAM
+			}
+			if !slices.ContainsFunc(c[1:], func(m Message) bool { return !f.uninformed(f.index(m.By), first.At, m.At) }) {
+				continue // no later sender could have learned the acknowledgement
 			}
 			defect := ""
 			switch {

@@ -37,6 +37,23 @@
 // BlockedRetry until a send succeeds; after ErrTLS, and after any other
 // failure, it tries again after Spacing. Status says what stops delivery.
 //
+// # A full queue
+//
+// While MaxQueued incidents wait, Add refuses the newest and counts it in
+// Status.Dropped. The chat is told too: once Adds were refused, the sender's
+// next attempt sends one notice (an incident of type QueueFull, rendered like
+// any other) before any incident, and then no other notice for OverflowEvery,
+// however many more are refused; refusals after that are told once again. The
+// notice is this member's own: it is not queued, not acknowledged and not in
+// the history.
+//
+// # Holding back
+//
+// The caller may hold back named incidents (Hold): they stay queued and are
+// not due, whoever sends, until a later Hold leaves them out. The node holds
+// back an incident whose end is about to join it, so both go out as one
+// message, and bounds that hold itself. Every other incident stays due.
+//
 // # Time
 //
 // Every method takes now from the caller and never reads the clock. A now
@@ -49,6 +66,8 @@ package deliver
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -57,6 +76,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/TAIPANBOX/rollcall/internal/clock"
 	"github.com/TAIPANBOX/rollcall/internal/events"
 	"github.com/TAIPANBOX/rollcall/internal/history"
 	"github.com/TAIPANBOX/rollcall/internal/ids"
@@ -120,6 +140,10 @@ const (
 	// MaxQueued bounds the incidents waiting; Add refuses more and counts
 	// them in Status.Dropped.
 	MaxQueued = 1000
+	// OverflowEvery is the least time between two notices that the queue
+	// refused incidents: one an hour keeps a flood of incidents, which is
+	// what fills the queue, from adding a flood of notices.
+	OverflowEvery = time.Hour
 	// MaxDone bounds the IDs of incidents delivered (by anyone) that the
 	// queue remembers, so that one coalesced again is not queued again. The
 	// oldest is forgotten first.
@@ -161,6 +185,10 @@ type Queue struct {
 	done      map[string]struct{}
 	doneOrder []string // done in the order learnt, to forget the oldest
 	dropped   int
+	held      map[string]bool // incidents held back (Hold)
+	overflow  int             // Adds refused since the last notice
+	told      bool            // a notice was sent, at toldAt
+	toldAt    time.Time
 
 	seen    bool
 	now     time.Time // the latest now seen
@@ -200,6 +228,7 @@ func (q *Queue) Add(inc events.Incident, now time.Time) bool {
 	}
 	if len(q.items) >= MaxQueued {
 		q.dropped++
+		q.overflow++
 		return false
 	}
 	it := &item{inc: clone(inc), added: now}
@@ -230,6 +259,21 @@ func (q *Queue) Ack(id string, by ids.MemberID) {
 	defer q.mu.Unlock()
 	q.finish(id)
 	q.unrecorded = slices.DeleteFunc(q.unrecorded, func(s sent) bool { return s.id == id && s.by == by })
+}
+
+// Hold holds back the incidents named in ids, and only them: until the next
+// Hold, Due and Deliver pass over them as if they were not due, and every
+// other incident is due as before. A nil or empty ids holds nothing back.
+func (q *Queue) Hold(ids []string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.held == nil {
+		q.held = map[string]bool{}
+	}
+	clear(q.held)
+	for _, id := range ids {
+		q.held[id] = true
+	}
 }
 
 // Due returns copies of the incidents self is to send at now, oldest first,
@@ -277,9 +321,12 @@ func (q *Queue) Deliver(ctx context.Context, ch Channel, self, sender ids.Member
 		return "", nil
 	}
 	var inc events.Incident
-	found := false
+	found, notice := false, q.overflow > 0 && (!q.told || now.Sub(q.toldAt) >= OverflowEvery)
+	if notice {
+		inc, found = noticeOf(now), true
+	}
 	for _, it := range q.items {
-		if q.isDue(it, now) {
+		if !found && q.isDue(it, now) {
 			inc, found = clone(it.inc), true
 			break
 		}
@@ -305,11 +352,27 @@ func (q *Queue) Deliver(ctx context.Context, ch Channel, self, sender ids.Member
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.inflight = false
-	q.settle(inc.ID, self, err)
+	switch {
+	case !notice:
+		q.settle(inc.ID, self, err)
+	case err == nil:
+		q.overflow, q.told, q.toldAt = 0, true, now
+		q.settle("", self, nil)
+	default:
+		q.settle("", self, err)
+	}
 	if err != nil {
 		return "", err
 	}
 	return inc.ID, nil
+}
+
+// noticeOf returns the notice that the queue refused incidents, at now: an
+// incident of type QueueFull whose ID is fixed by the moment.
+func noticeOf(now time.Time) events.Incident {
+	h := sha256.Sum256(fmt.Appendf(nil, "rollcall/v1 queue full\x00%d", now.UnixNano()))
+	at := clock.Stamp{Wall: now, Trusted: true}
+	return events.Incident{ID: hex.EncodeToString(h[:8]), Start: at, End: at, Events: []events.Type{QueueFull}}
 }
 
 // Unrecorded returns the IDs of the incidents this member sent whose
@@ -366,6 +429,7 @@ func (q *Queue) observe(now time.Time) {
 		step := now.Sub(q.now)
 		q.since = q.since.Add(step)
 		q.last = q.last.Add(step)
+		q.toldAt = q.toldAt.Add(step)
 		for _, it := range q.items {
 			it.added = it.added.Add(step)
 		}
@@ -383,9 +447,13 @@ func (q *Queue) track(self, sender ids.MemberID, now time.Time) bool {
 	return is
 }
 
-// isDue reports whether the sender sends it at now: it reached the sender
-// while it was the sender, or it has been queued for Grace.
+// isDue reports whether the sender sends it at now: it is not held back,
+// and it reached the sender while it was the sender, or it has been queued
+// for Grace.
 func (q *Queue) isDue(it *item, now time.Time) bool {
+	if q.held[it.inc.ID] {
+		return false
+	}
 	return !it.added.Before(q.since) || now.Sub(it.added) >= Grace
 }
 
@@ -404,10 +472,12 @@ func (q *Queue) settle(id string, self ids.MemberID, err error) {
 	var rl *RateLimitError
 	switch {
 	case err == nil:
-		q.finish(id)
-		q.unrecorded = append(q.unrecorded, sent{id: id, by: self})
-		if len(q.unrecorded) > MaxQueued {
-			q.unrecorded = slices.Delete(q.unrecorded, 0, 1)
+		if id != "" { // not the notice of a full queue
+			q.finish(id)
+			q.unrecorded = append(q.unrecorded, sent{id: id, by: self})
+			if len(q.unrecorded) > MaxQueued {
+				q.unrecorded = slices.Delete(q.unrecorded, 0, 1)
+			}
 		}
 		q.blocked, q.problem, q.errText = false, problemNone, ""
 	case errors.Is(err, ErrBlocked):
@@ -470,12 +540,23 @@ func limit(s string, n int) string {
 
 func utf8RuneStart(b byte) bool { return b&0xC0 != 0x80 }
 
-// The body of an acknowledgement: {"ack":"<incident ID>"}, the one form
-// encoding/json writes for it, so it passes the history's body rules.
+// The body of an acknowledgement: {"ack":"<incident ID>"}, or with the
+// events the message told, {"ack":"<incident ID>","refs":["<hash>",...]}:
+// the one form encoding/json writes for each, so it passes the history's
+// body rules.
 const (
 	ackPrefix = `{"ack":"`
 	ackSuffix = `"}`
+	// MaxAckRefs bounds the events an acknowledgement names, so that one
+	// stays near a kilobyte of its sender's history budget.
+	MaxAckRefs = 16
 )
+
+// ackRefsBody is the form of an acknowledgement that names events.
+type ackRefsBody struct {
+	Ack  string     `json:"ack"`
+	Refs []ids.Hash `json:"refs"`
+}
 
 // AckBody returns the body of the history entry, of kind event, that records
 // the delivery of incident id: {"ack":"<id>"}.
@@ -486,19 +567,74 @@ func AckBody(id string) (json.RawMessage, error) {
 	return json.RawMessage(ackPrefix + id + ackSuffix), nil
 }
 
+// AckBodyRefs returns the body of an acknowledgement of incident id that
+// also names the events the message told (Incident.Refs): sorted, without
+// repeats, and at most MaxAckRefs of them, the caller's choice when there
+// are more. With no refs it is AckBody's. A member whose own incident of the
+// same cause has another ID (it made it of other records) tells from these
+// that the chat was told it (the node's ackedLocked).
+func AckBodyRefs(id string, refs []ids.Hash) (json.RawMessage, error) {
+	if !isHex(id, 16) {
+		return nil, ErrIncidentID
+	}
+	refs = slices.Clone(refs)
+	slices.SortFunc(refs, func(a, b ids.Hash) int { return strings.Compare(string(a[:]), string(b[:])) })
+	refs = slices.Compact(refs)
+	if len(refs) == 0 {
+		return AckBody(id)
+	}
+	if len(refs) > MaxAckRefs {
+		return nil, fmt.Errorf("deliver: an acknowledgement names at most %d events", MaxAckRefs)
+	}
+	return json.Marshal(ackRefsBody{Ack: id, Refs: refs})
+}
+
 // AckOf returns the incident ID e acknowledges and the member that did, if e
 // is an acknowledgement: an entry of kind event with a non-zero origin whose
-// body is exactly what AckBody writes. Any other entry gives false. AckOf does
-// not verify e; the caller passes only entries its Log accepted.
+// body is exactly what AckBody or AckBodyRefs writes. Any other entry gives
+// false. AckOf does not verify e; the caller passes only entries its Log
+// accepted.
 func AckOf(e history.Entry) (string, ids.MemberID, bool) {
+	if e.Kind != history.KindEvent || e.Origin == (ids.MemberID{}) {
+		return "", ids.MemberID{}, false
+	}
 	b := string(e.Body)
-	if e.Kind != history.KindEvent || e.Origin == (ids.MemberID{}) ||
-		len(b) != len(ackPrefix)+16+len(ackSuffix) || !strings.HasPrefix(b, ackPrefix) || !strings.HasSuffix(b, ackSuffix) {
-		return "", ids.MemberID{}, false
+	if len(b) == len(ackPrefix)+16+len(ackSuffix) && strings.HasPrefix(b, ackPrefix) && strings.HasSuffix(b, ackSuffix) {
+		id := b[len(ackPrefix) : len(ackPrefix)+16]
+		if !isHex(id, 16) {
+			return "", ids.MemberID{}, false
+		}
+		return id, e.Origin, true
 	}
-	id := b[len(ackPrefix) : len(ackPrefix)+16]
-	if !isHex(id, 16) {
-		return "", ids.MemberID{}, false
+	if id, _, ok := ackRefsOf(e.Body); ok {
+		return id, e.Origin, true
 	}
-	return id, e.Origin, true
+	return "", ids.MemberID{}, false
+}
+
+// AckRefs returns the events an acknowledgement entry names, nil for one
+// that names none or for any other entry.
+func AckRefs(e history.Entry) []ids.Hash {
+	if _, _, ok := AckOf(e); !ok {
+		return nil
+	}
+	_, refs, _ := ackRefsOf(e.Body)
+	return refs
+}
+
+// ackRefsOf decodes an acknowledgement that names events, only in the form
+// AckBodyRefs writes.
+func ackRefsOf(body []byte) (string, []ids.Hash, bool) {
+	if !strings.HasPrefix(string(body), ackPrefix) || len(body) > history.MaxBodySize {
+		return "", nil, false
+	}
+	var a ackRefsBody
+	if json.Unmarshal(body, &a) != nil {
+		return "", nil, false
+	}
+	want, err := AckBodyRefs(a.Ack, a.Refs)
+	if err != nil || len(a.Refs) == 0 || string(want) != string(body) {
+		return "", nil, false
+	}
+	return a.Ack, a.Refs, true
 }
