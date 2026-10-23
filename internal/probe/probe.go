@@ -7,6 +7,11 @@
 // only where that is granted). Each probe takes a context and never runs
 // without a deadline.
 //
+// An ICMP reply counts only when it comes from the probed address and
+// carries back the random payload of its request. The identifier and the
+// sequence number alone are 32 bits a device on the LAN can sweep by
+// spraying forged replies, which would hide a lost internet connection.
+//
 // Prober turns a stream of probe results into lost and restored events. Each
 // event carries the time its condition started, the first failed probe or
 // the first success, so one outage keeps one timestamp however long the
@@ -14,7 +19,9 @@
 package probe
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -45,8 +52,12 @@ const (
 	icmpEchoRequest = 8
 )
 
-// icmpPayload is the data carried by each echo request.
-var icmpPayload = []byte("rollcall")
+// icmpTag starts the payload of each echo request; icmpNonceSize random
+// bytes follow it, new for every request, and the reply must carry them back.
+const (
+	icmpTag       = "rollcall"
+	icmpNonceSize = 16
+)
 
 // DNS resolves name as an A record through server and reports whether an
 // answer came back. server is a host or host:port; the port defaults to 53.
@@ -239,10 +250,11 @@ func echoMessage(id, seq uint16, payload []byte) []byte {
 	return m
 }
 
-// isEchoReply reports whether b is a valid ICMP echo reply for id and seq. A
-// raw socket may deliver the IPv4 header in front of the ICMP message; a
-// leading byte of 0x4x marks one, and an echo reply never starts with it.
-func isEchoReply(b []byte, id, seq uint16) bool {
+// isEchoReply reports whether b is a valid ICMP echo reply for id and seq
+// that carries exactly payload. A raw socket may deliver the IPv4 header in
+// front of the ICMP message; a leading byte of 0x4x marks one, and an echo
+// reply never starts with it.
+func isEchoReply(b []byte, id, seq uint16, payload []byte) bool {
 	if len(b) >= 20 && b[0]>>4 == 4 {
 		ihl := int(b[0]&0x0f) * 4
 		if ihl < 20 || ihl > len(b) {
@@ -256,7 +268,13 @@ func isEchoReply(b []byte, id, seq uint16) bool {
 	if checksum(b) != 0 {
 		return false
 	}
-	return binary.BigEndian.Uint16(b[4:6]) == id && binary.BigEndian.Uint16(b[6:8]) == seq
+	return binary.BigEndian.Uint16(b[4:6]) == id && binary.BigEndian.Uint16(b[6:8]) == seq && bytes.Equal(b[8:], payload)
+}
+
+// fromAddr reports whether from, the sender a raw socket reports, is dst.
+func fromAddr(from net.Addr, dst *net.IPAddr) bool {
+	a, ok := from.(*net.IPAddr)
+	return ok && a != nil && a.IP.Equal(dst.IP)
 }
 
 // hostPort adds defPort to addr when addr names no port. A bare IPv6 literal
@@ -269,8 +287,9 @@ func hostPort(addr, defPort string) string {
 }
 
 // icmpRound sends one echo request over conn to dst and reads until the reply
-// to that request arrives, the context deadline passes, or the read fails. It
-// is the part of ICMP that needs no privilege, so tests drive it with a fake
+// to that request arrives, the context deadline passes, or the read fails.
+// The reply must come from dst and carry the request's random payload. It is
+// the part of ICMP that needs no privilege, so tests drive it with a fake
 // connection. addr is only used in error messages.
 func icmpRound(ctx context.Context, conn net.PacketConn, dst *net.IPAddr, addr string) error {
 	deadline, _ := ctx.Deadline()
@@ -278,20 +297,23 @@ func icmpRound(ctx context.Context, conn net.PacketConn, dst *net.IPAddr, addr s
 		return fmt.Errorf("icmp probe: set deadline: %w", err)
 	}
 	id := uint16(os.Getpid())
-	seq := uint16(time.Now().UnixNano())
-	if _, err := conn.WriteTo(echoMessage(id, seq, icmpPayload), dst); err != nil {
+	r := make([]byte, 2+icmpNonceSize)
+	rand.Read(r)
+	seq := binary.BigEndian.Uint16(r)
+	payload := append([]byte(icmpTag), r[2:]...)
+	if _, err := conn.WriteTo(echoMessage(id, seq, payload), dst); err != nil {
 		return fmt.Errorf("icmp probe of %s: send: %w", addr, err)
 	}
 	buf := make([]byte, 1500)
 	for {
-		n, _, err := conn.ReadFrom(buf)
+		n, from, err := conn.ReadFrom(buf)
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return fmt.Errorf("icmp probe of %s: no echo reply: %w", addr, ctxErr)
 			}
 			return fmt.Errorf("icmp probe of %s: no echo reply: %w", addr, err)
 		}
-		if isEchoReply(buf[:n], id, seq) {
+		if fromAddr(from, dst) && isEchoReply(buf[:n], id, seq, payload) {
 			return nil
 		}
 	}

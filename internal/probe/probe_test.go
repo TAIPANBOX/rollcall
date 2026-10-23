@@ -387,14 +387,10 @@ func TestEchoMessageLayoutAndChecksum(t *testing.T) {
 	}
 }
 
-// replyBytes builds an echo reply for id and seq, optionally with a 20-byte IPv4 header in front.
-func replyBytes(id, seq uint16, withIPHeader bool) []byte {
-	m := make([]byte, 16)
-	m[0] = 0 // echo reply
-	binary.BigEndian.PutUint16(m[4:], id)
-	binary.BigEndian.PutUint16(m[6:], seq)
-	copy(m[8:], "rollcall")
-	binary.BigEndian.PutUint16(m[2:], checksum(m))
+// replyBytes builds an echo reply for id and seq carrying payload, optionally
+// with a 20-byte IPv4 header in front.
+func replyBytes(id, seq uint16, payload string, withIPHeader bool) []byte {
+	m := forged(id, seq, []byte(payload))
 	if !withIPHeader {
 		return m
 	}
@@ -406,40 +402,49 @@ func replyBytes(id, seq uint16, withIPHeader bool) []byte {
 }
 
 func TestIsEchoReply(t *testing.T) {
+	const p = "rollcall-0123456789abcdef"
 	cases := []struct {
 		name string
 		b    []byte
 		want bool
 	}{
-		{"reply without IP header", replyBytes(0x1234, 7, false), true},
-		{"reply behind IPv4 header", replyBytes(0x1234, 7, true), true},
-		{"wrong identifier", replyBytes(0x1235, 7, false), false},
-		{"wrong sequence", replyBytes(0x1234, 8, false), false},
-		{"corrupt checksum", func() []byte { b := replyBytes(0x1234, 7, false); b[2] ^= 0xff; return b }(), false},
-		{"echo request, not reply", func() []byte { b := replyBytes(0x1234, 7, false); b[0] = 8; return b }(), false},
+		{"reply without IP header", replyBytes(0x1234, 7, p, false), true},
+		{"reply behind IPv4 header", replyBytes(0x1234, 7, p, true), true},
+		{"wrong identifier", replyBytes(0x1235, 7, p, false), false},
+		{"wrong sequence", replyBytes(0x1234, 8, p, false), false},
+		{"another payload", replyBytes(0x1234, 7, "rollcall-0123456789abcdeF", false), false},
+		{"a shorter payload", replyBytes(0x1234, 7, "rollcall", false), false},
+		{"a longer payload", replyBytes(0x1234, 7, p+"x", false), false},
+		{"corrupt checksum", func() []byte { b := replyBytes(0x1234, 7, p, false); b[2] ^= 0xff; return b }(), false},
+		{"echo request, not reply", func() []byte { b := replyBytes(0x1234, 7, p, false); b[0] = 8; return b }(), false},
 		{"too short", []byte{0, 0, 0}, false},
 	}
 	for _, c := range cases {
-		if got := isEchoReply(c.b, 0x1234, 7); got != c.want {
+		if got := isEchoReply(c.b, 0x1234, 7, []byte(p)); got != c.want {
 			t.Errorf("%s: isEchoReply = %v, want %v", c.name, got, c.want)
 		}
 	}
 }
 
 // fakeICMPConn stands in for the raw socket. Each WriteTo queues the replies
-// the script builds from the identifier and sequence of the request; each
-// ReadFrom returns the next queued packet, or a deadline error when none is left.
+// the script builds from the request it was given; each ReadFrom returns the
+// next queued packet with the address it claims to come from, or a deadline
+// error when none is left.
 type fakeICMPConn struct {
 	net.PacketConn
-	script []func(id, seq uint16) []byte
+	script []func(req []byte) [][]byte
+	from   []net.Addr
 	queue  [][]byte
+	srcs   []net.Addr
 }
 
 func (c *fakeICMPConn) WriteTo(b []byte, _ net.Addr) (int, error) {
-	id := binary.BigEndian.Uint16(b[4:6])
-	seq := binary.BigEndian.Uint16(b[6:8])
-	for _, reply := range c.script {
-		c.queue = append(c.queue, reply(id, seq))
+	req := append([]byte(nil), b...)
+	for i, reply := range c.script {
+		for _, r := range reply(req) {
+			c.queue = append(c.queue, r)
+			c.srcs = append(c.srcs, c.from[i])
+		}
 	}
 	c.script = nil
 	return len(b), nil
@@ -449,42 +454,129 @@ func (c *fakeICMPConn) ReadFrom(b []byte) (int, net.Addr, error) {
 	if len(c.queue) == 0 {
 		return 0, nil, os.ErrDeadlineExceeded
 	}
-	m := c.queue[0]
-	c.queue = c.queue[1:]
-	return copy(b, m), nil, nil
+	m, from := c.queue[0], c.srcs[0]
+	c.queue, c.srcs = c.queue[1:], c.srcs[1:]
+	return copy(b, m), from, nil
 }
 
 func (c *fakeICMPConn) SetDeadline(time.Time) error { return nil }
+
+// echoOf is the honest reply to the echo request req: the same message with
+// the type of a reply and its checksum, optionally behind an IPv4 header.
+func echoOf(req []byte, withIPHeader bool) []byte {
+	m := append([]byte(nil), req...)
+	m[0], m[2], m[3] = icmpEchoReply, 0, 0
+	binary.BigEndian.PutUint16(m[2:], checksum(m))
+	if !withIPHeader {
+		return m
+	}
+	h := make([]byte, 20)
+	h[0], h[8], h[9] = 0x45, 64, 1
+	return append(h, m...)
+}
+
+// forged is an echo reply with a valid checksum for id and seq that carries
+// payload.
+func forged(id, seq uint16, payload []byte) []byte {
+	m := make([]byte, 8+len(payload))
+	binary.BigEndian.PutUint16(m[4:], id)
+	binary.BigEndian.PutUint16(m[6:], seq)
+	copy(m[8:], payload)
+	binary.BigEndian.PutUint16(m[2:], checksum(m))
+	return m
+}
+
+func one(f func(req []byte) []byte) func(req []byte) [][]byte {
+	return func(req []byte) [][]byte { return [][]byte{f(req)} }
+}
+
+func reqID(req []byte) uint16  { return binary.BigEndian.Uint16(req[4:6]) }
+func reqSeq(req []byte) uint16 { return binary.BigEndian.Uint16(req[6:8]) }
 
 func TestICMPRoundMatchesOwnReply(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	dst := &net.IPAddr{IP: net.IPv4(127, 0, 0, 1)}
-	matching := func(id, seq uint16) []byte { return replyBytes(id, seq, true) }
-	otherID := func(_, seq uint16) []byte { return replyBytes(0xffff, seq, false) }
-	otherSeq := func(id, seq uint16) []byte { return replyBytes(id, seq+1, false) }
-	badSum := func(id, seq uint16) []byte {
-		b := replyBytes(id, seq, false)
+	matching := one(func(req []byte) []byte { return echoOf(req, true) })
+	otherID := one(func(req []byte) []byte { return forged(reqID(req)+1, reqSeq(req), req[8:]) })
+	otherSeq := one(func(req []byte) []byte { return forged(reqID(req), reqSeq(req)+1, req[8:]) })
+	badSum := one(func(req []byte) []byte {
+		b := echoOf(req, false)
 		b[2] ^= 0xff
 		return b
+	})
+
+	cases := []struct {
+		name    string
+		script  []func(req []byte) [][]byte
+		wantErr bool
+	}{
+		{"matching reply", []func([]byte) [][]byte{matching}, false},
+		{"noise then matching reply", []func([]byte) [][]byte{otherID, matching}, false},
+		{"reply to another sequence only", []func([]byte) [][]byte{otherSeq}, true},
+		{"reply with a bad checksum only", []func([]byte) [][]byte{badSum}, true},
+		{"no reply at all", nil, true},
+	}
+	for _, c := range cases {
+		from := make([]net.Addr, len(c.script))
+		for i := range from {
+			from[i] = dst
+		}
+		conn := &fakeICMPConn{script: c.script, from: from}
+		err := icmpRound(ctx, conn, dst, "127.0.0.1")
+		if c.wantErr && err == nil {
+			t.Errorf("%s: icmpRound returned no error", c.name)
+		}
+		if !c.wantErr && err != nil {
+			t.Errorf("%s: icmpRound: %v", c.name, err)
+		}
+	}
+}
+
+// TestICMPRoundRefusesForgedReplies: a reply counts only when it comes from
+// the probed address and carries the request's payload back, so a device on
+// the LAN that sprays echo replies with the probe's identifier cannot make a
+// lost internet look up.
+func TestICMPRoundRefusesForgedReplies(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	dst := &net.IPAddr{IP: net.IPv4(198, 51, 100, 7)}
+	lan := &net.IPAddr{IP: net.IPv4(192, 168, 1, 66)}
+	honest := one(func(req []byte) []byte { return echoOf(req, false) })
+	otherPayload := one(func(req []byte) []byte {
+		p := append([]byte(nil), req[8:]...)
+		p[len(p)-1] ^= 1
+		return forged(reqID(req), reqSeq(req), p)
+	})
+	// Every sequence number, with the identifier and the payload a probe
+	// with a fixed payload sends.
+	spray := func(req []byte) [][]byte {
+		out := make([][]byte, 0, 1<<16)
+		for seq := range 1 << 16 {
+			out = append(out, forged(reqID(req), uint16(seq), []byte("rollcall")))
+		}
+		return out
 	}
 
 	cases := []struct {
 		name    string
-		script  []func(id, seq uint16) []byte
+		script  []func(req []byte) [][]byte
+		from    []net.Addr
 		wantErr bool
 	}{
-		{"matching reply", []func(uint16, uint16) []byte{matching}, false},
-		{"noise then matching reply", []func(uint16, uint16) []byte{otherID, matching}, false},
-		{"reply to another sequence only", []func(uint16, uint16) []byte{otherSeq}, true},
-		{"reply with a bad checksum only", []func(uint16, uint16) []byte{badSum}, true},
-		{"no reply at all", nil, true},
+		{"the honest reply from the probed address", []func([]byte) [][]byte{honest}, []net.Addr{dst}, false},
+		{"a copy of the reply from another address", []func([]byte) [][]byte{honest}, []net.Addr{lan}, true},
+		{"a reply from no address", []func([]byte) [][]byte{honest}, []net.Addr{nil}, true},
+		{"a reply from the probed address with another payload", []func([]byte) [][]byte{otherPayload}, []net.Addr{dst}, true},
+		{"65536 forged replies from the LAN", []func([]byte) [][]byte{spray}, []net.Addr{lan}, true},
+		{"65536 forged replies in the probed address's name", []func([]byte) [][]byte{spray}, []net.Addr{dst}, true},
+		{"forged replies, then the honest one", []func([]byte) [][]byte{spray, otherPayload, honest}, []net.Addr{lan, dst, dst}, false},
 	}
 	for _, c := range cases {
-		conn := &fakeICMPConn{script: c.script}
-		err := icmpRound(ctx, conn, dst, "127.0.0.1")
+		conn := &fakeICMPConn{script: c.script, from: c.from}
+		err := icmpRound(ctx, conn, dst, dst.IP.String())
 		if c.wantErr && err == nil {
-			t.Errorf("%s: icmpRound returned no error", c.name)
+			t.Errorf("%s: icmpRound took it as an answer", c.name)
 		}
 		if !c.wantErr && err != nil {
 			t.Errorf("%s: icmpRound: %v", c.name, err)
