@@ -355,6 +355,24 @@ func TestDueOldestFirst(t *testing.T) {
 	}
 }
 
+// TestDueInSeqOrder (U1): incidents that start at one moment, roster
+// announcements placed when they were queued, go in the order of their Seq
+// (the roster version), whatever their IDs; then by ID.
+func TestDueInSeqOrder(t *testing.T) {
+	q := NewQueue()
+	at := t0.Add(time.Minute)
+	for _, x := range []struct{ id, seq int }{{0xf1, 2}, {0x31, 5}, {0xa1, 3}, {0x21, 4}, {0x41, 0}, {0x11, 0}} {
+		inc := incident(x.id, at)
+		inc.Seq = uint64(x.seq)
+		q.Add(inc, t0)
+	}
+	q.Add(incident(0xff, t0), t0)
+	want := []string{"00000000000000ff", "0000000000000011", "0000000000000041", "00000000000000f1", "00000000000000a1", "0000000000000021", "0000000000000031"}
+	if got := idsOf(q.Due(a, a, t0)); !slices.Equal(got, want) {
+		t.Errorf("Due = %v, want %v", got, want)
+	}
+}
+
 func TestAtMostOnePerSecond(t *testing.T) {
 	if Spacing != time.Second {
 		t.Fatalf("Spacing = %v, want 1s", Spacing)

@@ -74,6 +74,12 @@ type Incident struct {
 	// Refs are the events' history entry hashes, one per event, in byte
 	// order: the link from the incident back to what it reports.
 	Refs []ids.Hash
+	// Seq places the incident among incidents that start at the same
+	// moment: the node sets it on a roster announcement to the version of
+	// the roster it announces, so announcements queued together go out in
+	// the order they were made. Coalesce leaves it 0. It is not part of the
+	// ID.
+	Seq uint64
 }
 
 // role is what an event contributes to finding its cause.

@@ -32,7 +32,11 @@ import (
 // every member queues the same incident for one roster change and the
 // group sends it once: a change is announced exactly once (invariant 16).
 // The changes a lost branch made are announced the same way, from the
-// entry a member records when it adopts the other branch.
+// entry a member records when it adopts the other branch. A roster carries
+// no time, so the incident is placed, after its ID is fixed, at the moment
+// this member queued it, and its Seq is the roster version:
+// announcements held back together (the chat out) go out in the order the
+// changes were made, and after anything that happened before them (U1).
 //
 // Every incident goes into the deliver.Queue; the election decides who
 // sends, and acknowledgements come back as history entries.
@@ -63,6 +67,7 @@ type evRec struct {
 	seq      uint64
 	back     ids.BootID // for a return: the boot its subject came back in
 	last     ids.BootID // the boot its subject was last heard in (or left), when known
+	version  uint64     // for a roster announcement: the version of the roster it announces
 }
 
 type incRec struct {
@@ -318,7 +323,7 @@ func (n *Node) announceLocked(prev roster.Roster, s roster.Signed, r roster.Rost
 		return
 	}
 	n.inc.changes[ref] = diffRosters(prev, r, signerName(prev, s))
-	n.inc.add(ref, &evRec{ev: events.Event{Type: events.RosterChanged, Ref: ref, At: fixedStamp}, seen: now.Mono, single: true})
+	n.inc.add(ref, &evRec{ev: events.Event{Type: events.RosterChanged, Ref: ref, At: fixedStamp}, seen: now.Mono, single: true, version: r.Version})
 }
 
 func signerName(prev roster.Roster, s roster.Signed) string {
@@ -455,9 +460,12 @@ func (n *Node) incidentsLocked(now clock.Stamp) {
 			r.assigned = true
 			incs := events.Coalesce([]events.Event{r.ev}, events.DefaultWindow)
 			if len(incs) == 1 {
-				n.inc.facts[incs[0].ID] = n.inc.changes[r.ev.Ref]
-				n.queueLocked(incs[0], []events.Event{r.ev}, nil, now)
-				n.inc.byID[incs[0].ID].single = true
+				inc := incs[0]
+				at := n.localStamp(now)
+				inc.Start, inc.End, inc.Seq = at, at, r.version
+				n.inc.facts[inc.ID] = n.inc.changes[r.ev.Ref]
+				n.queueLocked(inc, []events.Event{r.ev}, nil, now)
+				n.inc.byID[inc.ID].single = true
 			}
 		default:
 			list = append(list, r.ev)

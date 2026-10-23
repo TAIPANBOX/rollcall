@@ -31,7 +31,10 @@
 //
 // One Queue serves one chat. Deliver makes at most one attempt per Spacing
 // (one message per second per chat), oldest incident first, and never two at
-// once. A failed attempt keeps its incident queued. After ErrRateLimited it
+// once. Oldest is by the incident's Start, then its Seq (roster
+// announcements queued together go in the order of their roster versions),
+// then its ID, so incidents held back together (the chat out, no sender) go
+// out in the order they happened. A failed attempt keeps its incident queued. After ErrRateLimited it
 // waits the channel's retry_after (DefaultRetryAfter if none, at least Spacing,
 // at most MaxRetryAfter); after ErrBlocked it tries at most once per
 // BlockedRetry until a send succeeds; after ErrTLS, and after any other
@@ -65,6 +68,7 @@
 package deliver
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -181,7 +185,7 @@ type sent struct {
 type Queue struct {
 	mu sync.Mutex
 
-	items     []*item // oldest first: by Start.Wall, then by ID
+	items     []*item // oldest first: by Start.Wall, then by Seq, then by ID
 	done      map[string]struct{}
 	doneOrder []string // done in the order learnt, to forget the oldest
 	dropped   int
@@ -234,6 +238,9 @@ func (q *Queue) Add(inc events.Incident, now time.Time) bool {
 	it := &item{inc: clone(inc), added: now}
 	i, _ := slices.BinarySearchFunc(q.items, it, func(x, y *item) int {
 		if c := x.inc.Start.Wall.Compare(y.inc.Start.Wall); c != 0 {
+			return c
+		}
+		if c := cmp.Compare(x.inc.Seq, y.inc.Seq); c != 0 {
 			return c
 		}
 		return strings.Compare(x.inc.ID, y.inc.ID)
