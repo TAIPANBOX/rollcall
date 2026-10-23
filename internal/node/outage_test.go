@@ -71,3 +71,34 @@ func TestSilenceReportedSoon(t *testing.T) {
 	}
 	t.Fatal("the silence never reached the chat")
 }
+
+// TestRestartDuringOutageOneMessage (D5): the whole site loses its internet;
+// meanwhile one router restarts and, its internet still gone, records the
+// loss again. That is the same outage: the chat gets one message for it,
+// from its start to its end.
+func TestRestartDuringOutageOneMessage(t *testing.T) {
+	g := newGroup(t, setup{n: 3, senders: map[int]int{0: 1}})
+	g.run(60 * sec)
+	g.chat.setDown(true)
+	for _, n := range g.nodes {
+		n.LocalEvent(events.Event{Type: events.InternetLost})
+	}
+	g.run(2 * time.Minute)
+	g.stop(2)
+	g.run(time.Minute)
+	c := g.reboot(2)
+	g.run(30 * sec)
+	c.LocalEvent(events.Event{Type: events.InternetLost})
+	g.run(2 * time.Minute)
+	g.chat.setDown(false)
+	g.run(31 * sec)
+	for _, n := range g.nodes {
+		n.LocalEvent(events.Event{Type: events.InternetRestored})
+	}
+	g.run(2 * time.Minute)
+	t.Logf("chat:\n%s", strings.Join(g.chat.all(), "\n"))
+	ms := g.chat.messages("internet")
+	if len(ms) != 1 || !strings.Contains(ms[0], "internet was down from 09:01 to 09:07") {
+		t.Fatalf("messages about the internet %q; want one, from the start of the outage to its end", ms)
+	}
+}

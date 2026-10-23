@@ -407,11 +407,43 @@ func (n *Node) incidentsLocked(now clock.Stamp) {
 			}
 			continue
 		}
-		if n.toldAlreadyLocked(evs) {
+		if n.toldAlreadyLocked(evs) || n.continuesOutageLocked(evs) {
 			continue
 		}
 		n.queueLocked(inc, evs, nil, now)
 	}
+}
+
+// lossOf maps a loss to the restore that ends it.
+var lossOf = map[events.Type]events.Type{events.InternetLost: events.InternetRestored, events.WanDown: events.WanUp}
+
+// continuesOutageLocked reports whether evs are only losses (internet, WAN)
+// that their witnesses recorded again during an outage still open here: an
+// incident kept, not yet paired with its end, where each of them recorded
+// that loss already. A router that restarts while the internet is still out
+// finds it out again; that is the same outage, told once from its start to
+// its end (D5).
+func (n *Node) continuesOutageLocked(evs []events.Event) bool {
+	if len(evs) == 0 {
+		return false
+	}
+	for _, e := range evs {
+		if _, ok := lossOf[e.Type]; !ok {
+			return false
+		}
+	}
+	for _, r := range n.inc.recent {
+		if r.paired || r.single || r.inc.Causes != 0 {
+			continue
+		}
+		open := !slices.ContainsFunc(r.events, func(f events.Event) bool { return f.Type == lossOf[evs[0].Type] })
+		if open && !slices.ContainsFunc(evs, func(e events.Event) bool {
+			return !slices.ContainsFunc(r.events, func(f events.Event) bool { return f.Type == e.Type && f.Witness == e.Witness })
+		}) {
+			return true
+		}
+	}
+	return false
 }
 
 // toldAlreadyLocked reports whether every event of evs, late records that
