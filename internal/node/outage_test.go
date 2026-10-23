@@ -49,3 +49,25 @@ func TestReturnKnownBeforeSendingOneMessage(t *testing.T) {
 		t.Fatalf("messages about r03 %q; want one that tells the reboot with its length", ms)
 	}
 }
+
+// TestSilenceReportedSoon (D8): a router loses power; the chat tells its
+// silence within 45 s of the cut: detection at 30 s, then no more than the
+// 10 s coalescing window for the other routers' records to join.
+func TestSilenceReportedSoon(t *testing.T) {
+	g := newGroup(t, setup{n: 3, senders: map[int]int{0: 1}})
+	g.run(90 * sec)
+	g.stop(2)
+	cut := g.clk.Mono()
+	g.run(time.Minute)
+	g.chat.mu.Lock()
+	defer g.chat.mu.Unlock()
+	for _, m := range g.chat.msgs {
+		if strings.Contains(m.text, "r03 stopped answering") {
+			if d := m.at - cut; d > 45*sec {
+				t.Fatalf("the silence reached the chat %s after the cut, want within 45 s", d)
+			}
+			return
+		}
+	}
+	t.Fatal("the silence never reached the chat")
+}

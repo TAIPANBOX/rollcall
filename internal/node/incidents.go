@@ -38,8 +38,11 @@ import (
 // sends, and acknowledgements come back as history entries.
 
 const (
-	// settle is how long an event waits for the others of its cause.
-	settle = events.DefaultWindow + 2*retryEvery
+	// settle is how long an event waits for the others of its cause: the
+	// coalescing window (D8). Detection stays at 30 s, so a silence reaches
+	// the chat about 40 to 45 s after the last heartbeat; a record that
+	// comes later only adds a witness (toldAlreadyLocked).
+	settle = events.DefaultWindow
 	// maxIncidentAge keeps old events, caught up after an absence, out of
 	// the chat: they stay in the history only.
 	maxIncidentAge = 24 * time.Hour

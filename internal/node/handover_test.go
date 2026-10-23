@@ -93,11 +93,14 @@ func TestMergedIncidentHonoursReturnAck(t *testing.T) {
 // A sender that hears a member again waits for their views to meet before
 // it sends, so the two sides' senders do not both send at once.
 func TestSenderWaitsForPeerHeardAgain(t *testing.T) {
-	g := newGroup(t, setup{n: 2, senders: map[int]int{0: 2, 1: 1}})
+	// r02 has no sender role here, so no acknowledgement of its own holds
+	// r01 back: only hearing r02 again does.
+	g := newGroup(t, setup{n: 2, senders: map[int]int{0: 2}})
 	g.run(40 * sec)
 	g.split([]int{0}, []int{1}, true)
 	g.run(time.Minute)
-	g.nodes[0].LocalEvent(events.Event{Type: events.WanDown})
+	// A fact of its own, which no return joins.
+	g.nodes[0].LocalEvent(events.Event{Type: events.MemberLeft})
 	g.run(settle - 2*sec) // the incident is ready two seconds after the heal
 	g.split([]int{0}, []int{1}, false)
 	healed := g.clk.Mono()
@@ -116,14 +119,14 @@ func TestSenderWaitsForPeerHeardAgain(t *testing.T) {
 	g.chat.mu.Lock()
 	defer g.chat.mu.Unlock()
 	for _, m := range g.chat.msgs {
-		if strings.Contains(m.text, "WAN went down") {
+		if strings.Contains(m.text, "left the group") {
 			if d := m.at - healed; d < g.cfgs[0].Heartbeat {
 				t.Fatalf("r01 sent %s after it heard r02 again, before their views could meet (a heartbeat, %s)", d, g.cfgs[0].Heartbeat)
 			}
 			return
 		}
 	}
-	t.Fatal("the WAN loss never reached the chat")
+	t.Fatal("the fact never reached the chat")
 }
 
 // TestMergedAckCoversItsStart (D5): once another member told a whole
