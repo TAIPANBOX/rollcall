@@ -125,3 +125,40 @@ func TestSenderWaitsForPeerHeardAgain(t *testing.T) {
 	}
 	t.Fatal("the WAN loss never reached the chat")
 }
+
+// TestMergedAckCoversItsStart (D5): once another member told a whole
+// absence (the merged incident acknowledged), the silence that began it
+// counts as told: the sender holds nothing of it.
+func TestMergedAckCoversItsStart(t *testing.T) {
+	g := newGroup(t, setup{n: 2, senders: map[int]int{0: 1}})
+	g.run(10 * sec)
+	g.chat.setDown(true)
+	a := g.nodes[0]
+	const silence, ret, merged = "1111111111111111", "2222222222222222", "3333333333333333"
+	with(a, func() any {
+		now := a.stamp()
+		a.queueLocked(events.Incident{ID: silence, Start: now, End: now}, nil, nil, now)
+		a.queueLocked(events.Incident{ID: merged, Start: now, End: now}, nil, []string{silence, ret}, now)
+		return nil
+	})
+	body, err := deliver.AckBody(merged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := g.ids[1]
+	head := with(a, func() history.Head { return a.log.Head(b.ID) })
+	ack, err := history.NewEntry(b, head, history.KindEvent, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inject(a, ack)
+	st := a.Status()
+	if st.Queued != 0 {
+		t.Fatalf("%d incidents queued after the whole absence was told, want 0", st.Queued)
+	}
+	for _, inc := range st.Incidents {
+		if !inc.Delivered {
+			t.Fatalf("incident %s %q not delivered after the whole absence was told", inc.ID, inc.Text)
+		}
+	}
+}

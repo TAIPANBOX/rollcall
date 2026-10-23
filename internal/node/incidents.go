@@ -322,7 +322,12 @@ func (n *Node) incidentsLocked(now clock.Stamp) {
 		}
 		if m, parts, mev, ok := n.pairLocked(inc, evs); ok {
 			n.queueLocked(m, mev, parts, now)
-			if start := parts[0]; !n.deliveredLocked(m.ID) && !n.deliveredLocked(start) {
+			switch start := parts[0]; {
+			case n.deliveredLocked(start):
+			case n.deliveredLocked(m.ID):
+				// Another member told the whole absence, from its start.
+				n.ackedLocked(start, n.id.ID)
+			default:
 				// Not sent yet: the merged incident tells its start too, in
 				// one message (D5).
 				n.queue.Ack(start, n.id.ID)
@@ -427,12 +432,20 @@ func (n *Node) deliveredLocked(id string) bool {
 	return r != nil && len(r.components) > 1 && !slices.ContainsFunc(r.components, func(c string) bool { return !n.inc.ackedIDs[c] })
 }
 
-// ackedLocked takes the acknowledgement of incident id by member by, and
-// with it that of every merged incident whose parts are all acknowledged
-// now.
+// ackedLocked takes the acknowledgement of incident id by member by: with a
+// merged incident, the incidents it stands for, which it told; and every
+// merged incident whose parts are all acknowledged now.
 func (n *Node) ackedLocked(id string, by ids.MemberID) {
 	n.queue.Ack(id, by)
 	n.inc.acked(id)
+	if r := n.inc.byID[id]; r != nil {
+		for _, c := range r.components {
+			if !n.inc.ackedIDs[c] {
+				n.queue.Ack(c, by)
+				n.inc.acked(c)
+			}
+		}
+	}
 	for _, r := range n.inc.recent {
 		if len(r.components) > 1 && slices.Contains(r.components, id) && !n.inc.ackedIDs[r.inc.ID] && n.deliveredLocked(r.inc.ID) {
 			n.queue.Ack(r.inc.ID, by)
