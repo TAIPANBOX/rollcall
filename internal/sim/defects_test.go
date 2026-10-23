@@ -19,14 +19,6 @@ import (
 // running strict and removing its entry here. Anything that fails and is not
 // listed here always fails.
 var knownDefects = map[string]string{
-	"D1": "a router that stayed up corrects the others' silence claim and records an update (again after each restart), " +
-		"which the chat gets as an extra message ('r03 lost contact until 09:01 but stayed up'): redundant with the group's " +
-		"own link-loss message, and its time is the claim's (when the silence began), told as 'until' " +
-		"(TestMeshNodeLinkLoss; sweep I2)",
-	"D2": "two senders around a sender's return: after 6c9d126 an outage no longer makes both send, but when the " +
-		"higher-priority sender comes back from its own reboot, both still send within 15 s (sweep I5: seeds 18, 76, 166 " +
-		"of 200), or it sends again a reboot message the other already sent, built from another set of events (same text, " +
-		"another ID; sweep I2: seeds 2, 91, 194)",
 	"D5": "after an outage the sender becomes eligible (its ping succeeds) before the restore has settled, so the queued " +
 		"'internet lost at 09:01' goes out alone and 20 s later 'internet was down from 09:01 to 09:06 (5 min)': two " +
 		"messages where one is wanted (TestSingleRouterGroup, TestNobodyReachesTelegram20Min)",

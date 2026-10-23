@@ -320,7 +320,7 @@ func TestMeshNodeLinkLoss(t *testing.T) {
 		v.fail("D9", "messages about the routers that kept their link: %v", o)
 	}
 	if len(ms) > 2 {
-		v.fail("D1,D9", "%d messages, want at most 2: r03's silence and its link problem", len(ms))
+		v.fail("D9", "%d messages, want at most 2: r03's silence and its link problem", len(ms))
 	}
 }
 
