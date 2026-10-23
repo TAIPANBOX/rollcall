@@ -208,7 +208,6 @@ and four defects the lab run found and fixed: [docs/measured.md](docs/measured.m
 ## Not yet
 
 - No final 1.0.0 yet: this is a release candidate. No feed for OpenWrt 24.10 (opkg) yet.
-- Installed from the feed on a router: not yet; the feed was proven in an OpenWrt 25.12 container.
 - Only `aarch64_cortex-a53` on a router; MIPS has not run anywhere, OpenWrt 24.10 not on a router.
 - A mesh, separate LANs with their own DHCP, and NAT: only in the simulator so far.
 - sysupgrade, a pulled power cord and flash wear over days: not run yet.
