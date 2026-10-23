@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"time"
 
@@ -111,8 +112,10 @@ func readBody(r io.Reader) ([]byte, error) {
 	return b, nil
 }
 
-// isTLS reports whether err is a certificate or TLS failure. Nothing was sent
-// in clear when one happens, and the queue keeps the incident.
+// isTLS reports whether err is a certificate or TLS failure: a certificate
+// that does not verify, a record that is not TLS, or a TLS alert (isAlert).
+// Nothing was sent in clear when one happens, and the queue keeps the
+// incident.
 func isTLS(err error) bool {
 	var cve *tls.CertificateVerificationError
 	var ua x509.UnknownAuthorityError
@@ -123,7 +126,56 @@ func isTLS(err error) bool {
 	var ae tls.AlertError
 	return errors.As(err, &cve) || errors.As(err, &ua) || errors.As(err, &he) ||
 		errors.As(err, &cie) || errors.As(err, &sre) || errors.As(err, &rhe) ||
-		errors.As(err, &ae)
+		errors.As(err, &ae) || isAlert(err)
+}
+
+// The Ops crypto/tls gives the *net.OpError of an alert: the peer's alert,
+// and the one it sends itself when the peer breaks the protocol.
+const (
+	opRemoteAlert = "remote error"
+	opLocalAlert  = "local error"
+)
+
+// tlsPackage is the import path of crypto/tls, whose alert type is
+// unexported.
+const tlsPackage = "crypto/tls"
+
+// isAlert reports whether err holds a TLS alert. Over TCP, crypto/tls does
+// not report one as tls.AlertError, which it uses only with QUIC: it returns
+// &net.OpError{Op: "remote error", Err: alert} for an alert the peer sent and
+// Op "local error" for one it sent itself (conn.go, readRecordOrCCS and
+// sendAlertLocked, Go 1.27), where alert is an unexported type. So the Op and
+// the package of the Err's type are the only signals, and both must hold.
+// Every error in err's tree is looked at, as errors.As would, since
+// net/http and crypto/tls wrap the OpError in their own errors.
+func isAlert(err error) bool {
+	return inTree(err, func(e error) bool {
+		op, ok := e.(*net.OpError)
+		return ok && (op.Op == opRemoteAlert || op.Op == opLocalAlert) &&
+			op.Err != nil && reflect.TypeOf(op.Err).PkgPath() == tlsPackage
+	})
+}
+
+// inTree reports whether match holds for err or any error it wraps, through
+// Unwrap() error and Unwrap() []error.
+func inTree(err error, match func(error) bool) bool {
+	if err == nil {
+		return false
+	}
+	if match(err) {
+		return true
+	}
+	switch u := err.(type) {
+	case interface{ Unwrap() error }:
+		return inTree(u.Unwrap(), match)
+	case interface{ Unwrap() []error }:
+		for _, e := range u.Unwrap() {
+			if inTree(e, match) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // keptSentinels are the errors a scrubbed error still matches with errors.Is:
