@@ -14,7 +14,7 @@ and the generator that writes one profile per architecture. `scripts/mkipk.sh` a
 | `/etc/hotplug.d/iface/50-rollcall` | forwards interface events to `rollcall notify iface`, in the background |
 | `/etc/hotplug.d/ntp/50-rollcall` | tells the daemon the clock is synchronised (`rollcall notify clock-synced`), in the background |
 | `/etc/config/rollcall` | site configuration; kept across upgrades |
-| `/etc/uci-defaults/90-rollcall` | firewall rule for UDP and TCP 7432 from each peer zone |
+| `/etc/uci-defaults/90-rollcall` | builds the firewall rules at first boot and after an upgrade (`/etc/init.d/rollcall firewall`) |
 | `/etc/seccomp/rollcall.json` | system call allow-list, generated for the target architecture |
 | `/etc/capabilities/rollcall.json` | `CAP_NET_RAW`, used only when `option icmp '1'` |
 | `/lib/upgrade/keep.d/rollcall` | keeps `/etc/rollcall/` and `/etc/config/rollcall` on sysupgrade |
@@ -62,6 +62,31 @@ failed that check, so every start was refused. Root runs the CLI from hotplug, t
 and LuCI, and reaches the socket whatever the directory mode, because root bypasses file
 permissions. The gate `TestInitScriptHardening` applies the control rule to the mode and owner
 the init script sets, and reads the path from `ControlDirPath` in `cmd/rollcalld/main.go`.
+
+## Firewall
+
+One builder writes the rules: `/etc/init.d/rollcall firewall`. The postinst and
+`uci-defaults/90-rollcall` run it at install, and `reload_service` runs it again whenever the
+rollcall or firewall configuration changes (`procd_add_reload_trigger rollcall firewall`), then
+reloads the firewall and restarts the daemon when one of its configuration files changed
+(`procd_set_param file`). It reads the configuration through `uci` alone and removes every rule
+an earlier run wrote (`firewall.rollcall_N`, and `firewall.rollcall` of earlier versions).
+
+- One rule per peer zone, `src` = that zone (fw4 takes one zone per rule), UDP and TCP to
+  `option port` (default 7432). No `peer_zone` means `lan`, the daemon's default.
+- A zone faces the internet when `masq` or `masq6` is set to anything but an off value, or when
+  the zone is or holds the network `wan`, `wan6` or `wwan`. `internal/config` decides the same
+  and accepts such a zone only together with static peers. Its rule admits only the static
+  peers' addresses (`src_ip`), one rule per address family (`family ipv4` / `ipv6`), so a mixed
+  list never depends on how fw4 splits families. Static peers are IP literals (`IP`, `IP:port`,
+  `[IPv6]:port`; host names are refused by the daemon), so `src_ip` is the address itself,
+  without the port and without the zone of a link-local address.
+- Such a zone without a static peer, a zone the firewall does not have, a bad port or no
+  rollcall section get no rule at all, and the builder says why on stderr and in syslog.
+
+The gate `TestFirewallRuleBuilder` runs the builder against a stub `uci` (19 cases) and its
+teeth plant the faults the first builder had: the literal port 7432, a zone facing the internet
+opened to every source, and `src_ip` dropped.
 
 ## Hotplug
 

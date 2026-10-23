@@ -1,9 +1,12 @@
 config rollcall 'main'
-	# Zones whose LAN side may reach rollcall. The firewall rule opens the port to each one.
+	# Zones peers reach rollcall in; the firewall rule opens the port to each one. A zone that
+	# faces the internet (masquerading, or wan, wan6, wwan) needs static peers, and only they
+	# may reach the port there.
 	list peer_zone 'lan'
 	# The port the daemon listens on, UDP and TCP. 7431 is taken by pmd.
 	option port '7432'
 	# ICMP internet probes need CAP_NET_RAW. Off by default; set to 1 to enable them.
 	option icmp '0'
-	# Static peers, for routed or NAT-separated segments, as address:port. Empty means discovery only.
+	# Static peers, for routed or NAT-separated segments: IP, IP:port or [IPv6]:port (no host
+	# names). Empty means discovery only.
 	# list peer '192.0.2.10:7432'

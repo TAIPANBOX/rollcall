@@ -10,6 +10,9 @@ STOP=05
 DAEMON=/usr/bin/rollcalld
 CLI=/usr/bin/rollcall
 
+EXTRA_COMMANDS="firewall"
+EXTRA_HELP="	firewall	Rebuild the firewall rules that open the rollcall port to the peer zones"
+
 start_service() {
 	local icmp
 	config_load rollcall
@@ -35,6 +38,8 @@ start_service() {
 	procd_set_param no_new_privs 1
 	procd_set_param seccomp /etc/seccomp/rollcall.json
 	procd_set_param respawn
+	# The daemon reads these at start; reload_service restarts it when one of them changed.
+	procd_set_param file /etc/config/rollcall /etc/config/firewall /etc/config/network /etc/config/system
 	procd_set_param stdout 1
 	procd_set_param stderr 1
 	# CAP_NET_RAW is granted only for ICMP probes. Without the option the daemon holds no capability.
@@ -52,6 +57,169 @@ start_service() {
 	# file. All three are mounted read-only, so the name resolves however ujail stages the link.
 	procd_add_jail_mount /etc/resolv.conf /tmp/resolv.conf /tmp/resolv.conf.d
 	procd_close_instance
+}
+
+service_triggers() {
+	# A change of the rollcall or firewall configuration (LuCI apply, reload_config) runs
+	# reload_service: the firewall rules follow the peer zones, the port and the static peers.
+	procd_add_reload_trigger rollcall firewall
+}
+
+reload_service() {
+	firewall
+	/etc/init.d/firewall reload >/dev/null 2>&1 || true
+	start
+}
+
+# firewall rebuilds the firewall rules that open the rollcall port. It is the only rule builder:
+# uci-defaults and postinst run it at install, reload_service after a change. It reads the
+# configuration through uci alone and removes every rule an earlier run wrote first.
+#
+# One rule per peer zone (no peer_zone: lan, the daemon's default), UDP and TCP to option port
+# (default 7432). A zone that faces the internet, as internal/config decides it (masq or masq6
+# set to anything but an off value, or the zone is or holds the network wan, wan6 or wwan), is
+# opened only to the addresses of the static peers, one rule per address family, and gets no
+# rule at all without a static peer. An unknown zone, a bad port or no rollcall section gives no
+# rule, and says why.
+firewall() {
+	local port zones zone peer addr kind v4= v6= n=0 i=1
+	set -f
+	uci -q delete firewall.rollcall
+	while uci -q get "firewall.rollcall_$i" >/dev/null; do
+		uci -q delete "firewall.rollcall_$i"
+		i=$((i + 1))
+	done
+	if ! uci -q get 'rollcall.@rollcall[0]' >/dev/null; then
+		rollcall_warn "no rollcall section in /etc/config/rollcall: no firewall rule"
+	elif ! port=$(rollcall_port); then
+		rollcall_warn "option port is not a number from 1024 to 65535: no firewall rule"
+	else
+		zones=$(uci -q get 'rollcall.@rollcall[0].peer_zone')
+		[ -n "$zones" ] || zones=lan
+		for peer in $(uci -q get 'rollcall.@rollcall[0].peer'); do
+			addr=$(rollcall_peer_addr "$peer")
+			case $addr in
+			'') rollcall_warn "static peer '$peer' is not an address: left out of the firewall rule" ;;
+			*:*) v6="$v6 $addr" ;;
+			*) v4="$v4 $addr" ;;
+			esac
+		done
+		for zone in $zones; do
+			case $zone in
+			'' | *[!A-Za-z0-9_-]*)
+				rollcall_warn "peer zone '$zone' is not a zone name: no rule"
+				continue
+				;;
+			esac
+			kind=$(rollcall_zone_kind "$zone")
+			case $kind in
+			internal) rollcall_rule "$zone" ;;
+			external)
+				if [ -z "$v4$v6" ]; then
+					rollcall_warn "peer zone '$zone' faces the internet and there is no static peer: no rule"
+					continue
+				fi
+				[ -z "$v4" ] || rollcall_rule "$zone" ipv4 "$v4"
+				[ -z "$v6" ] || rollcall_rule "$zone" ipv6 "$v6"
+				;;
+			*) rollcall_warn "peer zone '$zone' is not a zone of /etc/config/firewall: no rule" ;;
+			esac
+		done
+	fi
+	uci commit firewall
+	set +f
+}
+
+# rollcall_rule writes rule number n: the zone, and for a zone facing the internet the address
+# family and the static peers' addresses of that family.
+rollcall_rule() {
+	local s a
+	n=$((n + 1))
+	s=firewall.rollcall_$n
+	uci set "$s=rule"
+	uci set "$s.name=Allow-rollcall-$1${2:+-$2}"
+	uci set "$s.src=$1"
+	uci add_list "$s.proto=udp"
+	uci add_list "$s.proto=tcp"
+	uci set "$s.dest_port=$port"
+	uci set "$s.target=ACCEPT"
+	[ -n "$2" ] || return 0
+	uci set "$s.family=$2"
+	for a in $3; do
+		uci add_list "$s.src_ip=$a"
+	done
+}
+
+# rollcall_port prints option port without leading zeros, or fails when it is not a number from
+# 1024 to 65535 (the daemon refuses to start then, so nothing is opened).
+rollcall_port() {
+	local p
+	p=$(uci -q get 'rollcall.@rollcall[0].port') || p=7432
+	p=${p#"${p%%[!0]*}"}
+	case $p in
+	[1-9][0-9][0-9][0-9] | [1-9][0-9][0-9][0-9][0-9]) ;;
+	*) return 1 ;;
+	esac
+	[ "$p" -ge 1024 ] && [ "$p" -le 65535 ] || return 1
+	echo "$p"
+}
+
+# rollcall_peer_addr prints the address of a static peer written as IP, IP:port or [IPv6]:port,
+# without the zone of a link-local address, or nothing when it is not an address.
+rollcall_peer_addr() {
+	local a=$1
+	case $a in
+	\[*\]:*)
+		a=${a#\[}
+		a=${a%%\]*}
+		;;
+	*:*:*) ;;
+	*:*) a=${a%:*} ;;
+	esac
+	a=${a%%\%*}
+	case $a in
+	'' | *[!0-9A-Fa-f:.]*) return 0 ;;
+	esac
+	echo "$a"
+}
+
+# rollcall_zone_kind prints external for a firewall zone that faces the internet, internal for
+# any other zone, and nothing for a name no zone has. Every zone section with the name counts.
+rollcall_zone_kind() {
+	local i=0 found= ext= name v net
+	case $1 in
+	wan | wan6 | wwan) ext=1 ;;
+	esac
+	while uci -q get "firewall.@zone[$i]" >/dev/null; do
+		name=$(uci -q get "firewall.@zone[$i].name")
+		if [ "$name" = "$1" ]; then
+			found=1
+			for v in masq masq6; do
+				v=$(uci -q get "firewall.@zone[$i].$v") || continue
+				case $v in
+				0 | no | off | false | disabled) ;;
+				*) ext=1 ;;
+				esac
+			done
+			for net in $(uci -q get "firewall.@zone[$i].network"); do
+				case $net in
+				wan | wan6 | wwan) ext=1 ;;
+				esac
+			done
+		fi
+		i=$((i + 1))
+	done
+	[ -n "$found" ] || return 0
+	if [ -n "$ext" ]; then
+		echo external
+	else
+		echo internal
+	fi
+}
+
+rollcall_warn() {
+	echo "rollcall: $*" >&2
+	logger -t rollcall -p daemon.warn "$*" 2>/dev/null || true
 }
 
 shutdown() {

@@ -72,6 +72,33 @@ func TestValidateRejectsWANZone(t *testing.T) {
 	wantValid(t, c)
 }
 
+// TestValidateRejectsExternalZones covers zones that face the internet under other names: the
+// firewall marks them (Load fills external), or the name alone does (wan6, wwan). Each one is a
+// peer zone only together with static peers, because its firewall rule then admits only them.
+func TestValidateRejectsExternalZones(t *testing.T) {
+	for _, z := range []string{"wan", "wan6", "wwan"} {
+		c := validConfig()
+		c.zones[z] = []string{"eth9"}
+		c.PeerZones = []string{"lan", z}
+		wantInvalid(t, c, `peer zone "`+z+`" faces the internet`)
+		c.Peers = []netip.AddrPort{netip.MustParseAddrPort("192.0.2.10:7432")}
+		wantValid(t, c)
+	}
+
+	c := validConfig()
+	c.external = map[string]bool{"guest": true}
+	c.PeerZones = []string{"guest"}
+	wantInvalid(t, c, `peer zone "guest" faces the internet`)
+	c.Peers = []netip.AddrPort{netip.MustParseAddrPort("[2001:db8::1]:7432")}
+	wantValid(t, c)
+
+	// A zone the firewall does not mark, under a name that is not an uplink name, stays internal.
+	c = validConfig()
+	c.external = map[string]bool{"lan": false}
+	c.PeerZones = []string{"lan", "guest"}
+	wantValid(t, c)
+}
+
 func TestValidatePort(t *testing.T) {
 	for _, p := range []int{-1, 0, 80, 1023, 65536, 100000} {
 		c := validConfig()
@@ -473,6 +500,7 @@ func TestLoad(t *testing.T) {
 	}
 	got := cfg
 	got.zones = nil
+	got.external = nil
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Load config:\n got %+v\nwant %+v", got, want)
 	}
@@ -610,6 +638,76 @@ func TestLoadRefuses(t *testing.T) {
 				t.Errorf("Load error repeats an option value: %q", err)
 			}
 		})
+	}
+}
+
+// fixtureFirewallUplinks adds zones that face the internet without the name wan: one that
+// masquerades, one over the interface wwan, one that masquerades IPv6 only, and a guest zone
+// that masquerades nothing.
+const fixtureFirewallUplinks = fixtureFirewall + `
+config zone
+	option name 'wan2'
+	list network 'lte'
+	option masq '1'
+
+config zone
+	option name 'uplink'
+	list network 'wwan'
+
+config zone
+	option name 'v6up'
+	list network 'lte6'
+	option masq6 'on'
+
+config zone
+	option name 'odd'
+	list network 'odd'
+	option masq 'sometimes'
+
+config zone
+	option name 'guest'
+	list network 'guest'
+	option masq '0'
+`
+
+const fixtureNetworkUplinks = fixtureNetwork + `
+config interface 'lte'
+	option device 'wwan0'
+
+config interface 'wwan'
+	option device 'phy0-sta0'
+
+config interface 'lte6'
+	option device '@lte'
+
+config interface 'odd'
+	option device 'eth7'
+
+config interface 'guest'
+	option device 'br-guest'
+`
+
+// TestLoadExternalZones decides from the firewall configuration which zones face the internet:
+// masq or masq6 on (a value uci would not read as off counts as on), or a network named wan,
+// wan6 or wwan. Such a zone is a peer zone only with static peers; a zone that masquerades
+// nothing is not one of them.
+func TestLoadExternalZones(t *testing.T) {
+	for _, z := range []string{"wan2", "uplink", "v6up", "odd"} {
+		t.Run(z, func(t *testing.T) {
+			rc := "config rollcall\n\tlist peer_zone '" + z + "'\n"
+			_, _, err := Load(files(t, rc, fixtureFirewallUplinks, fixtureSystem, fixtureNetworkUplinks))
+			if err == nil || !strings.Contains(err.Error(), `peer zone "`+z+`" faces the internet`) {
+				t.Fatalf("Load with external zone %s and no static peer: %v; want a refusal", z, err)
+			}
+			rc += "\tlist peer '198.51.100.7'\n"
+			if _, _, err := Load(files(t, rc, fixtureFirewallUplinks, fixtureSystem, fixtureNetworkUplinks)); err != nil {
+				t.Fatalf("Load with external zone %s and a static peer: %v", z, err)
+			}
+		})
+	}
+	rc := "config rollcall\n\tlist peer_zone 'guest'\n"
+	if _, _, err := Load(files(t, rc, fixtureFirewallUplinks, fixtureSystem, fixtureNetworkUplinks)); err != nil {
+		t.Fatalf("Load with guest (masq 0) and no static peer: %v", err)
 	}
 }
 

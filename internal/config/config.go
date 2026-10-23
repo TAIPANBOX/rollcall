@@ -5,7 +5,8 @@
 //
 //	config rollcall 'main'
 //		option site 'Home'                  # free text, at most 64 printable characters
-//		list peer_zone 'lan'                # firewall zones peers are reached in (default lan)
+//		list peer_zone 'lan'                # firewall zones peers are reached in (default lan);
+//		                                    # a zone facing the internet needs static peers
 //		list peer '192.0.2.10'              # static peer: IP or IP:port ([v6]:port); default port = port
 //		option port '7432'                  # UDP and TCP, 1024..65535
 //		option heartbeat '5'                # seconds
@@ -16,12 +17,16 @@
 //		option ntfy_url 'https://ntfy.sh/topic'
 //		option allow_insecure_lan '0'       # plain http to a private IP literal
 //
-// peer_zone, peer and probe_target are lists and only lists: the package's
-// firewall rule is built from the list entries (config_list_foreach), so an
-// option holding several words would make rollcall listen in a zone the
-// firewall never opened. Any other option or section is refused, so a
-// typing mistake never passes unnoticed, and secrets never belong in this
-// file.
+// peer_zone, peer and probe_target are lists and only lists, so each entry
+// is one zone, one peer or one target and never several words that the
+// package's firewall rule builder (the firewall command of
+// /etc/init.d/rollcall) and the daemon could read differently. Any other
+// option or section is refused, so a typing mistake never passes unnoticed,
+// and secrets never belong in this file.
+//
+// A peer zone faces the internet when the firewall masquerades it, or when
+// it is or holds wan, wan6 or wwan; such a zone is accepted only together
+// with static peers, and its firewall rule admits only their addresses.
 package config
 
 import (
@@ -81,6 +86,9 @@ type Config struct {
 	// it; a Config built by hand has none, so Validate finds every peer
 	// zone unknown.
 	zones map[string][]string
+	// external marks the firewall zones that face the internet (externalZones). Load fills it;
+	// the names wan, wan6 and wwan count as external without it.
+	external map[string]bool
 }
 
 // Load reads the four files and returns the validated configuration and the
@@ -116,6 +124,7 @@ func Load(rollcallPath, firewallPath, systemPath, networkPath string) (Config, m
 		return Config{}, nil, err
 	}
 	cfg.zones = zoneDevices(fw, nw)
+	cfg.external = externalZones(fw)
 	if err := cfg.Validate(); err != nil {
 		return Config{}, nil, fmt.Errorf("%s: %w", rollcallPath, err)
 	}
@@ -352,6 +361,46 @@ func zoneDevices(fw, nw []Section) map[string][]string {
 	return zones
 }
 
+// uplinkNames are the names OpenWrt gives its upstream zone and interfaces: the wan zone, the
+// wan and wan6 interfaces, and wwan for a wireless uplink. A zone with one of these names, or
+// holding an interface with one of them, faces the internet.
+var uplinkNames = map[string]bool{"wan": true, "wan6": true, "wwan": true}
+
+// externalZones marks the firewall zones that face the internet: a zone that masquerades
+// (masq or masq6 set to anything uci does not read as off: a value nobody can read is taken as
+// on, so a doubtful zone needs static peers), or one holding a network named wan, wan6 or
+// wwan. A name given to several zone sections is external when any of them is. The names wan,
+// wan6 and wwan themselves are external in Validate even without this map. The package's
+// firewall rule builder (packaging/files/etc/init.d/rollcall, firewall) applies the same rule.
+func externalZones(fw []Section) map[string]bool {
+	ext := map[string]bool{}
+	for _, s := range fw {
+		name := s.Options["name"]
+		if s.Type != "zone" || name == "" {
+			continue
+		}
+		for _, k := range []string{"masq", "masq6"} {
+			if v, ok := s.Options[k]; ok {
+				if on, err := parseBool(v); on || err != nil {
+					ext[name] = true
+				}
+			}
+		}
+		nets := append(slices.Clone(s.Lists["network"]), strings.Fields(s.Options["network"])...)
+		for _, n := range nets {
+			if uplinkNames[n] {
+				ext[name] = true
+			}
+		}
+	}
+	return ext
+}
+
+// isExternal reports whether peer zone z faces the internet.
+func (c Config) isExternal(z string) bool {
+	return uplinkNames[z] || c.external[z]
+}
+
 // maxAliasDepth bounds @name references, so a cycle ends.
 const maxAliasDepth = 4
 
@@ -438,8 +487,8 @@ func (c Config) Validate() error {
 			continue
 		}
 		seen[z] = true
-		if z == "wan" && len(c.Peers) == 0 {
-			bad(`peer zone "wan" is allowed only together with static peers`)
+		if c.isExternal(z) && len(c.Peers) == 0 {
+			bad("peer zone %q faces the internet (it masquerades, or it is or holds wan, wan6 or wwan) and is allowed only together with static peers, which its firewall rule then admits alone", z)
 		}
 		devs, ok := c.zones[z]
 		switch {

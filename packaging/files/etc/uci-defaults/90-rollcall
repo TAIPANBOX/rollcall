@@ -1,25 +1,8 @@
 #!/bin/sh
-# Opens the rollcall port to each configured peer zone. The rule is rebuilt from the
-# configuration every time, so running it again is harmless. With no peer zone there is
-# no rule at all, rather than a rule open to every zone.
-. /lib/functions.sh
-
-ZONES=0
-count_zone() { ZONES=$((ZONES + 1)); }
-add_zone() { uci -q add_list firewall.rollcall.src="$1"; }
-
-config_load rollcall
-config_list_foreach main peer_zone count_zone
-
-uci -q delete firewall.rollcall
-if [ "$ZONES" -gt 0 ]; then
-	uci set firewall.rollcall=rule
-	uci set firewall.rollcall.name='rollcall'
-	uci set firewall.rollcall.target='ACCEPT'
-	uci add_list firewall.rollcall.proto='udp'
-	uci add_list firewall.rollcall.proto='tcp'
-	uci set firewall.rollcall.dest_port='7432'
-	config_list_foreach main peer_zone add_zone
-fi
-uci commit firewall
+# Opens the rollcall port to the peer zones at first boot and after an upgrade. The rule builder
+# is the firewall command of /etc/init.d/rollcall, the same one reload_service runs when the
+# rollcall or firewall configuration changes, so there is one builder. It reads option port,
+# the peer zones (lan when none is set) and the static peers, and opens a zone that faces the
+# internet only to the static peers. Running it again is harmless.
+[ -x /etc/init.d/rollcall ] && /etc/init.d/rollcall firewall
 exit 0
