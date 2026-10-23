@@ -144,7 +144,10 @@ floor yet.
   simulator cover forged and replayed packets, the lab did not run them.
 - **The LuCI pages on a router.** The package installed; its pages and its rpcd rules were not used.
 - **ICMP probes** (off by default) and the capability they add.
-- **An empty capability bounding set.** It was full on the lab day. With `no_new_privs` and no
-  `execve` in the filter the daemon cannot use it, but it should be empty.
-- **Clock trust after a daemon restart** and **the confirmation count**, both above.
+- **An empty capability bounding set on a router.** It was full on the lab day. With
+  `no_new_privs` and no `execve` in the filter the daemon cannot use it. Since the run, every start
+  names a capabilities file, so the set is empty unless ICMP is on; that has not run on a router.
+- **Clock trust after a daemon restart on a router.** Since the run, the ntp hotplug script also
+  takes the periodic event of a synchronised clock; that has not run on a router.
+- **The confirmation count**, above: open.
 - **A signed package feed, and a release.** Neither exists.
