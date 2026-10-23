@@ -205,8 +205,9 @@ type Node struct {
 	deliveries map[ids.MemberID]*delivery // epoch key deliveries still to make
 	parts      map[ids.MemberID]*partial  // epoch key deliveries being received
 
-	inc incidents
-	rec recon
+	inc  incidents
+	rec  recon
+	join joinWindow
 }
 
 // peer is what the node knows of another member.
@@ -598,7 +599,7 @@ func (n *Node) Authenticate(frame []byte) bool {
 		return false
 	}
 	_, _, err := wire.Open(n.lookup, frame)
-	return err == nil
+	return err == nil || n.joinFrame(frame)
 }
 
 // HandlePacket handles one UDP packet from the address from.
@@ -772,6 +773,9 @@ func (n *Node) HandleStream(from netip.AddrPort, b []byte) []byte {
 	now := n.stamp()
 	ep, pt, err := wire.Open(n.lookup, b)
 	if err != nil {
+		if n.joinFrame(b) {
+			return n.joinIn(b, now)
+		}
 		n.wireFailed(err, now)
 		return nil
 	}

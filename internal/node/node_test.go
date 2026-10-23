@@ -1175,3 +1175,156 @@ func TestBootSeqRestoredBeforeFirstHeartbeat(t *testing.T) {
 		t.Fatalf("A's boot record names boot %d, want 4", boot.Boot.Seq)
 	}
 }
+
+// grow adds a router that is not in the roster yet: identity, address,
+// store, Net and config. It returns its index.
+func (g *group) grow(sender bool) int {
+	g.t.Helper()
+	id, err := identity.Generate()
+	if err != nil {
+		g.t.Fatal(err)
+	}
+	i := len(g.ids)
+	st, err := store.Open(fmt.Sprintf("%s/r%02d", g.t.TempDir(), i+1))
+	if err != nil {
+		g.t.Fatal(err)
+	}
+	g.ids = append(g.ids, id)
+	g.addrs = append(g.addrs, netip.MustParseAddrPort(fmt.Sprintf("10.0.0.%d:7432", i+1)))
+	g.stores = append(g.stores, st)
+	g.nets = append(g.nets, &fakeNet{h: g.hub, self: g.addrs[i]})
+	g.cfgs = append(g.cfgs, Config{Site: "Home", Heartbeat: 5 * sec, SilentAfter: 30 * sec, Sender: sender,
+		TZ: time.UTC, Boot: bootN(i, 1), BootSeq: 1, Versions: [2]string{"24.10.4", "1.0.0"}})
+	g.nodes = append(g.nodes, nil)
+	return i
+}
+
+// TestJoinOverStream: a router with the join code joins over Stream; it
+// gets the roster that holds it, the epoch key and, as a sender, the token;
+// the code works once; the group announces the new member once.
+func TestJoinOverStream(t *testing.T) {
+	g := newGroup(t, setup{n: 2, senders: map[int]int{0: 1}})
+	g.run(10 * sec)
+	a := g.nodes[0]
+	if _, err := g.nodes[1].Invite(g.addrs[1], false); !errors.Is(err, ErrNotAdmin) {
+		t.Fatalf("Invite on an ordinary member: %v, want ErrNotAdmin", err)
+	}
+	code, err := a.Invite(g.addrs[0], true)
+	if err != nil {
+		t.Fatalf("Invite: %v", err)
+	}
+	// A request made with another code gets no answer and burns nothing.
+	other := code
+	other.Secret[0] ^= 1
+	i := g.grow(true)
+	if err := Join(g.stores[i], g.nets[i], other, g.ids[i], "r03"); err == nil {
+		t.Fatal("a join with a wrong code succeeded")
+	}
+	g.clk.advance(2 * joinSpacing)
+	if err := Join(g.stores[i], g.nets[i], code, g.ids[i], "r03"); err != nil {
+		t.Fatalf("Join: %v", err)
+	}
+	if b, _ := g.stores[i].ReadFile(FileSecrets); !bytes.Contains(b, []byte(canary)) {
+		t.Fatal("the new sender did not get the token")
+	}
+	j := g.grow(false)
+	g.clk.advance(2 * joinSpacing)
+	if err := Join(g.stores[j], g.nets[j], code, g.ids[j], "r04"); err == nil {
+		t.Fatal("the join code worked twice")
+	}
+	g.start(i)
+	g.run(40 * sec)
+	for k, n := range g.nodes[:3] {
+		s := n.Status()
+		if len(s.Members) != 3 || s.Members[2].Name != "r03" || s.Members[2].State != "up" {
+			t.Fatalf("r%02d after the join: %+v", k+1, s.Members)
+		}
+	}
+	if n := len(g.chat.messages("r03 added (by r01)")); n != 1 {
+		t.Fatalf("%d announcements of the join, want 1:\n%s", n, strings.Join(g.chat.all(), "\n"))
+	}
+	// A router joined without the sender role gets no token.
+	code, _ = a.Invite(g.addrs[0], false)
+	g.clk.advance(2 * joinSpacing)
+	if err := Join(g.stores[j], g.nets[j], code, g.ids[j], "r04"); err != nil {
+		t.Fatalf("second Join: %v", err)
+	}
+	if _, err := g.stores[j].ReadFile(FileSecrets); err == nil {
+		t.Fatal("a router without the sender role got secrets")
+	}
+}
+
+// TestRebootReportedWithDuration: a router that loses power and comes back
+// is reported silent while it is away, and then once more as one message
+// that tells the reboot with the length of the absence.
+func TestRebootReportedWithDuration(t *testing.T) {
+	g := newGroup(t, setup{n: 3, senders: map[int]int{0: 1}})
+	g.run(40 * sec)
+	g.stop(2)
+	g.run(2 * time.Minute)
+	g.cfgs[2].Boot, g.cfgs[2].BootSeq = bootN(2, 2), 2
+	g.start(2)
+	g.run(time.Minute)
+	t.Logf("chat:\n%s", strings.Join(g.chat.all(), "\n"))
+	if n := len(g.chat.messages("r03 stopped answering at 09:00")); n != 1 {
+		t.Fatalf("%d silence messages, want 1", n)
+	}
+	back := g.chat.messages("r03 rebooted unexpectedly at 09:00, back after 2 min")
+	if len(back) != 1 || len(g.chat.messages("rebooted")) != 1 {
+		t.Fatalf("reboot messages %q; want one that tells the absence from its start", g.chat.messages("rebooted"))
+	}
+}
+
+// TestTakeoverNeedsTenMinutesOfSilence: the backup's takeover is accepted
+// only by members that have heard nothing from the primary for ten
+// minutes, counted from their own start at the latest; when the primary
+// comes back it restores itself (invariant 15).
+func TestTakeoverNeedsTenMinutesOfSilence(t *testing.T) {
+	g := newGroup(t, setup{n: 3, admins: 2})
+	a, b := g.ids[0].ID, g.ids[1].ID
+	takeover := func(r *roster.Roster) error {
+		r.Admins = []ids.MemberID{b, a}
+		r.Takeover, r.Replaced = true, a
+		r.Members[0].Roles = []roster.Role{roster.RoleBackup}
+		r.Members[1].Roles = []roster.Role{roster.RolePrimary}
+		return nil
+	}
+	primary := func(i int) ids.MemberID {
+		return with(g.nodes[i], func() ids.MemberID { return g.nodes[i].cur().Admins[0] })
+	}
+	g.run(15 * sec)
+	// The backup loses the primary; r03 still hears it.
+	g.split([]int{0}, []int{1}, true)
+	g.run(time.Minute)
+	if err := g.nodes[1].Publish(takeover); err == nil {
+		t.Fatal("the backup took over a minute after it last heard the primary")
+	}
+	g.run(10 * time.Minute)
+	if err := g.nodes[1].Publish(takeover); err != nil {
+		t.Fatalf("takeover after 11 min: %v", err)
+	}
+	g.run(time.Minute)
+	if primary(2) != a {
+		t.Fatal("r03 accepted the takeover while it still heard the primary")
+	}
+	// Now r03 loses the primary too: ten minutes later it accepts.
+	g.split([]int{0}, []int{2}, true)
+	g.run(9 * time.Minute)
+	if primary(2) != a {
+		t.Fatal("r03 accepted the takeover before ten minutes of silence")
+	}
+	g.run(2 * time.Minute)
+	if primary(2) != b {
+		t.Fatal("r03 did not accept the takeover after ten minutes of silence")
+	}
+	// The primary comes back and restores itself.
+	g.split([]int{0}, []int{1, 2}, false)
+	g.run(time.Minute)
+	for i, n := range g.nodes {
+		cur := with(n, func() roster.Roster { return n.cur() })
+		if cur.Admins[0] != a || cur.Takeover || cur.Version != 3 {
+			t.Fatalf("r%02d after the primary's return: version %d, primary %s, takeover %v; want 3, r01, false",
+				i+1, cur.Version, cur.Admins[0], cur.Takeover)
+		}
+	}
+}
