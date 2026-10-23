@@ -161,7 +161,7 @@ func (n *Node) ownReturnLocked(prev bootBefore, cur BootBody, now clock.Stamp) {
 		At: AtOf(n.localStamp(now)), Since: n.sinceLocked(prev), Detail: detail,
 	})
 	if err == nil {
-		n.appendLocked(e, now)
+		n.appendOwnLocked(e, now)
 	}
 }
 

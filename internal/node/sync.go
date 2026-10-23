@@ -24,13 +24,22 @@ import (
 // Flusher, at most once a minute: one file per origin, history-<hex>.json,
 // and the fork proofs in forks.json.
 //
+// An own entry (an event, a witness statement, a correction, an
+// acknowledgement, a boot record) is on flash before anyone can learn of
+// it: the node writes its own chain with the new entry (WriteFileAtomic,
+// synced) and only then appends it to the log, from which heartbeats and
+// fetches read. So the own chain on flash is never behind what any peer
+// holds, and a restart after a power cut never signs a second entry at a
+// sequence number it used (appendOwnLocked). Heartbeats stay in RAM. A
+// write that fails keeps the record waiting and is retried at most every
+// retryEvery.
+//
 // Own entries are signed only once the node knows the head of its own
 // chain as the group holds it. After a start it asks its peers for their
 // heads (the catch-up below), takes the entries of its own chain it lacks,
 // and only then writes; with peers in the roster and none reachable it
 // waits ownCatchUp (60 s) and then writes from what it holds. Until then
-// its records wait in RAM (Node.writes), so a router whose last minute
-// was lost with its RAM in a power cut does not fork its own chain.
+// its records wait in RAM (Node.writes).
 //
 // An own event is one entry, an EventBody with its stamp and details, so
 // every member builds the same events from the same entries, and they
@@ -82,7 +91,7 @@ func (n *Node) flushWritesLocked(now clock.Stamp) {
 	}
 	writes := n.writes
 	n.writes = nil
-	for _, w := range writes {
+	for i, w := range writes {
 		head := n.log.Head(n.id.ID)
 		var e history.Entry
 		var err error
@@ -102,7 +111,17 @@ func (n *Node) flushWritesLocked(now clock.Stamp) {
 		default:
 			e, err = history.NewEntry(n.id, head, w.kind, w.body)
 		}
-		if err != nil || !n.appendLocked(e, now) {
+		if err != nil {
+			continue
+		}
+		if err := n.writeOwnLocked(e); err != nil {
+			// Not on flash, so not signed into the chain: it and every
+			// record after it wait for the retry.
+			n.writes = append(slices.Clone(writes[i:]), n.writes...)
+			n.ownRetry = now.Mono + retryEvery
+			return
+		}
+		if !n.appendLocked(e, now) {
 			continue
 		}
 		if b, ok := w.body.(BootBody); ok {
@@ -111,6 +130,35 @@ func (n *Node) flushWritesLocked(now clock.Stamp) {
 				n.ownReturnLocked(before, b, now)
 			}
 		}
+	}
+}
+
+// appendOwnLocked makes e, a new entry of the own chain, durable on flash
+// and then appends it, as the package doc of this file describes. It
+// reports whether the log holds e now.
+func (n *Node) appendOwnLocked(e history.Entry, now clock.Stamp) bool {
+	if n.writeOwnLocked(e) != nil {
+		return false
+	}
+	return n.appendLocked(e, now)
+}
+
+// writeOwnLocked writes the own chain the log holds, with next after it,
+// to the own history file at once.
+func (n *Node) writeOwnLocked(next history.Entry) error {
+	es := append(n.log.Range(n.id.ID, 1, n.log.Head(n.id.ID).Seq), next)
+	b, err := json.Marshal(es)
+	if err != nil {
+		return err
+	}
+	return n.st.WriteFileAtomic(filePrefix+n.id.ID.String()+".json", b)
+}
+
+// retryWritesLocked retries the records whose write to flash failed.
+func (n *Node) retryWritesLocked(now clock.Stamp) {
+	if len(n.writes) > 0 && n.ownRetry != 0 && now.Mono >= n.ownRetry {
+		n.ownRetry = 0
+		n.flushWritesLocked(now)
 	}
 }
 

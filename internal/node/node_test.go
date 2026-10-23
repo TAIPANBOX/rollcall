@@ -1051,8 +1051,8 @@ func TestDroppedBranchAnnounced(t *testing.T) {
 	}
 }
 
-// TestOwnChainCaughtUpFirst: a router restarted from a store that lost its
-// last entries takes them back from its peers before it writes, so it does
+// TestOwnChainCaughtUpFirst: a router restarted after a power cut takes the
+// entries of its own chain its peers hold before it writes, so it does
 // not fork its own chain.
 func TestOwnChainCaughtUpFirst(t *testing.T) {
 	g := newGroup(t, setup{n: 2})
@@ -1064,10 +1064,10 @@ func TestOwnChainCaughtUpFirst(t *testing.T) {
 	g.run(10 * sec)
 	held := with(g.nodes[1], func() history.Head { return g.nodes[1].log.Head(g.ids[0].ID) })
 	stored := len(readStored(t, g.stores[0], g.ids[0].ID))
-	if uint64(stored) >= held.Seq {
-		t.Fatalf("the store holds %d entries, the peer %d: nothing was lost", stored, held.Seq)
+	if uint64(stored) < held.Seq {
+		t.Fatalf("the store holds %d entries, the peer %d: an own entry reached a peer before flash", stored, held.Seq)
 	}
-	// A power cut: the last entries are lost with the RAM.
+	// A power cut: whatever was in RAM only is lost.
 	g.stop(0)
 	g.cfgs[0].Boot, g.cfgs[0].BootSeq = bootN(0, 2), 2
 	a = g.start(0)

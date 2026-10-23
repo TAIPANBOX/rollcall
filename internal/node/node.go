@@ -207,7 +207,8 @@ type Node struct {
 	restoring   bool
 	restoreBy   time.Duration
 	nextRestore time.Duration
-	writes      []ownWrite // own records waiting for the own chain's head
+	writes      []ownWrite    // own records waiting for the own chain's head
+	ownRetry    time.Duration // when to retry writes that failed to reach flash; 0 for none
 
 	jobs       []job
 	out        []outPacket
@@ -1135,6 +1136,7 @@ func (n *Node) tickLocked(now clock.Stamp) {
 		return
 	}
 	n.restoreLocked(now)
+	n.retryWritesLocked(now)
 	if now.Mono >= n.nextBeat {
 		n.nextBeat = now.Mono + n.cfg.Heartbeat
 		n.beatLocked(now)

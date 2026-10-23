@@ -62,7 +62,7 @@ func (n *Node) reconcileLocked(now clock.Stamp) {
 	for _, c := range res.Corrections {
 		ok := len(c.Entries) > 0
 		for _, e := range c.Entries {
-			if !n.appendLocked(e, now) {
+			if !n.appendOwnLocked(e, now) {
 				ok = false
 				break
 			}
