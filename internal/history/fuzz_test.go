@@ -3,6 +3,7 @@ package history
 import (
 	"encoding/json"
 	"errors"
+	"maps"
 	"reflect"
 	"slices"
 	"testing"
@@ -27,6 +28,9 @@ func (l *Log) clone() *Log {
 	}
 	for o, p := range l.forks {
 		c.forks[o] = p
+	}
+	if l.bases != nil {
+		c.bases = maps.Clone(l.bases)
 	}
 	return c
 }

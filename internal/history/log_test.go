@@ -468,7 +468,9 @@ func TestAppendOnly(t *testing.T) {
 		}
 		return out
 	}
-	if got, want := methods(reflect.TypeOf(&Log{})), []string{"Append", "Digest", "Forks", "Head", "Prune", "Pruned", "Range"}; !slices.Equal(got, want) {
+	// StartAt only sets where an empty chain begins and is refused once the
+	// log holds an entry of the origin (TestStartAtOnlyOnAnEmptyChain).
+	if got, want := methods(reflect.TypeOf(&Log{})), []string{"Append", "Digest", "Forks", "Head", "Prune", "Pruned", "Range", "StartAt"}; !slices.Equal(got, want) {
 		t.Errorf("*Log methods %v, want %v: a new method must keep the store append-only", got, want)
 	}
 	for _, typ := range []reflect.Type{reflect.TypeOf(Entry{}), reflect.TypeOf(&Entry{})} {

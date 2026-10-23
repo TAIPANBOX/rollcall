@@ -63,9 +63,11 @@
 // it:
 //
 //   - Seq one past the head and Prev the head's Hash: the entry is appended
-//     and is the new head. The first entry of an origin has Seq 1.
+//     and is the new head. The first entry of an origin has Seq 1, unless
+//     Log.StartAt set another base for the chain (see Pruning).
 //   - Seq more than one past the head: ErrGap; the entries between are
-//     missing and must be appended first.
+//     missing and must be appended first. That holds for an empty chain
+//     too: Append alone never starts a chain past Seq 1.
 //   - Seq one past the head with another Prev: ErrPrev. If the entry is
 //     validly signed, its origin signed another entry at Seq-1 than the one
 //     held; fetching that entry and appending it shows the fork.
@@ -108,6 +110,12 @@
 // (Log.Pruned): the oldest entry kept has that Hash as its Prev, Range
 // reports the dropped entries as not available by leaving them out, and
 // Append refuses an entry at or below that Seq with ErrPruned.
+//
+// A log that holds nothing of an origin takes a pruned chain the same way:
+// Log.StartAt sets the base, the Seq and Hash just before the oldest entry
+// at hand (the Pruned of the log it comes from, or the Prev of the oldest
+// entry read back from a file), and Append takes the entries after it. So a
+// chain longer than the bounds survives a restart and reaches a new member.
 //
 // A Log is safe for concurrent use. Make one with NewLog; a zero Log knows no
 // origin and refuses every entry.
@@ -169,7 +177,7 @@ var (
 	// entry with a Prev, a later one without, or a Prev other than the
 	// head's Hash.
 	ErrPrev = errors.New("history: the entry's previous hash does not match its chain")
-	// ErrInvalid reports an argument NewEntry cannot use.
+	// ErrInvalid reports an argument NewEntry or Log.StartAt cannot use.
 	ErrInvalid = errors.New("history: invalid argument")
 )
 

@@ -41,6 +41,9 @@ var (
 	// ErrNotFork reports a ForkProof whose entries are not two different
 	// entries at one origin and sequence number.
 	ErrNotFork = errors.New("history: not a fork proof")
+	// ErrStarted reports a StartAt for an origin the log already holds
+	// entries of.
+	ErrStarted = errors.New("history: the log holds entries of the origin; its chain has started")
 )
 
 // Head is the position and hash of the newest entry of a chain. The zero
@@ -140,6 +143,7 @@ type Log struct {
 	mu     sync.Mutex
 	chains map[ids.MemberID]*chain
 	forks  map[ids.MemberID]ForkProof // the first proof of each forked origin
+	bases  map[ids.MemberID]Head      // StartAt's base of each origin the log holds no entry of yet
 }
 
 // Append adds e to its origin's chain, or reports why not, as the package
@@ -168,7 +172,7 @@ func (l *Log) Append(e Entry, now time.Time) error {
 	}
 	c := l.chains[e.Origin]
 	if c == nil {
-		c = &chain{}
+		c = &chain{pruned: l.bases[e.Origin]} // the zero Head without StartAt
 	}
 	head := c.head()
 	switch {
@@ -196,6 +200,53 @@ func (l *Log) Append(e Entry, now time.Time) error {
 		l.chains = map[ids.MemberID]*chain{}
 	}
 	l.chains[e.Origin] = c
+	delete(l.bases, e.Origin) // the chain holds its base now
+	return nil
+}
+
+// StartAt makes base the start of origin's chain, for a chain whose oldest
+// entries are gone: one read back from a file that held only what the log
+// kept of it, or fetched from a holder that pruned it. The log then treats
+// the entries up to base.Seq as pruned: the first entry Append takes of
+// origin is base.Seq+1 with base.Hash as its Prev (ErrPrev for another
+// Prev, ErrGap past it), an entry at or below base.Seq is ErrPruned, and
+// Pruned reports base. Until that first entry the log holds nothing of
+// origin: Head and Range report nothing and the Digest leaves origin out.
+//
+// The base is not signed: the signature of the entry after it is what
+// vouches for it, once Append takes that entry. So a holder passes the
+// Prev of the oldest entry it has at hand, Head{Seq: e.Seq-1, Hash:
+// e.Prev}, or the Pruned of the log it fetches from, which is the same.
+// Without StartAt, Append starts a chain only at Seq 1, and an entry past
+// the head of an empty chain is ErrGap: a member that merely missed the
+// first entries still fetches them.
+//
+// StartAt works only while the log holds no entry of origin, and returns
+// ErrStarted otherwise, a forked origin included; nothing changes then.
+// While the chain is empty it may be called again and the last base counts;
+// the zero Head returns origin to the start at Seq 1. It returns
+// ErrUnknownOrigin for an origin the resolver does not know, and ErrInvalid
+// for a base whose Seq and Hash disagree (a zero Seq goes with a zero Hash
+// and only with it) or at the last Seq, after which no entry can follow.
+func (l *Log) StartAt(origin ids.MemberID, base Head) error {
+	if _, known := l.key(origin); !known {
+		return fmt.Errorf("%w: origin %s", ErrUnknownOrigin, origin)
+	}
+	switch {
+	case (base.Seq == 0) != (base.Hash == ids.Hash{}):
+		return fmt.Errorf("%w: base seq %d with hash %s", ErrInvalid, base.Seq, base.Hash)
+	case base.Seq == math.MaxUint64:
+		return fmt.Errorf("%w: a base at the last seq", ErrInvalid)
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if c := l.chains[origin]; c != nil {
+		return fmt.Errorf("%w: origin %s, head %d", ErrStarted, origin, c.head().Seq)
+	}
+	if l.bases == nil {
+		l.bases = map[ids.MemberID]Head{}
+	}
+	l.bases[origin] = base
 	return nil
 }
 
@@ -232,16 +283,19 @@ func (l *Log) Head(origin ids.MemberID) Head {
 	return Head{}
 }
 
-// Pruned returns the Seq and Hash of the last entry Prune dropped from
-// origin's chain, or the zero Head if it dropped none. Entries up to that
-// Seq are not available; the oldest entry kept has that Hash as its Prev.
+// Pruned returns the base of origin's chain: the Seq and Hash of the last
+// entry dropped from it (by Prune, or by Append at the Log's bounds), or the
+// base StartAt set, or the zero Head if the chain starts at Seq 1. Entries up
+// to that Seq are not available; the oldest entry kept has that Hash as its
+// Prev. It is the base a log that holds nothing of origin passes to StartAt
+// before it takes the rest of the chain from this one.
 func (l *Log) Pruned(origin ids.MemberID) Head {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if c := l.chains[origin]; c != nil {
 		return c.pruned
 	}
-	return Head{}
+	return l.bases[origin]
 }
 
 // Range returns copies of origin's entries with from <= Seq <= to, oldest
