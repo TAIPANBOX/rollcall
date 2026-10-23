@@ -37,8 +37,9 @@ func TestTwoSendersRegainTelegramOnce(t *testing.T) {
 }
 
 // TestMergedIncidentHonoursReturnAck (D2): a return merged with the silence
-// it ends is not sent once another member acknowledged the return alone: the
-// merged incident tells nothing the chat did not get.
+// it ends is not sent once other members acknowledged the silence and the
+// return apart: the merged incident tells nothing the chat did not get.
+// While the silence is untold, it is still sent.
 func TestMergedIncidentHonoursReturnAck(t *testing.T) {
 	g := newGroup(t, setup{n: 2, senders: map[int]int{0: 1}})
 	g.run(10 * sec)
@@ -65,16 +66,25 @@ func TestMergedIncidentHonoursReturnAck(t *testing.T) {
 		t.Fatal(err)
 	}
 	inject(a, ack)
+	if q := queued(); q != 1 {
+		t.Fatalf("%d incidents queued once only the return was acknowledged, want 1: the silence is untold", q)
+	}
+	body, _ = deliver.AckBody(silence)
+	ack2, err := history.NewEntry(b, history.Head{Seq: ack.Seq, Hash: ack.Hash()}, history.KindEvent, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inject(a, ack2)
 	if q := queued(); q != 0 {
-		t.Fatalf("%d incidents queued after the return was acknowledged, want 0", q)
+		t.Fatalf("%d incidents queued after the silence and the return were acknowledged, want 0", q)
 	}
 	with(a, func() any {
 		now := a.stamp()
-		a.queueLocked(events.Incident{ID: "4444444444444444", Start: now, End: now}, nil, []string{"5555555555555555", ret}, now)
+		a.queueLocked(events.Incident{ID: "4444444444444444", Start: now, End: now}, nil, []string{silence, ret}, now)
 		return nil
 	})
 	if q := queued(); q != 0 {
-		t.Fatalf("a merged incident whose return was acknowledged was queued")
+		t.Fatalf("a merged incident whose parts were acknowledged was queued")
 	}
 }
 

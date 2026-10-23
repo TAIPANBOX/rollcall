@@ -320,6 +320,11 @@ func (n *Node) incidentsLocked(now clock.Stamp) {
 		}
 		if m, parts, mev, ok := n.pairLocked(inc, evs); ok {
 			n.queueLocked(m, mev, parts, now)
+			if start := parts[0]; !n.deliveredLocked(m.ID) && !n.deliveredLocked(start) {
+				// Not sent yet: the merged incident tells its start too, in
+				// one message (D5).
+				n.queue.Ack(start, n.id.ID)
+			}
 			continue
 		}
 		n.queueLocked(inc, evs, nil, now)
@@ -358,24 +363,25 @@ func (n *Node) queueLocked(inc events.Incident, evs []events.Event, components [
 }
 
 // deliveredLocked reports whether incident id was acknowledged: its own ID,
-// or, for a return merged with the silence it ends, the return's (another
-// member told the return alone, and the merged incident would tell it
-// again).
+// or, for a return merged with the start it ends, every incident it merged
+// (others told the start and the return apart, and the merged incident
+// would tell them again).
 func (n *Node) deliveredLocked(id string) bool {
 	if n.inc.ackedIDs[id] {
 		return true
 	}
 	r := n.inc.byID[id]
-	return r != nil && len(r.components) > 1 && n.inc.ackedIDs[r.components[len(r.components)-1]]
+	return r != nil && len(r.components) > 1 && !slices.ContainsFunc(r.components, func(c string) bool { return !n.inc.ackedIDs[c] })
 }
 
 // ackedLocked takes the acknowledgement of incident id by member by, and
-// with it that of every merged incident whose return id is.
+// with it that of every merged incident whose parts are all acknowledged
+// now.
 func (n *Node) ackedLocked(id string, by ids.MemberID) {
 	n.queue.Ack(id, by)
 	n.inc.acked(id)
 	for _, r := range n.inc.recent {
-		if c := r.components; len(c) > 1 && c[len(c)-1] == id && !n.inc.ackedIDs[r.inc.ID] {
+		if len(r.components) > 1 && slices.Contains(r.components, id) && !n.inc.ackedIDs[r.inc.ID] && n.deliveredLocked(r.inc.ID) {
 			n.queue.Ack(r.inc.ID, by)
 			n.inc.acked(r.inc.ID)
 		}
@@ -434,6 +440,9 @@ func (n *Node) turnLocked(sender ids.MemberID, now clock.Stamp) ids.MemberID {
 	if _, other := elect.Sender(others, now.Wall); other {
 		t.handover = true
 	}
+	if n.endPendingLocked() {
+		return ids.MemberID{}
+	}
 	wait := n.cfg.Heartbeat
 	if t.handover {
 		wait = handover
@@ -460,6 +469,37 @@ func (n *Node) othersLocked() []elect.View {
 
 // returns are the types that end a member's absence.
 var returns = []events.Type{events.RebootUnplanned, events.RebootPlanned, events.Upgraded, events.LinkLost, events.MemberBack}
+
+// endPendingLocked reports whether an incident that reports only the start
+// of something (a silence, an internet or WAN loss) and was not sent yet
+// has its end recorded and not yet settled: the sender holds back until the
+// end joins it, so both go out as one message (D5).
+func (n *Node) endPendingLocked() bool {
+	has := func(i events.Incident, t events.Type) bool { return slices.Contains(i.Events, t) }
+	for _, r := range n.inc.recent {
+		if r.paired || r.single || n.deliveredLocked(r.inc.ID) {
+			continue
+		}
+		var ends func(e events.Event) bool
+		switch inc := r.inc; {
+		case inc.Causes == 1 && has(inc, events.MemberSilent) && !slices.ContainsFunc(returns, func(t events.Type) bool { return has(inc, t) }):
+			x := inc.Members[0]
+			ends = func(e events.Event) bool { return e.Subject.String() == x && slices.Contains(returns, e.Type) }
+		case inc.Causes == 0 && has(inc, events.InternetLost) && !has(inc, events.InternetRestored):
+			ends = func(e events.Event) bool { return e.Type == events.InternetRestored }
+		case inc.Causes == 0 && has(inc, events.WanDown) && !has(inc, events.WanUp):
+			ends = func(e events.Event) bool { return e.Type == events.WanUp }
+		default:
+			continue
+		}
+		for _, e := range n.inc.evs {
+			if !e.assigned && !e.single && ends(e.ev) {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // pairLocked merges inc, a return or a restore, with the incident that
 // reported its start: the silence of the same member, or the loss of the
