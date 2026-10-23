@@ -78,13 +78,14 @@ type incidents struct {
 	byID       map[string]*incRec
 	ackedIDs   map[string]bool
 	ackPending map[string]bool
-	alarmed    map[string]bool     // alarm incident IDs raised, one per proof
-	witnessed  map[ids.Hash]bool   // events this node has stated a view on
-	pending    []pendingAlarm      // falsehood alarms of others, not yet checkable
-	waiting    []pendingUpdate     // updates whose claims have not arrived yet
-	updates    map[ids.Hash]bool   // corrections whose update was recorded
-	boots      map[ids.BootID]bool // the boots a boot record in the log names
-	ownBacks   map[ids.BootID]bool // the boots a member's own account of its return names
+	alarmed    map[string]bool         // alarm incident IDs raised, one per proof
+	witnessed  map[ids.Hash]bool       // events this node has stated a view on
+	pending    []pendingAlarm          // falsehood alarms of others, not yet checkable
+	waiting    []pendingUpdate         // updates whose claims have not arrived yet
+	updates    map[ids.Hash]bool       // corrections whose update was recorded
+	boots      map[ids.BootID]bool     // the boots a boot record in the log names
+	ownBacks   map[ids.BootID]bool     // the boots a member's own account of its return names
+	forkSeqs   map[ids.MemberID]uint64 // the lowest sequence number a fork alarm names, per forked member
 	loading    bool
 }
 
@@ -100,6 +101,14 @@ func (c *incidents) init() {
 	c.updates = map[ids.Hash]bool{}
 	c.boots = map[ids.BootID]bool{}
 	c.ownBacks = map[ids.BootID]bool{}
+	c.forkSeqs = map[ids.MemberID]uint64{}
+}
+
+// forkAt notes that a fork alarm names seq of o's chain.
+func (c *incidents) forkAt(o ids.MemberID, seq uint64) {
+	if old, ok := c.forkSeqs[o]; seq > 0 && (!ok || seq < old) {
+		c.forkSeqs[o] = seq
+	}
 }
 
 // settleAll marks every event held as taken: what was loaded at start is
@@ -394,8 +403,40 @@ func (n *Node) incidentsLocked(now clock.Stamp) {
 			}
 			continue
 		}
+		if n.toldAlreadyLocked(evs) {
+			continue
+		}
 		n.queueLocked(inc, evs, nil, now)
 	}
+}
+
+// toldAlreadyLocked reports whether every event of evs, late records that
+// came after their incident was made, has a twin in one incident kept here:
+// an event of the same type about the same member, stamped within the
+// coalescing window of it (D2). They would only add witnesses to what the
+// chat was told, under another incident ID. A new absence of the same
+// member is stamped when it was last heard, after its return, and has no
+// such twin.
+func (n *Node) toldAlreadyLocked(evs []events.Event) bool {
+	win := events.DefaultWindow
+	for _, r := range n.inc.recent {
+		if r.single || len(r.events) == 0 {
+			continue
+		}
+		covered := true
+		for _, e := range evs {
+			if !slices.ContainsFunc(r.events, func(f events.Event) bool {
+				return f.Type == e.Type && f.Subject == e.Subject && absDuration(f.At.Wall.Sub(e.At.Wall)) <= win
+			}) {
+				covered = false
+				break
+			}
+		}
+		if covered {
+			return true
+		}
+	}
+	return false
 }
 
 // cutOffViewLocked reports whether e, a member's record of another member's
@@ -451,12 +492,17 @@ func (n *Node) cutOffViewLocked(e events.Event) bool {
 
 // distrustedLocked returns, for every member whose chain forked in the log,
 // the sequence number of the fork: its entries from there on differ
-// between the routers that saw its different faces.
+// between the routers that saw its different faces. Of the proofs this node
+// and others found (their alarms name theirs), the lowest counts, so routers
+// that found different proofs leave out the same events.
 func (n *Node) distrustedLocked() map[ids.MemberID]uint64 {
 	out := map[ids.MemberID]uint64{}
 	for _, p := range n.log.Forks() {
-		if p.A.Origin != n.id.ID {
-			out[p.A.Origin] = p.A.Seq
+		if o := p.A.Origin; o != n.id.ID {
+			out[o] = p.A.Seq
+			if s, ok := n.inc.forkSeqs[o]; ok && s < out[o] {
+				out[o] = s
+			}
 		}
 	}
 	return out
@@ -523,17 +569,21 @@ func (n *Node) ackedLocked(id string, by ids.MemberID) {
 // the sender in its own view sends nothing until its peers have heard it
 // can: until a heartbeat with its fresh Telegram call has gone out, and one
 // heartbeat interval after it, in which every peer answers with its own
-// state and a peer that outranks it takes the turn. When another member is
-// eligible meanwhile (it may have been sending), the wait after that
-// heartbeat is handover instead: that member stops within a tick of hearing
-// it, and the wait keeps the two members' messages the delivery grace apart
-// and lets the other's acknowledgements arrive. So it is when the node takes
-// over from a member that was the sender in its view less than the grace
-// ago (it lost its internet, announced its shutdown, went silent): its last
-// messages were sent just before. A node that announced its shutdown sends
-// nothing more. A member heard again (a
-// partition healed, a router came back) starts the wait over: it may have
-// been sending on its side, and the views must meet again.
+// state and a peer that outranks it takes the turn.
+//
+// When another member is eligible meanwhile (it may have been sending), or
+// the node takes over from a member that was the sender in its view less
+// than the delivery grace ago (it lost its internet, announced its
+// shutdown, went silent), the wait after that heartbeat is handover
+// instead: the other member stops within a tick of hearing it, and the wait
+// keeps the two members' messages the grace apart and lets the other's
+// acknowledgements arrive. Up to twice the handover, the node also waits
+// while it lacks entries that a member with the sender role says, in its
+// heartbeat, it holds: its acknowledgements may be among them.
+//
+// A member heard again (a partition healed, a router came back) starts the
+// wait over: it may have been sending on its side, and the views must meet
+// again. A node that announced its shutdown sends nothing more.
 
 // handover is the wait after the announcing heartbeat when another member
 // may have been sending.
@@ -592,7 +642,25 @@ func (n *Node) turnLocked(sender ids.MemberID, now clock.Stamp) ids.MemberID {
 	if !t.announced || now.Mono < t.at+wait {
 		return ids.MemberID{}
 	}
+	if t.handover && now.Mono < t.at+2*handover && n.behindSendersLocked() {
+		return ids.MemberID{} // their acknowledgements may be among what is missing
+	}
 	return sender
+}
+
+// behindSendersLocked reports whether the log lacks entries of another
+// member with the sender role that its last heartbeat says it holds.
+func (n *Node) behindSendersLocked() bool {
+	for _, m := range n.cur().Members {
+		p := n.peers[m.ID]
+		if m.ID == n.id.ID || p == nil || !p.heard || p.silent || !hasRole(m, roster.RoleSender) {
+			continue
+		}
+		if n.log.Head(m.ID).Seq < p.hb.Head.Seq {
+			return true
+		}
+	}
+	return false
 }
 
 // announceTurnLocked notes a heartbeat that tells the peers this node can

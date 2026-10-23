@@ -67,3 +67,31 @@ func TestForkedWitnessNotCounted(t *testing.T) {
 		t.Fatalf("an event of a member proven to show different histories reached the chat: %q", m)
 	}
 }
+
+// TestForkSeqFromOthersAlarm (D2): this router proved a member's fork at
+// one sequence number, another router's alarm names a lower one; the
+// member's events from the lower one on are left out here too, so both
+// routers make the same incidents.
+func TestForkSeqFromOthersAlarm(t *testing.T) {
+	g := newGroup(t, setup{n: 4, running: []bool{true, true, false, false}, senders: map[int]int{0: 1}})
+	a := g.nodes[0]
+	c, other := g.ids[2], g.ids[3]
+	g.run(5 * sec)
+	now := AtOf(g.clk.stampNow())
+	x := forge(t, c, history.Head{},
+		EventBody{Subject: c.ID, Type: events.WanDown, At: now},
+		EventBody{Subject: g.ids[1].ID, Type: events.MemberSilent, At: now},
+		EventBody{Subject: c.ID, Type: events.WanUp, At: now})
+	z := forge(t, c, history.Head{Seq: 2, Hash: x[1].Hash()}, EventBody{Subject: c.ID, Type: events.UplinkSwitched, At: now})
+	hash := strings.Repeat("ab", 32)
+	alarm := forge(t, other, history.Head{}, EventBody{Subject: c.ID, Type: events.Fork, At: now,
+		Detail: map[string]string{"proof": "fork", "a": hash, "b": strings.Repeat("cd", 32), "a_seq": "2"}})
+	inject(a, x...)
+	inject(a, z...)
+	inject(a, alarm...)
+	g.run(time.Minute)
+	t.Logf("chat:\n%s", strings.Join(g.chat.all(), "\n"))
+	if m := g.chat.messages("r02 stopped answering"); len(m) != 0 {
+		t.Fatalf("an event of r03 at a sequence number another router's alarm names as forked reached the chat: %q", m)
+	}
+}

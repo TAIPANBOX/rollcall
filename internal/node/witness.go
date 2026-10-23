@@ -272,11 +272,12 @@ func (n *Node) alarmIn(e history.Entry, b EventBody, now clock.Stamp) {
 	}
 	switch b.Detail["proof"] {
 	case "fork":
-		if n.inc.alarmed[forkAlarmID(b.Subject)] {
-			return
-		}
 		seq, err := strconv.ParseUint(b.Detail["a_seq"], 10, 64)
 		if err != nil || seq == 0 {
+			return
+		}
+		n.inc.forkAt(b.Subject, seq)
+		if n.inc.alarmed[forkAlarmID(b.Subject)] {
 			return
 		}
 		// Check it here: the member that recorded it answers with both

@@ -214,3 +214,41 @@ func TestTakeoverWaitsGrace(t *testing.T) {
 	}
 	t.Fatal("the incident never reached the chat")
 }
+
+// TestTakeoverWaitsForAcks (D2): the member that takes over sending does
+// not send while it lacks entries the previous sender's heartbeat says that
+// sender holds (its acknowledgements among them), up to twice the handover,
+// so an incident the previous sender delivered is not sent again.
+func TestTakeoverWaitsForAcks(t *testing.T) {
+	g := newGroup(t, setup{n: 2, senders: map[int]int{0: 2, 1: 1}})
+	g.run(60 * sec)
+	a, b := g.nodes[0], g.nodes[1]
+	a.LocalEvent(events.Event{Type: events.InternetLost})
+	const id = "3333333333333333"
+	for _, n := range []*Node{a, b} {
+		with(n, func() any {
+			now := n.stamp()
+			n.queueLocked(events.Incident{ID: id, Start: now, End: now}, nil, nil, now)
+			return nil
+		})
+	}
+	block := func(d time.Duration) {
+		with(a, func() any {
+			a.peers[b.id.ID].nextSync = a.clk.Mono() + d
+			return nil
+		})
+	}
+	block(time.Hour) // r01 does not fetch r02's chain for now
+	g.run(40 * sec)
+	if n := len(g.chat.messages("[33333333]")); n != 1 {
+		t.Fatalf("r02 did not send the incident (%d messages): the case did not happen", n)
+	}
+	a.LocalEvent(events.Event{Type: events.InternetRestored})
+	g.run(25 * sec)
+	block(0)
+	g.run(time.Minute)
+	t.Logf("chat:\n%s", strings.Join(g.chat.all(), "\n"))
+	if n := len(g.chat.messages("[33333333]")); n != 1 {
+		t.Fatalf("the incident was sent %d times: r01 took over before it held r02's acknowledgement", n)
+	}
+}

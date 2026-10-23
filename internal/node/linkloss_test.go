@@ -57,3 +57,29 @@ func TestSilenceCorrectedWithoutUpdate(t *testing.T) {
 		t.Fatalf("r03 recorded updates %+v for a corrected silence", us)
 	}
 }
+
+// TestLateWitnessAbsorbed (D2): a member's record of an absence the chat was
+// told already arrives late (its router was away meanwhile). It joins
+// nothing and sends nothing: another message for the same silence would be
+// a duplicate under another incident ID.
+func TestLateWitnessAbsorbed(t *testing.T) {
+	g := newGroup(t, setup{n: 4, running: []bool{true, true, true, false}, senders: map[int]int{0: 1}})
+	g.run(40 * sec)
+	g.stop(2)
+	g.run(time.Minute)
+	if n := len(g.chat.messages("r03 stopped answering")); n != 1 {
+		t.Fatalf("%d messages tell r03's silence before the late record, want 1", n)
+	}
+	seen := eventOfType(t, g.nodes[0], events.MemberSilent, g.ids[2].ID)
+	b, err := DecodeEvent(seen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inject(g.nodes[0], forge(t, g.ids[3], history.Head{},
+		EventBody{Subject: g.ids[2].ID, Type: events.MemberSilent, Last: b.Last, At: shift(b.At, 2*sec)})...)
+	g.run(time.Minute)
+	t.Logf("chat:\n%s", strings.Join(g.chat.all(), "\n"))
+	if n := len(g.chat.messages("r03 stopped answering")); n != 1 {
+		t.Fatalf("%d messages tell r03's silence, want 1: the late record told it again", n)
+	}
+}
