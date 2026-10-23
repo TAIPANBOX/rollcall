@@ -13,6 +13,7 @@ import (
 	"github.com/TAIPANBOX/rollcall/internal/history"
 	"github.com/TAIPANBOX/rollcall/internal/ids"
 	"github.com/TAIPANBOX/rollcall/internal/member"
+	"github.com/TAIPANBOX/rollcall/internal/roster"
 )
 
 // # Witness statements (security spec 5.7)
@@ -65,6 +66,60 @@ import (
 // to state a view on it.
 const witnessAge = 2 * time.Minute
 
+// # How many statements (N4)
+//
+// A statement is an own entry, and the node writes its whole own chain to
+// flash for each own entry (sync.go), up to about 300 KB at its bound. Other
+// members' events are what it states views on, so a compromised member that
+// wrote such an event every second would make every other router rewrite its
+// chain every second. The node therefore states its view on at most
+// witnessBurst events of one origin at once, and on one more each
+// witnessEvery after that (a token bucket per origin). A statement over that
+// is not made and is counted (Status.WitnessesDropped); it only lowers the
+// "confirmed by" count of a message.
+//
+// witnessBurst is two events for every member of the largest roster: an
+// origin that records every other member silent and then back, a whole site's
+// power cycle seen from one router, gets a view stated on each. Honest
+// members record events of the kinds stated on only when something changes,
+// rarely more than one a minute for long. Under a member that writes one a
+// second, the statements about it drop from 3600 an hour to at most
+// witnessBurst+60.
+const (
+	witnessBurst = 2 * roster.MaxMembers
+	witnessEvery = time.Minute
+)
+
+// budget is what is left of one origin's statements (witnessBurst at most),
+// and when it was last refilled.
+type budget struct {
+	left int
+	at   time.Duration
+}
+
+// spendWitnessLocked takes one statement from origin's budget at now, and
+// reports whether one was left.
+func (n *Node) spendWitnessLocked(origin ids.MemberID, now time.Duration) bool {
+	b := n.inc.witnessBudget[origin]
+	if b == nil {
+		if len(n.inc.witnessBudget) >= 2*roster.MaxMembers {
+			clear(n.inc.witnessBudget) // origins long removed: every budget starts full again
+		}
+		b = &budget{left: witnessBurst, at: now}
+		n.inc.witnessBudget[origin] = b
+	}
+	if gain := (now - b.at) / witnessEvery; gain > 0 {
+		b.left = min(witnessBurst, b.left+int(gain))
+		b.at += gain * witnessEvery
+	}
+	if b.left == 0 {
+		n.inc.witnessDropped++
+		return false
+	}
+	b.left--
+	return true
+}
+
 // witnessWrite is a witness statement waiting to be signed.
 type witnessWrite struct {
 	ref   ids.Hash
@@ -86,6 +141,9 @@ func (n *Node) witnessLocked(e history.Entry, b EventBody, now clock.Stamp) {
 		return
 	}
 	n.inc.witnessed[ref] = true
+	if !n.spendWitnessLocked(e.Origin, now.Mono) {
+		return
+	}
 	n.writes = append(n.writes, ownWrite{kind: history.KindWitness, body: witnessWrite{ref: ref, agree: agree}})
 	n.flushWritesLocked(now)
 }

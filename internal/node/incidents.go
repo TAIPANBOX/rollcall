@@ -97,6 +97,9 @@ type incidents struct {
 	forkSeqs   map[ids.MemberID]uint64 // the lowest sequence number a fork alarm names, per forked member
 	loading    bool
 	restoreBy  time.Duration // when restored incidents are queued without a trusted clock (state.go)
+
+	witnessBudget  map[ids.MemberID]*budget // statements left per origin (witness.go)
+	witnessDropped uint64                   // statements not made for lack of budget
 }
 
 func (c *incidents) init() {
@@ -112,6 +115,7 @@ func (c *incidents) init() {
 	c.boots = map[ids.BootID]bool{}
 	c.ownBacks = map[ids.BootID]bool{}
 	c.forkSeqs = map[ids.MemberID]uint64{}
+	c.witnessBudget = map[ids.MemberID]*budget{}
 }
 
 // forkAt notes that a fork alarm names seq of o's chain.

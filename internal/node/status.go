@@ -273,7 +273,11 @@ type Status struct {
 	Counters   Counters `json:"-"`
 	Queued     int      `json:"-"`
 	Dropped    int      `json:"-"` // incidents the full queue refused (deliver.Status.Dropped)
-	Delivery   string   `json:"-"` // what stops delivery, from the queue
+	// WitnessesDropped counts the witness statements this router did not
+	// make because their origin's events came faster than witnessEvery
+	// (witness.go).
+	WitnessesDropped uint64 `json:"-"`
+	Delivery         string `json:"-"` // what stops delivery, from the queue
 }
 
 type SelfStatus struct {
@@ -443,6 +447,7 @@ func (n *Node) Status() Status {
 	}
 	qs := n.queue.Status()
 	s.Queued, s.Dropped, s.Delivery = qs.Queued, qs.Dropped, qs.Problem
+	s.WitnessesDropped = n.inc.witnessDropped
 	for i := len(n.inc.recent) - 1; i >= 0 && len(s.Incidents) < maxStatusIncidents; i-- {
 		r := n.inc.recent[i]
 		start := r.inc.Start.Wall
