@@ -100,6 +100,36 @@ Each fix has a test or a gate that failed on the old code.
 Skipped that day: sysupgrade, a mesh, NAT, and the replay and flood checks from a laptop on the LAN.
 A baseline of the flash write counters was taken at 18:18; no soak followed, so there is no figure.
 
+## Release candidate 1.0.0-rc1 on the routers, 2026-10-23 evening
+
+The same three routers, now from the signed feed of the release candidate.
+
+- **Install from the feed.** On each router: the key, its SHA-256 compared
+  (`1dd696c7afce0464688a5106229723f60c8cfb9bd2f6ec296ee5fec24f57ff39`), the feed line, then
+  `apk add rollcall`. apk installed `rollcall-1.0.0_rc1-r1` with no `--allow-untrusted`, and every
+  file of the package was owned by root.
+- **The sandbox**, from `/proc` on each router: uid 1660, `NoNewPrivs: 1`, `Seccomp: 2` on every
+  thread (9, 8 and 8 threads), and every capability set empty, the bounding set included
+  (`CapBnd: 0000000000000000`). It was the same after each reboot below.
+- **The chat**, verbatim, in the order the lines arrived:
+
+```text
+home: the group changed: beryl1 added (by flint2).
+home: the group changed: beryl2 added (by flint2).
+home: the group changed: beryl1 is now the backup admin (by flint2).
+home: the group changed: flint2 is now a sender (by flint2).
+home: beryl2 rebooted unexpectedly at 20:52, back after 39 s, confirmed by 2 of 2.
+home: flint2 rebooted as planned at 20:54, back after 45 s, confirmed by 2 of 2.
+```
+
+  The four announcements were held until the chat was bound and then went out in the order of the
+  changes, each naming the role. The two reboots (a forced one without a clean shutdown, and a clean
+  one) each gave one line, counted by both routers that saw it, and with the routers' clocks
+  trusted: the daemons had started after the clocks synced and learned of it from ntp's periodic
+  event.
+- **Resources at the start of the long run** (20:45): 12.1 to 15.3 MB resident per daemon, 8 to 11
+  threads, 43 to 60 KB of state.
+
 ## CI
 
 Run `39990683889`, the push of commit `4186091` on 2026-10-23. Every job passed:
@@ -148,10 +178,5 @@ floor yet.
   simulator cover forged and replayed packets, the lab did not run them.
 - **The LuCI pages on a router.** The package installed; its pages and its rpcd rules were not used.
 - **ICMP probes** (off by default) and the capability they add.
-- **An empty capability bounding set on a router.** It was full on the lab day. With
-  `no_new_privs` and no `execve` in the filter the daemon cannot use it. Since the run, every start
-  names a capabilities file, so the set is empty unless ICMP is on; that has not run on a router.
-- **Clock trust after a daemon restart on a router.** Since the run, the ntp hotplug script also
-  takes the periodic event of a synchronised clock; that has not run on a router.
-- **The confirmation count**, above: open.
-- **The signed feed on a router.** Release candidate 1.0.0-rc1 and its signed apk feed exist since 2026-10-23; the feed was proven in an OpenWrt 25.12 container (no `--allow-untrusted`, every file owned by root), not yet on a router. A feed for OpenWrt 24.10 (opkg) does not exist.
+- **A feed for OpenWrt 24.10 (opkg).** It does not exist; the 25.12 apk feed does and ran on the
+  routers (above).

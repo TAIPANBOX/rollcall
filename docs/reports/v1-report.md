@@ -99,9 +99,9 @@ Found by the lab run, fixed:
             announcements held while no chat was bound went out out of order, and "roles changed"
             did not say which role: ce0ad9e, 8146a83
 
-NOT proven: L5, L6, L8 and the new wordings have not run on a router; only in tests
-            flash wear over days: a baseline was taken, the soak did not run (the lab routers were
-            cleared the same evening)
+NOT proven: flash wear over days: the long run of 1.0.0-rc1 started on 2026-10-23 at 20:45 on the
+            three routers; its figures are not in yet (L5, L6, L8, the role wording and the order
+            of announcements ran on the routers that evening: docs/measured.md)
             MIPS has not run anywhere; OpenWrt 24.10 not on a router
             a mesh, separate LANs with their own DHCP, NAT with static peers: simulator only
             sysupgrade and a pulled power cord: not run (a forced reboot stood in for the cord)
