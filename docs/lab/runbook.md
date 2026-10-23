@@ -14,7 +14,7 @@ This runbook proves the v1 group on three lab routers: flint2 (primary and sende
 
 ## 0. Setup on the Mac
 
-Every router command goes through `lab_ssh <router> '<command>'`. It is Tailscale SSH by default. When Tailscale is not running on the Mac, set `LAB_SSH=ssh` and give each router name a `Host` entry in `~/.ssh/config` (its LAN address and the lab key), so `ssh root@flint2` reaches it. No router address is written in this repository.
+Every router command goes through `lab_ssh <router> '<command>'`. It is Tailscale SSH by default. When Tailscale is not running on the Mac, write an ssh config file for the run, `$RUN/ssh_config`, with a `Host` entry per router name (its LAN address and the lab key), and set `LAB_SSH="ssh -F $RUN/ssh_config"`; the Mac's own `~/.ssh/config` is not touched. No router address is written in this repository.
 
 ```sh
 cd ~/Development/rollcall
