@@ -86,6 +86,8 @@ func (n *Node) flushWritesLocked(now clock.Stamp) {
 		head := n.log.Head(n.id.ID)
 		var e history.Entry
 		var err error
+		var before bootBefore
+		known := false
 		switch b := w.body.(type) {
 		case EventBody:
 			if w.ev != nil {
@@ -95,6 +97,7 @@ func (n *Node) flushWritesLocked(now clock.Stamp) {
 		case witnessWrite:
 			e, err = history.NewWitness(n.id, head, b.ref, b.agree, "")
 		case BootBody:
+			before, known = n.bootBeforeLocked()
 			e, err = NewBoot(n.id, head, b)
 		default:
 			e, err = history.NewEntry(n.id, head, w.kind, w.body)
@@ -104,6 +107,9 @@ func (n *Node) flushWritesLocked(now clock.Stamp) {
 		}
 		if b, ok := w.body.(BootBody); ok {
 			n.rec.boot, n.rec.bootSeen = b, true
+			if known {
+				n.ownReturnLocked(before, b, now)
+			}
 		}
 	}
 }

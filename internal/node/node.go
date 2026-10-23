@@ -70,7 +70,8 @@ type Config struct {
 	TZ                     *time.Location
 
 	// Boot is this boot's ID, from /proc/sys/kernel/random/boot_id; zero
-	// makes New draw one.
+	// makes New draw one, and then the node cannot tell a reboot from a
+	// restart of the daemon and records no return of its own (boot.go).
 	Boot ids.BootID
 	// BootSeq is the boot sequence number identity.NextBootSeq gave this
 	// boot; 0 counts as 1.
@@ -80,7 +81,8 @@ type Config struct {
 	// spec 5.3); empty skips that.
 	IdentityDir string
 	// Planned is true when the boot before this one ended with an
-	// announced shutdown (the shutdown marker of design 4.6).
+	// announced shutdown (the shutdown marker of design 4.6): the node's
+	// own return is then a planned reboot (boot.go).
 	Planned bool
 	// Peers are static peers that get every heartbeat by unicast.
 	Peers []netip.AddrPort
@@ -182,6 +184,12 @@ type Node struct {
 	flusher *store.Flusher
 	queue   *deliver.Queue
 	dirty   map[ids.MemberID]bool // origins whose history file is stale
+
+	// The alive file (boot.go): what the boot before left in it, the
+	// moment to write next, and the Flusher that writes it.
+	prevAlive *aliveFile
+	aliveAt   clock.Stamp
+	alive     *store.Flusher
 
 	counter          uint64
 	nextBeat         time.Duration
@@ -373,7 +381,9 @@ func (n *Node) start() error {
 	n.table = tab
 	n.log = history.NewLog(n.keyOf, 0)
 	n.flusher = n.st.NewFlusher(n.writeHistory)
+	n.alive = n.st.NewFlusher(n.writeAlive)
 	n.queue = deliver.NewQueue()
+	n.loadAlive()
 	n.loadHistory(now)
 
 	n.catchUpBy = now.Mono + ownCatchUp
@@ -1134,6 +1144,7 @@ func (n *Node) tickLocked(now clock.Stamp) {
 	n.checkWaitingLocked(now)
 	n.incidentsLocked(now)
 	_ = n.flusher.Tick(now.Wall)
+	n.aliveLocked(now)
 }
 
 // beatLocked queues this boot's heartbeat to the multicast group and to
@@ -1195,7 +1206,9 @@ func (n *Node) GoingDown() {
 		return
 	}
 	n.goingDown = true
-	n.beatLocked(n.stamp())
+	now := n.stamp()
+	n.announcedLocked(now)
+	n.beatLocked(now)
 	out := n.takeOut()
 	n.mu.Unlock()
 	n.send(out)

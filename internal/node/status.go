@@ -24,8 +24,9 @@ import (
 // records one update, an own event of the corrected class about this router
 // marked "update" in its Detail, which every member makes into the same
 // incident of its own, so the chat gets one update; a correction that
-// changes nothing told records none. A claim proven false raises one alarm
-// (witness.go). Nobody is expelled.
+// changes nothing told records none, and neither does one whose class this
+// router's own record of the absence already told (boot.go). A claim proven
+// false raises one alarm (witness.go). Nobody is expelled.
 
 type recon struct {
 	claims     []history.Entry
@@ -68,7 +69,9 @@ func (n *Node) reconcileLocked(now clock.Stamp) {
 		}
 		if ok && c.Update && !n.inc.updates[c.Entries[0].Hash()] {
 			n.inc.updates[c.Entries[0].Hash()] = true
-			n.updateLocked(c, now)
+			if !n.toldOwnLocked(c) {
+				n.updateLocked(c, now)
+			}
 		}
 	}
 	for _, f := range res.Falsehoods {

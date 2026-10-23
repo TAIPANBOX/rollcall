@@ -16,6 +16,7 @@
 //	 "last":{"id":"<32 hex>","seq":7},"back":{"id":"<32 hex>","seq":8},
 //	 "ref":{"seq":17,"hash":"<64 hex>"},
 //	 "at":{"wall":"2026-10-23T09:00:00Z","mono":1000000000,"trusted":true,"boot":"<32 hex>"},
+//	 "since":{"wall":"2026-10-23T08:58:10Z","mono":7200000000000,"trusted":false,"boot":"<32 hex>"},
 //	 "detail":{"from":"24.10.3","to":"24.10.4"}}
 //
 // Last is the Subject's boot when the origin last heard it before the event,
@@ -27,7 +28,12 @@
 // clocks (a clock.Stamp, wall clock in UTC), and Detail what a message needs
 // beyond it (versions, a proof's entries); both are left out when not given,
 // so every member builds the same event, and the same incident, from the
-// entry.
+// entry. Since, only with At, is on a member's record of its own return
+// (boot.go): the last moment it knows it was up before the absence, on the
+// clocks of the boot it left (a zero boot and mono for a moment a peer
+// gave), trusted only when exact; it is left out when unknown, and members
+// read it only from an entry whose origin is its subject
+// (events.Event.Since).
 //
 // An entry of history.KindBoot carries a BootBody: the boot record a member
 // writes first in every boot.
@@ -63,7 +69,7 @@ const (
 	// maxVersion is the longest version, in bytes: member.MaxVersionLen.
 	maxVersion = 64
 	// maxBody is the longest body DecodeEvent and DecodeBoot read. The
-	// longest that NewEvent writes is 1007 bytes, NewBoot 169
+	// longest that NewEvent writes is 1141 bytes, NewBoot 169
 	// (TestBodySizes).
 	maxBody = 2 << 10
 	// maxDetail is the most entries an event's Detail holds, maxDetailKey
@@ -115,6 +121,7 @@ type EventBody struct {
 	Back    Boot              `json:"back,omitzero"`   // the boot the Subject came back in
 	Ref     EntryRef          `json:"ref,omitzero"`    // an entry of the Subject's chain
 	At      At                `json:"at,omitzero"`     // when, on the origin's clocks
+	Since   At                `json:"since,omitzero"`  // on an own return: when the absence began
 	Detail  map[string]string `json:"detail,omitzero"` // what a message needs beyond the event
 }
 
@@ -135,6 +142,12 @@ func AtOf(s clock.Stamp) At {
 // Stamp returns a as a clock.Stamp.
 func (a At) Stamp() clock.Stamp {
 	return clock.Stamp{Wall: a.Wall, Mono: time.Duration(a.Mono), Trusted: a.Trusted, Boot: a.Boot}
+}
+
+// valid reports whether a is a stamp a body may carry: Wall in UTC within
+// 1970..9999, Mono not negative.
+func (a At) valid() bool {
+	return !a.Wall.Before(minWall) && !a.Wall.After(maxWall) && a.Wall.Location() == time.UTC && a.Mono >= 0
 }
 
 var (
@@ -164,8 +177,10 @@ func (b EventBody) check() error {
 		return fmt.Errorf("%w: a reference with only one of its seq and hash", history.ErrBody)
 	case none && (b.Last.known() || b.Back.known() || b.Ref != EntryRef{}):
 		return fmt.Errorf("%w: boots or a reference of no member", history.ErrBody)
-	case b.At != (At{}) && (b.At.Wall.Before(minWall) || b.At.Wall.After(maxWall) || b.At.Wall.Location() != time.UTC || b.At.Mono < 0):
+	case b.At != (At{}) && !b.At.valid():
 		return fmt.Errorf("%w: a stamp outside 1970..9999 UTC or before its boot", history.ErrBody)
+	case b.Since != (At{}) && (b.At == (At{}) || !b.Since.valid()):
+		return fmt.Errorf("%w: a start without a stamp, or outside 1970..9999 UTC or before its boot", history.ErrBody)
 	case b.Detail != nil && (len(b.Detail) == 0 || len(b.Detail) > maxDetail):
 		return fmt.Errorf("%w: detail holds %d entries, 1 to %d", history.ErrBody, len(b.Detail), maxDetail)
 	}

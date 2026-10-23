@@ -1138,6 +1138,9 @@ func TestBodyRules(t *testing.T) {
 		{Type: events.UnderFlood},
 		{Type: events.UnderFlood, At: At{Wall: t0, Mono: 5, Trusted: true, Boot: bootID(1)}},
 		{Subject: sub, Type: events.Upgraded, Detail: map[string]string{"from": "24.10.3", "to": "24.10.4"}},
+		{Subject: sub, Type: events.RebootUnplanned, At: At{Wall: t0, Mono: 5, Trusted: true, Boot: bootID(2)},
+			Since: At{Wall: t0.Add(-time.Minute), Mono: 9, Boot: bootID(1)}},
+		{Subject: sub, Type: events.RebootPlanned, At: At{Wall: t0, Mono: 5, Boot: bootID(2)}, Since: At{Wall: t0.Add(-time.Minute), Trusted: true}},
 		{Subject: sub, Type: events.Fork, Detail: map[string]string{"a": strings.Repeat("f", 64), "a_seq": "18446744073709551615"}},
 	}
 	for i, b := range good {
@@ -1168,6 +1171,10 @@ func TestBodyRules(t *testing.T) {
 		"stamp after 9999":       {Subject: sub, Type: ok.Type, At: At{Wall: time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)}},
 		"stamp not in UTC":       {Subject: sub, Type: ok.Type, At: At{Wall: t0.In(time.FixedZone("x", 3600))}},
 		"stamp before its boot":  {Subject: sub, Type: ok.Type, At: At{Wall: t0, Mono: -1}},
+		"start without a stamp":  {Subject: sub, Type: ok.Type, Since: At{Wall: t0}},
+		"start before 1970":      {Subject: sub, Type: ok.Type, At: At{Wall: t0}, Since: At{Wall: time.Unix(-1, 0).UTC()}},
+		"start not in UTC":       {Subject: sub, Type: ok.Type, At: At{Wall: t0}, Since: At{Wall: t0.In(time.FixedZone("x", 3600))}},
+		"start before its boot":  {Subject: sub, Type: ok.Type, At: At{Wall: t0}, Since: At{Wall: t0, Mono: -1}},
 		"empty detail":           {Subject: sub, Type: ok.Type, Detail: map[string]string{}},
 		"detail too long":        {Subject: sub, Type: ok.Type, Detail: map[string]string{"a": "1", "b": "1", "c": "1", "d": "1", "e": "1", "f": "1", "g": "1"}},
 		"detail key in capitals": {Subject: sub, Type: ok.Type, Detail: map[string]string{"From": "1"}},
@@ -1320,6 +1327,7 @@ func TestBodySizes(t *testing.T) {
 		Last: Boot{ID: bootID(255), Seq: 1<<64 - 1}, Back: Boot{ID: bootID(255), Seq: 1<<64 - 1},
 		Ref:    EntryRef{Seq: 1<<64 - 1, Hash: ids.Hash{0: 1}},
 		At:     At{Wall: time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC), Mono: math.MaxInt64, Trusted: true, Boot: bootID(255)},
+		Since:  At{Wall: time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC), Mono: math.MaxInt64, Trusted: true, Boot: bootID(255)},
 		Detail: detail,
 	}
 	e, err := NewEvent(rx.id, history.Head{}, biggest)

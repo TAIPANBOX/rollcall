@@ -113,9 +113,15 @@ func (c *incidents) eventIn(e history.Entry, b EventBody, now clock.Stamp) {
 	c.add(e.Hash(), &evRec{ev: eventOf(e, b), seen: now.Mono})
 }
 
-// eventOf returns the event the entry e with body b records.
+// eventOf returns the event the entry e with body b records. A start
+// (Since) counts only on an entry whose origin is its subject: a member
+// says when its own absence began, never another's.
 func eventOf(e history.Entry, b EventBody) events.Event {
-	return events.Event{Type: b.Type, Subject: b.Subject, Witness: e.Origin, At: b.At.Stamp(), Ref: e.Hash(), Detail: b.Detail}
+	ev := events.Event{Type: b.Type, Subject: b.Subject, Witness: e.Origin, At: b.At.Stamp(), Ref: e.Hash(), Detail: b.Detail}
+	if e.Origin == b.Subject && b.Since != (At{}) {
+		ev.Since = b.Since.Stamp()
+	}
+	return ev
 }
 
 func (c *incidents) add(ref ids.Hash, r *evRec) {
@@ -418,6 +424,12 @@ func (n *Node) renderLocked(inc events.Incident) string {
 	}
 	if r := n.inc.byID[inc.ID]; r != nil && !r.single && len(n.rosters) > 0 {
 		f.Confirmed, f.Of = n.confirmations(r.events)
+	}
+	if r := n.inc.byID[inc.ID]; r != nil && !slices.Contains(inc.Events, events.MemberSilent) && ownStart(r.events) {
+		// deliver tells an absence from its start when the incident holds
+		// the silence that began it; a router's own account of its return
+		// carries that start itself, and Start is it (events.Incident).
+		inc.Events = append(slices.Clone(inc.Events), events.MemberSilent)
 	}
 	if r := n.inc.byID[inc.ID]; r != nil && slices.Contains(inc.Events, events.Upgraded) {
 		for _, e := range r.events {
