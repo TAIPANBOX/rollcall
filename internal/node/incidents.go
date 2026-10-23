@@ -78,6 +78,7 @@ type incidents struct {
 	alarmed    map[string]bool   // alarm incident IDs raised, one per proof
 	witnessed  map[ids.Hash]bool // events this node has stated a view on
 	pending    []pendingAlarm    // falsehood alarms of others, not yet checkable
+	waiting    []pendingUpdate   // updates whose claims have not arrived yet
 	updates    map[ids.Hash]bool // corrections whose update was recorded
 	loading    bool
 }
@@ -110,15 +111,6 @@ func (c *incidents) eventIn(e history.Entry, b EventBody, now clock.Stamp) {
 		return
 	}
 	c.add(e.Hash(), &evRec{ev: eventOf(e, b), seen: now.Mono})
-}
-
-// singleIn takes an event that is an incident of its own: the update a
-// correction sends.
-func (c *incidents) singleIn(e history.Entry, b EventBody, now clock.Stamp) {
-	if b.At == (At{}) {
-		return
-	}
-	c.add(e.Hash(), &evRec{ev: eventOf(e, b), seen: now.Mono, single: true})
 }
 
 // eventOf returns the event the entry e with body b records.

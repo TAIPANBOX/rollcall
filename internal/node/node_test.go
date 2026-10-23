@@ -1609,9 +1609,10 @@ func TestFalsehoodAlarmOnce(t *testing.T) {
 
 // TestForkAlarmOnce: a fork proof raises exactly one alarm per member that
 // finds it, naming the proof's two entries, however often the forked chain
-// is offered again, and the group sends it once.
+// is offered again, and the group sends it once, also when the sender fails
+// over after it.
 func TestForkAlarmOnce(t *testing.T) {
-	g := newGroup(t, setup{n: 3, running: []bool{true, true, false}, senders: map[int]int{0: 1}})
+	g := newGroup(t, setup{n: 3, running: []bool{true, true, false}, senders: map[int]int{0: 2, 1: 1}})
 	a, b := g.nodes[0], g.nodes[1]
 	c := g.ids[2]
 	g.run(10 * sec)
@@ -1627,6 +1628,9 @@ func TestForkAlarmOnce(t *testing.T) {
 		inject(b, e1, later[0])
 		g.run(10 * sec)
 	}
+	// The sender goes away; the next one must not send the alarm again.
+	g.split([]int{0}, []int{1}, true)
+	g.run(90 * sec)
 	t.Logf("chat:\n%s", strings.Join(g.chat.all(), "\n"))
 	for i, n := range []*Node{a, b} {
 		as := alarms(n, "fork")
@@ -1646,5 +1650,36 @@ func TestForkAlarmOnce(t *testing.T) {
 	}
 	if s := a.Status(); s.Version != 1 || len(s.Members) != 3 {
 		t.Fatal("the roster changed after a fork")
+	}
+}
+
+// TestForgedUpdateIgnored: an update reaches the chat only from the router
+// it is about, backed by its own correction that changes the class, and of
+// a correction class: a member's update about another member, an update
+// without a matching correction, and an alarm sent as an update produce no
+// message.
+func TestForgedUpdateIgnored(t *testing.T) {
+	g := newGroup(t, setup{n: 4, running: []bool{true, true, true, false}, senders: map[int]int{0: 1}})
+	g.run(40 * sec)
+	c, liar := g.ids[2].ID, g.ids[3]
+	now := AtOf(g.clk.stampNow())
+	fake := strings.Repeat("ab", 32)
+	inject(g.nodes[0], forge(t, liar, history.Head{},
+		// About another member.
+		EventBody{Subject: c, Type: events.LinkLost, Back: Boot{ID: bootN(2, 1), Seq: 1}, At: now,
+			Detail: map[string]string{"update": fake, "update_seq": "1"}},
+		// About itself, with no correction behind it.
+		EventBody{Subject: liar.ID, Type: events.RebootUnplanned, At: now,
+			Detail: map[string]string{"update": fake, "update_seq": "1"}},
+		// An alarm sent as an update.
+		EventBody{Subject: liar.ID, Type: events.Fork, At: now,
+			Detail: map[string]string{"update": fake, "update_seq": "2"}},
+	)...)
+	g.run(60 * sec)
+	t.Logf("chat:\n%s", strings.Join(g.chat.all(), "\n"))
+	for _, w := range []string{"lost contact", "rebooted", "showed different histories"} {
+		if m := g.chat.messages(w); len(m) != 0 {
+			t.Fatalf("a forged update reached the chat: %q", m)
+		}
 	}
 }

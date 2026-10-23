@@ -169,7 +169,7 @@ func (n *Node) entryIn(e history.Entry, now clock.Stamp) {
 	case b.Detail["proof"] != "":
 		n.alarmIn(e, b, now)
 	case b.Detail["update"] != "":
-		n.inc.singleIn(e, b, now)
+		n.updateIn(e, b, now)
 	default:
 		n.inc.eventIn(e, b, now)
 		n.witnessLocked(e, b, now)

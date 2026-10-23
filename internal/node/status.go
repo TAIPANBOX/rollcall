@@ -2,6 +2,7 @@ package node
 
 import (
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/TAIPANBOX/rollcall/internal/clock"
@@ -77,7 +78,9 @@ func (n *Node) reconcileLocked(now clock.Stamp) {
 
 // updateLocked records the update a correction that changed the incident's
 // meaning sends: an event of the corrected class about this router, from
-// boot From to To, stamped when the latest claim it corrects was.
+// boot From to To, stamped when the latest claim it corrects was, whose
+// Detail names the correction entry ("update" its hash, "update_seq" its
+// seq) so every member can check it (updateIn).
 func (n *Node) updateLocked(c Correction, now clock.Stamp) {
 	at := n.localStamp(now)
 	latest := time.Time{}
@@ -98,8 +101,92 @@ func (n *Node) updateLocked(c Correction, now clock.Stamp) {
 		}
 	}
 	typ := events.Type(c.Class)
-	n.recordEvent(events.Event{Type: typ, Subject: n.id.ID, At: at, Detail: map[string]string{"update": "1"}},
-		EventBody{Subject: n.id.ID, Type: typ, Last: c.From, Back: c.To}, now)
+	first := c.Entries[0]
+	n.recordEvent(events.Event{Type: typ, Subject: n.id.ID, At: at, Detail: map[string]string{
+		"update": first.Hash().String(), "update_seq": strconv.FormatUint(first.Seq, 10),
+	}}, EventBody{Subject: n.id.ID, Type: typ, Last: c.From, Back: c.To}, now)
+}
+
+// pendingUpdate is an update whose corrected claims this node does not
+// hold yet.
+type pendingUpdate struct {
+	e     history.Entry
+	b     EventBody
+	until time.Duration
+}
+
+const updateWait = 10 * time.Minute
+
+// correctionClass reports whether t is one of the classes a correction
+// names: never an alarm, a flood or anything else.
+func correctionClass(t events.Type) bool {
+	switch string(t) {
+	case history.ClassLinkLost, history.ClassMemberBack, history.ClassRebootPlanned,
+		history.ClassRebootUnplanned, history.ClassUpgraded:
+		return true
+	}
+	return false
+}
+
+// updateIn takes an update e with body b into the incidents, as one of its
+// own, only when it is backed:
+//
+//   - its origin is its subject: a router correcting what was said about it;
+//   - its type is a correction class (never an alarm or a flood);
+//   - the origin's own chain holds, before it, the correction entry its
+//     Detail names, of that same class;
+//   - every claim that correction refers to is another member's event about
+//     the origin, and what those claims told is not the corrected class.
+//
+// An update whose claims have not arrived yet waits up to updateWait;
+// anything else is dropped.
+func (n *Node) updateIn(e history.Entry, b EventBody, now clock.Stamp) {
+	switch ok, retry := n.updateBacked(e, b); {
+	case ok:
+		n.inc.add(e.Hash(), &evRec{ev: eventOf(e, b), seen: now.Mono, single: true})
+	case retry && len(n.inc.waiting) < keepPending:
+		n.inc.waiting = append(n.inc.waiting, pendingUpdate{e: e, b: b, until: now.Mono + updateWait})
+	}
+}
+
+func (n *Node) updateBacked(e history.Entry, b EventBody) (ok, retry bool) {
+	if e.Origin != b.Subject || !correctionClass(b.Type) || b.At == (At{}) {
+		return false, false
+	}
+	corr, held := n.entryAt(e.Origin, b.Detail["update_seq"], b.Detail["update"])
+	if !held || corr.Kind != history.KindCorrection || corr.Seq >= e.Seq {
+		return false, false
+	}
+	cb, err := history.DecodeCorrection(corr)
+	if err != nil || cb.Class != string(b.Type) {
+		return false, false
+	}
+	var types []events.Type
+	for _, ref := range cb.Refs {
+		r := n.inc.evs[ref]
+		if r == nil {
+			return false, true
+		}
+		if r.ev.Subject != e.Origin || r.ev.Witness == e.Origin {
+			return false, false
+		}
+		types = append(types, r.ev.Type)
+	}
+	if told(types) == b.Type {
+		return false, false
+	}
+	return true, false
+}
+
+// checkWaitingLocked takes the waiting updates that are backed now.
+func (n *Node) checkWaitingLocked(now clock.Stamp) {
+	n.inc.waiting = slices.DeleteFunc(n.inc.waiting, func(p pendingUpdate) bool {
+		ok, retry := n.updateBacked(p.e, p.b)
+		if ok {
+			n.inc.add(p.e.Hash(), &evRec{ev: eventOf(p.e, p.b), seen: now.Mono, single: true})
+		}
+		return ok || !retry || now.Mono > p.until
+	})
 }
 
 // # Status

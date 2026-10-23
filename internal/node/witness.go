@@ -1,6 +1,7 @@
 package node
 
 import (
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"slices"
@@ -199,6 +200,10 @@ func (n *Node) forkLocked(p history.ForkProof, now clock.Stamp) {
 // falsehoodLocked handles a falsehood Reconcile proved against claimant.
 func (n *Node) falsehoodLocked(f Falsehood, now clock.Stamp) {
 	o := f.Claim.Origin
+	ck, known := n.keyOf(o)
+	if !known || f.Verify(ck, n.id.Sign.Public().(ed25519.PublicKey)) != nil {
+		return
+	}
 	at := n.localStamp(now)
 	if !n.raiseLocked(alarmID("falsehood", f.Claim.Hash(), f.Own.Hash()), o, at, now) {
 		return
