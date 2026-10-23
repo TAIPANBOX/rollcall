@@ -195,10 +195,10 @@ func TestDeviceNotes(t *testing.T) {
 // the peer zones, with what it dropped, and when the flood stops; nothing
 // while the state holds.
 func TestFloodNote(t *testing.T) {
-	c := transport.Counters{SourceLimited: 1500, RateLimited: 20, Oversize: 3, SourcesFull: 0,
+	c := transport.Counters{Unverified: 2600, SourceLimited: 1500, KnownLimited: 20, UnknownLimited: 33, Oversize: 3,
 		ConnsSource: 41, ConnsFull: 7, PreAuth: 9, AuthFailed: 5}
 	got := floodNote(false, true, c)
-	for _, want := range []string{"under flood", "1500", "41", "7", "9", "5"} {
+	for _, want := range []string{"under flood", "2600", "1500", "20", "33", "41", "7", "9", "5"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("floodNote at the start of a flood = %q, want it to carry %q", got, want)
 		}

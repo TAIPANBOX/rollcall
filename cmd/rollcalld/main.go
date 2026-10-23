@@ -357,9 +357,10 @@ func floodNote(was, now bool, c transport.Counters) string {
 	switch {
 	case now && !was:
 		return fmt.Sprintf("rollcalld: under flood: the peer zones carry more than the transport admits; "+
-			"UDP dropped so far: %d over one source's rate, %d over the total rate, %d from too many sources, %d oversize; "+
+			"UDP dropped so far: %d failing authentication from unknown addresses, %d over one address's rate, "+
+			"%d over the rate of known addresses, %d over the rate of checks for unknown ones, %d oversize; "+
 			"TCP refused so far: %d over one address's slots, %d with every slot taken, %d without a first frame in time, %d failing authentication",
-			c.SourceLimited, c.RateLimited, c.SourcesFull, c.Oversize, c.ConnsSource, c.ConnsFull, c.PreAuth, c.AuthFailed)
+			c.Unverified, c.SourceLimited, c.KnownLimited, c.UnknownLimited, c.Oversize, c.ConnsSource, c.ConnsFull, c.PreAuth, c.AuthFailed)
 	case was && !now:
 		return "rollcalld: the flood on the peer zones has stopped"
 	}

@@ -86,9 +86,10 @@ func (t *Transport) unicastEndpoints() []*endpoint {
 // readLoop passes each datagram to onPacket until ep is closed, by Close or
 // by a pass that no longer wants it. Each read spends the read budget, and
 // waits when it is spent; the datagram then goes on only if the limiter
-// admits it (limiter.go): at most MaxDatagram bytes, within its source's rate
-// and the rate of all sources. The buffer is one byte longer than the limit,
-// so a larger datagram shows up as one.
+// admits it (limiter.go): at most MaxDatagram bytes, within its address's
+// rate, and either from a known address within their rate, or from an
+// unknown one and passing authenticate. The buffer is one byte longer than
+// the limit, so a larger datagram shows up as one.
 func (t *Transport) readLoop(ep *endpoint, onPacket func(netip.AddrPort, []byte)) {
 	defer t.wg.Done()
 	buf := make([]byte, MaxDatagram+1)
@@ -103,7 +104,7 @@ func (t *Transport) readLoop(ep *endpoint, onPacket func(netip.AddrPort, []byte)
 		if d := t.lim.pace(); d > 0 && !t.wait(d) {
 			return
 		}
-		if !t.lim.admit(from.Addr(), n) {
+		if !t.lim.admit(from.Addr(), buf[:n], t.authenticate) {
 			continue
 		}
 		onPacket(from, append([]byte(nil), buf[:n]...))

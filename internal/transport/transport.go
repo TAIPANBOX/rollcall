@@ -1,7 +1,8 @@
 // Package transport moves rollcall's messages between members. It knows no
 // keys: it passes packets and frames to the caller untouched. The only check it
 // makes on the bytes is the one the caller hands it at Open, which decides
-// whether the first frame of a TCP connection is answered.
+// whether the first frame of a TCP connection is answered and whether a UDP
+// datagram from an address not known yet goes on.
 //
 // UDP carries heartbeats: multicast to ff02::114 on each interface that has an
 // IPv6 link-local address, and unicast to known peers. TCP carries the larger
@@ -97,8 +98,11 @@ type Transport struct {
 // by Devices and tried again on every pass; Open fails only on arguments no
 // pass can fix.
 //
-// authenticate decides whether the first frame of a TCP connection is answered.
-// A frame that fails it closes the connection without a reply.
+// authenticate decides whether the first frame of a TCP connection is answered;
+// a frame that fails it closes the connection without a reply. It also
+// checks a UDP datagram from an address that is not known yet: one that
+// fails it never reaches onPacket, one that passes makes the address known
+// (limiter.go). It must not keep or change the bytes it is given.
 func Open(port int, ifaces []string, authenticate func(frame []byte) bool) (*Transport, error) {
 	if authenticate == nil {
 		return nil, errNoAuthenticate

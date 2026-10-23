@@ -15,113 +15,294 @@ type fakeClock struct{ at time.Duration }
 
 func (c *fakeClock) now() time.Duration  { return c.at }
 func (c *fakeClock) add(d time.Duration) { c.at += d }
-func limiterAt(c *fakeClock) *limiter    { l := newLimiter(); l.now = c.now; return l }
+
+func limiterAt(c *fakeClock) *limiter { l := newLimiter(); l.now = c.now; return l }
+
+// addrN is a distinct IPv4 source for each i.
 func addrN(i int) netip.Addr {
 	return netip.AddrFrom4([4]byte{10, byte(i >> 16), byte(i >> 8), byte(i)})
 }
-func admitN(l *limiter, a netip.Addr, n int) (admitted int) {
+
+// randomSource is a distinct IPv6 source for each i, as a spoofing flood
+// uses.
+func randomSource(i int) netip.Addr {
+	b := netip.MustParseAddr("2001:db8::").As16()
+	b[12], b[13], b[14], b[15] = byte(i>>24), byte(i>>16), byte(i>>8), byte(i)
+	return netip.AddrFrom16(b)
+}
+
+// A genuine datagram is one authenticate accepts: here, one that begins
+// with "member". Junk is what a device without the group key can send.
+var (
+	heartbeat = []byte("member heartbeat")
+	junk      = bytes.Repeat([]byte{0xee}, 64)
+)
+
+// authCounter is an authenticate that accepts genuine datagrams and counts
+// its calls, the AEAD work the transport spends.
+type authCounter struct{ calls int }
+
+func (a *authCounter) auth(b []byte) bool {
+	a.calls++
+	return bytes.HasPrefix(b, []byte("member"))
+}
+
+func admitN(l *limiter, a netip.Addr, b []byte, auth func([]byte) bool, n int) (admitted int) {
 	for range n {
-		if l.admit(a, 100) {
+		if l.admit(a, b, auth) {
 			admitted++
 		}
 	}
 	return admitted
 }
 
-// TestSourceRate: one source hands on its burst at once and its rate after
-// that; the rest is dropped and counted.
-func TestSourceRate(t *testing.T) {
+// TestSpoofedMemberAddressKeepsItsHeartbeats: a LAN device sends 50
+// datagrams a second with member X's source addresses, its link-local one
+// (as to ff02::114) and its unicast one, for a minute. Every heartbeat X
+// sends in that minute still reaches the node: spoofing a member's address
+// at tens of packets a second must not make the group call it silent.
+func TestSpoofedMemberAddressKeepsItsHeartbeats(t *testing.T) {
 	clk := &fakeClock{}
 	l := limiterAt(clk)
-	a := netip.MustParseAddr("192.168.1.66")
-	if got := admitN(l, a, 100); got != sourceBurst {
-		t.Fatalf("a burst of 100 from one source: %d handed on, want %d", got, sourceBurst)
+	a := &authCounter{}
+	xs := []netip.Addr{netip.MustParseAddr("fe80::2%br-lan"), netip.MustParseAddr("192.168.1.2")}
+	for _, x := range xs {
+		if !l.admit(x, heartbeat, a.auth) {
+			t.Fatalf("X's first heartbeat from %s refused", x)
+		}
 	}
-	clk.add(time.Second)
-	if got := admitN(l, a, 100); got != sourceRate {
-		t.Fatalf("one second later: %d handed on, want %d", got, sourceRate)
-	}
-	if c := l.counters(); c.SourceLimited != 200-sourceBurst-sourceRate {
-		t.Fatalf("SourceLimited = %d, want %d", c.SourceLimited, 200-sourceBurst-sourceRate)
-	}
-}
-
-// TestSourcesAreIndependent: a source over its rate does not take the share
-// of another; a heartbeat from a member still passes while a LAN device floods.
-func TestSourcesAreIndependent(t *testing.T) {
-	clk := &fakeClock{}
-	l := limiterAt(clk)
-	admitN(l, netip.MustParseAddr("192.168.1.66"), 1000)
-	member := netip.MustParseAddr("fe80::2%br-lan")
-	for i := range 6 {
-		clk.add(5 * time.Second)
-		admitN(l, netip.MustParseAddr("192.168.1.66"), 1000)
-		if !l.admit(member, 300) {
-			t.Fatalf("heartbeat %d of a member refused while another source floods", i)
+	const step = 20 * time.Millisecond // 50 a second from each address
+	for i := 1; i <= 3000; i++ {
+		clk.add(step)
+		for _, x := range xs {
+			l.admit(x, junk, a.auth)
+		}
+		if i%250 == 0 { // every 5 s
+			for _, x := range xs {
+				if !l.admit(x, heartbeat, a.auth) {
+					t.Fatalf("X's heartbeat from %s at %v dropped while its address is spoofed at 50/s", x, clk.at)
+				}
+			}
 		}
 	}
 }
 
-// TestGlobalRate: many sources together hand on at most the global burst and
-// then the global rate.
-func TestGlobalRate(t *testing.T) {
+// TestRandomSourceFloodSparesKnownMembers: a flood of 10 000 datagrams a
+// second, each from a new address, for a minute. Every heartbeat of 31 known
+// members still reaches the node, and the reads never wait, so the kernel
+// drops nothing for the read ceiling at that rate.
+func TestRandomSourceFloodSparesKnownMembers(t *testing.T) {
 	clk := &fakeClock{}
 	l := limiterAt(clk)
-	got := 0
-	for i := range 800 {
-		got += admitN(l, addrN(i), 1)
+	a := &authCounter{}
+	var members []netip.Addr
+	for i := range 31 {
+		m := netip.MustParseAddr("fe80::1:" + strconv.Itoa(i+1) + "%br-lan")
+		members = append(members, m)
+		if !l.admit(m, heartbeat, a.auth) {
+			t.Fatalf("member %s's first heartbeat refused", m)
+		}
 	}
-	if got != globalBurst {
-		t.Fatalf("800 sources at once: %d handed on, want %d", got, globalBurst)
+	const perSecond = 10000
+	src := 0
+	for sec := range 60 {
+		for i := range perSecond {
+			clk.add(time.Second / perSecond)
+			l.admit(randomSource(src), junk, a.auth)
+			src++
+			if sec%5 == 0 && i == perSecond/2 {
+				for _, m := range members {
+					if !l.admit(m, heartbeat, a.auth) {
+						t.Fatalf("member %s's heartbeat at %v dropped by a random-source flood of %d/s", m, clk.at, perSecond)
+					}
+				}
+			}
+		}
 	}
-	clk.add(time.Second)
-	got = 0
-	for i := 800; i < 1000; i++ {
-		got += admitN(l, addrN(i), 2)
-	}
-	if got != globalRate {
-		t.Fatalf("one second later: %d handed on, want %d", got, globalRate)
-	}
-	if c := l.counters(); c.RateLimited != 800-globalBurst+400-globalRate {
-		t.Fatalf("RateLimited = %d, want %d", c.RateLimited, 800-globalBurst+400-globalRate)
+	if !l.underFlood() {
+		t.Fatal("UnderFlood is false during a random-source flood")
 	}
 }
 
-// TestSourceTableIsBounded: a flood from ever new addresses fills the table
-// to maxSources and no further; sources idle long enough to be full again are
-// swept out to make room.
-func TestSourceTableIsBounded(t *testing.T) {
+// TestReadCeilingAboveOldSaturation: at 10 000 datagrams a second, about
+// where a small router's CPU saturated before there was a read budget, no
+// read waits, so no genuine datagram is left to the kernel to drop.
+func TestReadCeilingAboveOldSaturation(t *testing.T) {
 	clk := &fakeClock{}
 	l := limiterAt(clk)
-	for i := range maxSources + 100 {
-		l.admit(addrN(i), 100)
+	for i := range 20000 {
+		clk.add(100 * time.Microsecond)
+		if d := l.pace(); d > 0 {
+			t.Fatalf("read %d at 10 000/s waits %v; the kernel would drop datagrams at that rate", i, d)
+		}
+	}
+}
+
+// TestUnknownSourceFloodIsBounded: junk from an address that never passed
+// authenticate never reaches the node, and costs at most the unknown budget
+// of authenticate calls: one address's rate, and the rate of all unknown
+// addresses together. A genuine datagram from a new address passes.
+func TestUnknownSourceFloodIsBounded(t *testing.T) {
+	clk := &fakeClock{}
+	l := limiterAt(clk)
+	a := &authCounter{}
+	one := netip.MustParseAddr("192.168.1.66")
+	handed := 0
+	for range 10 * 1000 { // 1000 a second for 10 s
+		clk.add(time.Millisecond)
+		if l.admit(one, junk, a.auth) {
+			handed++
+		}
+	}
+	if handed != 0 {
+		t.Fatalf("%d junk datagrams from one unknown address reached the node", handed)
+	}
+	if max := sourceBurst + sourceRate*10 + 1; a.calls > max {
+		t.Fatalf("one unknown address cost %d authenticate calls in 10 s, want at most %d", a.calls, max)
+	}
+
+	a.calls = 0
+	for i := range 10 * 10000 { // 10 000 a second from new addresses for 10 s
+		clk.add(100 * time.Microsecond)
+		if l.admit(randomSource(i), junk, a.auth) {
+			handed++
+		}
+	}
+	if handed != 0 {
+		t.Fatalf("%d junk datagrams from unknown addresses reached the node", handed)
+	}
+	if max := unknownBurst + unknownRate*10 + 1; a.calls > max {
+		t.Fatalf("a random-source flood cost %d authenticate calls in 10 s, want at most %d", a.calls, max)
+	}
+	if c := l.counters(); c.Unverified == 0 || c.UnknownLimited == 0 {
+		t.Fatalf("Counters() = %+v, want the failed and the unchecked datagrams counted", c)
+	}
+
+	clk.add(time.Second)
+	if !l.admit(netip.MustParseAddr("192.168.1.7"), heartbeat, a.auth) {
+		t.Fatal("a genuine datagram from a new address refused")
+	}
+}
+
+// TestKnownSetIsBoundedAndExpires: an address is known after a datagram from
+// it passed authenticate, and stays known while datagrams keep coming; after
+// knownTTL of silence it is checked again. The set holds at most maxKnown
+// addresses and gives up the longest unseen one.
+func TestKnownSetIsBoundedAndExpires(t *testing.T) {
+	clk := &fakeClock{}
+	l := limiterAt(clk)
+	a := &authCounter{}
+	x := netip.MustParseAddr("192.168.1.2")
+	l.admit(x, heartbeat, a.auth)
+	if a.calls != 1 {
+		t.Fatalf("the first datagram from a new address made %d authenticate calls, want 1", a.calls)
+	}
+	for range 2 { // each datagram keeps it known for another knownTTL
+		clk.add(knownTTL - time.Second)
+		l.admit(x, heartbeat, a.auth)
+		if a.calls != 1 {
+			t.Fatalf("a known address was checked again within knownTTL of its last datagram (%d calls)", a.calls)
+		}
+	}
+	clk.add(knownTTL + time.Second)
+	if !l.admit(x, heartbeat, a.auth) || a.calls != 2 {
+		t.Fatalf("after knownTTL of silence: %d authenticate calls, want 2 (checked again, then passed)", a.calls)
+	}
+
+	for i := range maxKnown + 50 {
+		clk.add(time.Second)
+		l.admit(addrN(i), heartbeat, a.auth)
+	}
+	if n := len(l.known); n > maxKnown {
+		t.Fatalf("%d known addresses, want at most %d", n, maxKnown)
+	}
+	calls := a.calls
+	l.admit(addrN(maxKnown+49), heartbeat, a.auth) // the newest stays known
+	if a.calls != calls {
+		t.Fatal("the most recently learned address was given up")
+	}
+	l.admit(addrN(0), heartbeat, a.auth) // the oldest was given up
+	if a.calls != calls+1 {
+		t.Fatal("the longest unseen address is still known past maxKnown")
+	}
+}
+
+// TestKnownSourceBudget: a known address hands the node its burst at once
+// and its rate after that; all known addresses together hand on at most the
+// known burst.
+func TestKnownSourceBudget(t *testing.T) {
+	clk := &fakeClock{}
+	l := limiterAt(clk)
+	a := &authCounter{}
+	x := netip.MustParseAddr("192.168.1.2")
+	if got := admitN(l, x, heartbeat, a.auth, 2*sourceBurst); got != sourceBurst {
+		t.Fatalf("%d at once from a known address: %d handed on, want %d", 2*sourceBurst, got, sourceBurst)
+	}
+	clk.add(time.Second)
+	if got := admitN(l, x, heartbeat, a.auth, 2*sourceRate); got != sourceRate {
+		t.Fatalf("one second later: %d handed on, want %d", got, sourceRate)
+	}
+	if c := l.counters(); c.SourceLimited != sourceBurst+sourceRate {
+		t.Fatalf("SourceLimited = %d, want %d", c.SourceLimited, sourceBurst+sourceRate)
+	}
+
+	clk.add(time.Hour)
+	l = limiterAt(clk)
+	total := 0
+	for i := range 2 * knownBurst / sourceBurst {
+		total += admitN(l, addrN(i), heartbeat, a.auth, sourceBurst)
+	}
+	if total > knownBurst+unknownBurst {
+		t.Fatalf("known addresses together handed on %d at once, want at most %d", total, knownBurst+unknownBurst)
+	}
+	if c := l.counters(); c.KnownLimited == 0 {
+		t.Fatalf("Counters() = %+v, want the datagrams over the known rate counted", c)
+	}
+}
+
+// TestUntrackedSourceUsesGlobalBudget: with the source table full of active
+// addresses, a datagram from a new address meets only the global budget; a
+// genuine one passes.
+func TestUntrackedSourceUsesGlobalBudget(t *testing.T) {
+	clk := &fakeClock{}
+	l := limiterAt(clk)
+	a := &authCounter{}
+	// A table full of addresses that have just spent their burst, right after
+	// a sweep: none can be swept yet.
+	l.swept = clk.at
+	for i := range maxSources {
+		l.sources[randomSource(i)] = &bucket{tokens: 0, last: clk.at}
+	}
+	if !l.admit(netip.MustParseAddr("192.168.1.9"), heartbeat, a.auth) {
+		t.Fatal("a genuine datagram from a new address refused while the source table is full")
 	}
 	if n := len(l.sources); n > maxSources {
 		t.Fatalf("%d sources held, want at most %d", n, maxSources)
 	}
-	if c := l.counters(); c.SourcesFull == 0 {
-		t.Fatal("new sources past a full table were not counted")
+	if c := l.counters(); c.Untracked == 0 {
+		t.Fatalf("Counters() = %+v, want the untracked datagram counted", c)
 	}
-	clk.add(sourceBurst/sourceRate*time.Second + time.Second)
-	if !l.admit(netip.MustParseAddr("192.168.1.2"), 100) {
-		t.Fatal("a new source refused once the idle ones could be swept")
-	}
-	if n := len(l.sources); n > maxSources {
-		t.Fatalf("%d sources held after the sweep, want at most %d", n, maxSources)
+	clk.add(2*sourceBurst/sourceRate*time.Second + time.Second)
+	l.admit(netip.MustParseAddr("192.168.1.10"), heartbeat, a.auth)
+	if _, ok := l.sources[netip.MustParseAddr("192.168.1.10")]; !ok {
+		t.Fatal("idle sources were not swept to make room")
 	}
 }
 
-// TestOversizeCounted: a datagram over MaxDatagram is dropped and counted.
+// TestOversizeCounted: a datagram over MaxDatagram is dropped and counted,
+// without an authenticate call.
 func TestOversizeCounted(t *testing.T) {
 	l := limiterAt(&fakeClock{})
-	if l.admit(netip.MustParseAddr("192.168.1.66"), MaxDatagram+1) {
+	a := &authCounter{}
+	big := append([]byte("member"), make([]byte, MaxDatagram)...)
+	if l.admit(netip.MustParseAddr("192.168.1.66"), big, a.auth) {
 		t.Fatal("an oversize datagram was handed on")
 	}
-	if !l.admit(netip.MustParseAddr("192.168.1.66"), MaxDatagram) {
-		t.Fatal("a datagram of MaxDatagram bytes was refused")
+	if c := l.counters(); c.Oversize != 1 || a.calls != 0 {
+		t.Fatalf("Oversize = %d, authenticate calls %d; want 1 and 0", c.Oversize, a.calls)
 	}
-	if c := l.counters(); c.Oversize != 1 {
-		t.Fatalf("Oversize = %d, want 1", c.Oversize)
+	if !l.admit(netip.MustParseAddr("192.168.1.66"), big[:MaxDatagram], a.auth) {
+		t.Fatal("a genuine datagram of MaxDatagram bytes was refused")
 	}
 }
 
@@ -157,16 +338,17 @@ func TestPaceBoundsReads(t *testing.T) {
 func TestFloodRaisedAndLowered(t *testing.T) {
 	clk := &fakeClock{}
 	l := limiterAt(clk)
-	a := netip.MustParseAddr("192.168.1.66")
-	admitN(l, a, sourceBurst+floodBurst-1)
+	a := &authCounter{}
+	src := netip.MustParseAddr("192.168.1.66")
+	admitN(l, src, junk, a.auth, floodBurst-1)
 	if l.underFlood() {
 		t.Fatalf("UnderFlood after %d refusals, want it only at %d", floodBurst-1, floodBurst)
 	}
-	admitN(l, a, 1)
+	admitN(l, src, junk, a.auth, 1)
 	if !l.underFlood() {
 		t.Fatalf("UnderFlood not raised after %d refusals in one window", floodBurst)
 	}
-	admitN(l, a, 500)
+	admitN(l, src, junk, a.auth, 500)
 	if c := l.counters(); c.Floods != 1 {
 		t.Fatalf("Floods = %d during one flood, want 1", c.Floods)
 	}
@@ -181,23 +363,28 @@ func TestFloodRaisedAndLowered(t *testing.T) {
 	// Refusals spread thinner than the window never raise it.
 	for range 3 * floodBurst {
 		clk.add(floodWindow / floodBurst * 2)
-		admitN(l, a, sourceRate*int(floodWindow/floodBurst*2/time.Second)+2)
+		admitN(l, src, junk, a.auth, 1)
 	}
 	if l.underFlood() {
 		t.Fatal("UnderFlood raised by refusals spread thinner than floodBurst per window")
 	}
-	admitN(l, a, 1000)
+	admitN(l, src, junk, a.auth, 100)
 	if c := l.counters(); !l.underFlood() || c.Floods != 2 {
 		t.Fatalf("a second flood: UnderFlood %v, Floods %d; want true and 2", l.underFlood(), c.Floods)
 	}
 }
+
+// genuineOnly is the transport's authenticate in the socket tests: a
+// datagram that begins with "member" carries the group key.
+func genuineOnly(b []byte) bool { return bytes.HasPrefix(b, []byte("member")) }
 
 // flood sends n datagrams to ap from one socket, as fast as it can.
 func flood(t *testing.T, network string, ap netip.AddrPort, n int, payload []byte) {
 	t.Helper()
 	c, err := net.Dial(network, ap.String())
 	if err != nil {
-		t.Fatal(err)
+		t.Error(err)
+		return
 	}
 	defer c.Close()
 	for range n {
@@ -205,28 +392,66 @@ func flood(t *testing.T, network string, ap netip.AddrPort, n int, payload []byt
 	}
 }
 
-// TestUDPFloodFromOneSourceIsBounded is I4 at the socket: a LAN device
-// flooding the port hands the node no more than one source's share, and the
-// transport says it is under flood.
+// TestUDPFloodFromOneSourceIsBounded is I4 at the socket: junk flooding the
+// port from an address that never passed authenticate reaches the node not
+// once, and the transport says it is under flood.
 func TestUDPFloodFromOneSourceIsBounded(t *testing.T) {
 	port := freePort(t)
-	tr := listen(t, port, allowAll)
+	tr := listen(t, port, genuineOnly)
 	var handed atomic.Int64
 	serve(t, tr, func(netip.AddrPort, []byte) { handed.Add(1) }, echo)
 
-	start := time.Now()
-	flood(t, "udp", loop4(port), 2000, bytes.Repeat([]byte{0xee}, 64))
-	time.Sleep(300 * time.Millisecond)
-	elapsed := time.Since(start)
-	limit := int64(sourceBurst + sourceRate*elapsed.Seconds() + 1)
-	if n := handed.Load(); n > limit {
-		t.Fatalf("a flood of 2000 datagrams from one source handed %d to the node in %v, want at most %d", n, elapsed, limit)
+	flood(t, "udp", loop4(port), 2000, junk)
+	eventually(t, "the flood refused", func() bool { return tr.UnderFlood() })
+	if n := handed.Load(); n != 0 {
+		t.Fatalf("a junk flood from one unknown address handed %d datagrams to the node, want 0", n)
 	}
-	if !tr.UnderFlood() {
-		t.Fatal("UnderFlood is false after a flood from one source")
+	if c := tr.Counters(); c.Unverified == 0 {
+		t.Fatalf("Counters() = %+v, want the failed datagrams counted", c)
 	}
-	if c := tr.Counters(); c.SourceLimited == 0 {
-		t.Fatalf("Counters() = %+v, want the dropped datagrams counted", c)
+}
+
+// TestSpoofedSourceOverUnicast: at the socket, a second sender on a member's
+// own address (what spoofing it looks like to the router) sends junk at 50
+// a second; every datagram of the member still reaches the node.
+func TestSpoofedSourceOverUnicast(t *testing.T) {
+	port := freePort(t)
+	tr := listen(t, port, genuineOnly)
+	got := make(chan string, 64)
+	serve(t, tr, func(_ netip.AddrPort, b []byte) {
+		if bytes.HasPrefix(b, []byte("member")) {
+			got <- string(b)
+		}
+	}, echo)
+	member, err := net.Dial("udp", loop4(port).String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer member.Close()
+	spoof, err := net.Dial("udp", loop4(port).String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer spoof.Close()
+
+	sent := 0
+	for i := range 100 { // 2 s at 50 a second
+		spoof.Write(junk)
+		if i%5 == 0 {
+			msg := "member-" + strconv.Itoa(sent)
+			if _, err := member.Write([]byte(msg)); err != nil {
+				t.Fatal(err)
+			}
+			sent++
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	for i := range sent {
+		select {
+		case <-got:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("%d of the member's %d datagrams reached the node while its address was spoofed at 50/s", i, sent)
+		}
 	}
 }
 
@@ -238,7 +463,7 @@ func TestUDPFloodSparesOtherSources(t *testing.T) {
 		t.Skip("no ::1 on the loopback interface")
 	}
 	port := freePort(t)
-	tr := listen(t, port, allowAll)
+	tr := listen(t, port, genuineOnly)
 	member := make(chan string, 16)
 	serve(t, tr, func(from netip.AddrPort, b []byte) {
 		if from.Addr().Is6() {
@@ -249,7 +474,7 @@ func TestUDPFloodSparesOtherSources(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		flood(t, "udp", loop4(port), 5000, bytes.Repeat([]byte{0xee}, 64))
+		flood(t, "udp", loop4(port), 5000, junk)
 	}()
 	v6 := netip.AddrPortFrom(netip.MustParseAddr("::1"), uint16(port))
 	c, err := net.Dial("udp", v6.String())
@@ -258,7 +483,7 @@ func TestUDPFloodSparesOtherSources(t *testing.T) {
 	}
 	defer c.Close()
 	for i := range 5 {
-		msg := "heartbeat-" + strconv.Itoa(i)
+		msg := "member-heartbeat-" + strconv.Itoa(i)
 		if _, err := c.Write([]byte(msg)); err != nil {
 			t.Fatal(err)
 		}
