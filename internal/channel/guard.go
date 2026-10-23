@@ -222,7 +222,8 @@ func transportError(op string, err error, secrets ...string) error {
 }
 
 // statusError maps an answer's status to the package's errors: 403 is
-// deliver.ErrBlocked, 429 a *deliver.RateLimitError with retryAfter, and any
+// deliver.ErrBlocked (Telegram's blocked bot; ntfy maps its 401 and 403
+// before it gets here), 429 a *deliver.RateLimitError with retryAfter, and any
 // other status outside 2xx a plain error naming the code only. It returns nil
 // for 2xx.
 func statusError(op string, code int, retryAfter time.Duration) error {

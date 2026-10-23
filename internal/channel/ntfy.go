@@ -25,6 +25,13 @@ var rfc1918 = []netip.Prefix{
 
 var _ deliver.Channel = (*Ntfy)(nil)
 
+// errNtfyRefused reports an ntfy answer of 401 (the server does not accept
+// the token) or 403 (the token may not publish to the topic). It is not
+// deliver.ErrBlocked, which is a Telegram chat that blocked the bot; the
+// queue shows it as a failed send with the code, and retries at its usual
+// pace.
+var errNtfyRefused = errors.New("the ntfy server refused the token, or its right to publish to the topic")
+
 // Ntfy is a deliver.Channel that publishes plain text to one ntfy topic. Its
 // token is sent as a bearer header and is never printed.
 type Ntfy struct {
@@ -104,6 +111,14 @@ func (n *Ntfy) Send(ctx context.Context, text string) error {
 
 // Ping reads the server's health endpoint. It sends neither a message nor the
 // token.
+//
+// Limit: Ping proves that the server answers over a verified connection,
+// not that it accepts the token. The health endpoint needs no token, and
+// nothing in this repository describes an ntfy endpoint that checks a
+// token's right to publish to a topic without publishing, so a wrong token
+// or a topic it may not write to passes Ping and shows on the first Send
+// as errNtfyRefused (TestNtfyPingDoesNotProveTheToken). A caller that takes
+// a passing Ping as a working channel must also look at what Send returns.
 func (n *Ntfy) Ping(ctx context.Context) error {
 	const op = "ntfy health"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, n.origin+"/v1/health", nil)
@@ -113,7 +128,8 @@ func (n *Ntfy) Ping(ctx context.Context) error {
 	return n.do(op, req)
 }
 
-// do sends req and maps its answer. A 2xx body is drained, so the connection
+// do sends req and maps its answer: 401 and 403 to errNtfyRefused, any
+// other status as statusError does. A 2xx body is drained, so the connection
 // can be reused.
 func (n *Ntfy) do(op string, req *http.Request) error {
 	resp, err := n.hc.Do(req)
@@ -122,6 +138,9 @@ func (n *Ntfy) do(op string, req *http.Request) error {
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponse))
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return fmt.Errorf("%s: HTTP %d: %w", op, resp.StatusCode, errNtfyRefused)
+	}
 	return statusError(op, resp.StatusCode, retryAfterHeader(resp.Header.Get("Retry-After")))
 }
 

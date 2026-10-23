@@ -127,14 +127,46 @@ func TestNtfyPingReadsHealth(t *testing.T) {
 	}
 }
 
-func TestNtfyBlockedIsErrBlocked(t *testing.T) {
-	srv, _ := serve(t, status(403, "forbidden"))
-	n, _ := NewNtfy(srv.URL+"/alerts", canary, true, srv.Client())
-	err := n.Send(context.Background(), "x")
-	if !errors.Is(err, deliver.ErrBlocked) {
-		t.Fatalf("err = %v, want deliver.ErrBlocked", err)
+// TestNtfyRefusedTokenIsNotBlocked: ntfy answers 401 to a token it does not
+// accept and 403 to one that may not publish to the topic. Neither is a
+// chat that blocked a bot (deliver.ErrBlocked, shown as "bot blocked"): the
+// error says the server refused the token, with the status code.
+func TestNtfyRefusedTokenIsNotBlocked(t *testing.T) {
+	for _, code := range []int{403, 401} {
+		srv, _ := serve(t, status(code, `{"code":40101,"http":401,"error":"unauthorized"}`))
+		n, _ := NewNtfy(srv.URL+"/alerts", canary, true, srv.Client())
+		err := n.Send(context.Background(), "x")
+		if !errors.Is(err, errNtfyRefused) || errors.Is(err, deliver.ErrBlocked) {
+			t.Fatalf("HTTP %d: err = %v, want the token refused and not deliver.ErrBlocked", code, err)
+		}
+		if msg := err.Error(); !strings.Contains(msg, fmt.Sprint(code)) || !strings.Contains(msg, "refused the token") || strings.Contains(msg, "blocked") {
+			t.Fatalf("HTTP %d: err = %q, want the code and the refused token named, and no \"blocked\"", code, msg)
+		}
+		noCanary(t, err)
 	}
-	noCanary(t, err)
+}
+
+// TestNtfyPingDoesNotProveTheToken pins the limit Ping documents: ntfy's
+// health endpoint needs no token, so Ping succeeds with a token the server
+// refuses, and it does not send the token. The first Send shows the refusal.
+func TestNtfyPingDoesNotProveTheToken(t *testing.T) {
+	srv, reqs := serve(t, func(_ int, w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/health" && r.Header.Get("Authorization") != "Bearer tk_right" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		fmt.Fprint(w, `{"healthy":true}`)
+	})
+	n, _ := NewNtfy(srv.URL+"/alerts", canary, true, srv.Client())
+	if err := n.Ping(context.Background()); err != nil {
+		t.Fatalf("Ping with a refused token: %v, want nil (the health endpoint does not check it)", err)
+	}
+	if err := n.Send(context.Background(), "x"); !errors.Is(err, errNtfyRefused) {
+		t.Fatalf("Send with a refused token: err = %v, want the token refused", err)
+	}
+	if got := reqs.all(); got[0].header.Get("Authorization") != "" {
+		t.Fatalf("Ping sent an Authorization header; it must not send the token")
+	}
 }
 
 func TestNtfyRateLimitHonoursRetryAfterHeader(t *testing.T) {
