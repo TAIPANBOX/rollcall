@@ -1,4 +1,3 @@
-# bindings-pending
 Feature: Router group watches itself and reports incidents
   Routers on one site watch each other and report what happened through
   whichever of them can still reach Telegram.

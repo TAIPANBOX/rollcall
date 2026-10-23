@@ -18,10 +18,7 @@ import (
 // ROLLCALL_STRICT=1 every one of them fails instead; a fix is proven by
 // running strict and removing its entry here. Anything that fails and is not
 // listed here always fails.
-var knownDefects = map[string]string{
-	"D8": "the chat tells a silence 45 to 55 s after a power cut (detection at 30 s, then the 20 s coalescing settle); " +
-		"the bound is 30 s of detection and 15 s (TestPowerLossReported)",
-}
+var knownDefects = map[string]string{}
 
 // strict reports whether known defects fail rather than skip.
 func strict() bool { return os.Getenv("ROLLCALL_STRICT") == "1" }
