@@ -17,6 +17,10 @@ import (
 // Telegram counts the 4096 characters it allows in one message.
 const MaxMessage = 4096
 
+// QueueFull is the type of the notice a sender sends when its queue refused
+// incidents (Queue, "A full queue"). It is never an event in the history.
+const QueueFull events.Type = "queue_full"
+
 // The words of every message, kept together so that a translation replaces
 // this block and nothing else. A message is plain text: Telegram gets it
 // without a parse mode, so nothing here is escaped for Markdown or HTML and
@@ -59,6 +63,7 @@ const (
 	wordRoles         = "%s roles changed"
 	wordChanged       = "%s changed"
 	wordBy            = " (by %s)"
+	wordQueueFull     = "incidents were dropped: more than %d were waiting to be sent"
 	wordOther         = "event %s at %s"
 	wordUnknownEvent  = "an unknown event at %s"
 
@@ -231,6 +236,8 @@ func (m *message) describe(inc events.Incident) (string, []string) {
 			return wordUndoneNone, []string{wordUndoneRepeat}
 		}
 		return fmt.Sprintf(wordUndone, changes(m.f.Changes)), []string{wordUndoneRepeat}
+	case QueueFull:
+		return fmt.Sprintf(wordQueueFull, MaxQueued), nil
 	}
 	if plainType(typ) {
 		return fmt.Sprintf(wordOther, typ, at), nil

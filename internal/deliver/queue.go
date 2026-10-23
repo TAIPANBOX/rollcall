@@ -37,6 +37,16 @@
 // BlockedRetry until a send succeeds; after ErrTLS, and after any other
 // failure, it tries again after Spacing. Status says what stops delivery.
 //
+// # A full queue
+//
+// While MaxQueued incidents wait, Add refuses the newest and counts it in
+// Status.Dropped. The chat is told too: once Adds were refused, the sender's
+// next attempt sends one notice (an incident of type QueueFull, rendered like
+// any other) before any incident, and then no other notice for OverflowEvery,
+// however many more are refused; refusals after that are told once again. The
+// notice is this member's own: it is not queued, not acknowledged and not in
+// the history.
+//
 // # Holding back
 //
 // The caller may hold back named incidents (Hold): they stay queued and are
@@ -56,6 +66,8 @@ package deliver
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -64,6 +76,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/TAIPANBOX/rollcall/internal/clock"
 	"github.com/TAIPANBOX/rollcall/internal/events"
 	"github.com/TAIPANBOX/rollcall/internal/history"
 	"github.com/TAIPANBOX/rollcall/internal/ids"
@@ -127,6 +140,10 @@ const (
 	// MaxQueued bounds the incidents waiting; Add refuses more and counts
 	// them in Status.Dropped.
 	MaxQueued = 1000
+	// OverflowEvery is the least time between two notices that the queue
+	// refused incidents: one an hour keeps a flood of incidents, which is
+	// what fills the queue, from adding a flood of notices.
+	OverflowEvery = time.Hour
 	// MaxDone bounds the IDs of incidents delivered (by anyone) that the
 	// queue remembers, so that one coalesced again is not queued again. The
 	// oldest is forgotten first.
@@ -169,6 +186,9 @@ type Queue struct {
 	doneOrder []string // done in the order learnt, to forget the oldest
 	dropped   int
 	held      map[string]bool // incidents held back (Hold)
+	overflow  int             // Adds refused since the last notice
+	told      bool            // a notice was sent, at toldAt
+	toldAt    time.Time
 
 	seen    bool
 	now     time.Time // the latest now seen
@@ -208,6 +228,7 @@ func (q *Queue) Add(inc events.Incident, now time.Time) bool {
 	}
 	if len(q.items) >= MaxQueued {
 		q.dropped++
+		q.overflow++
 		return false
 	}
 	it := &item{inc: clone(inc), added: now}
@@ -300,9 +321,12 @@ func (q *Queue) Deliver(ctx context.Context, ch Channel, self, sender ids.Member
 		return "", nil
 	}
 	var inc events.Incident
-	found := false
+	found, notice := false, q.overflow > 0 && (!q.told || now.Sub(q.toldAt) >= OverflowEvery)
+	if notice {
+		inc, found = noticeOf(now), true
+	}
 	for _, it := range q.items {
-		if q.isDue(it, now) {
+		if !found && q.isDue(it, now) {
 			inc, found = clone(it.inc), true
 			break
 		}
@@ -328,11 +352,27 @@ func (q *Queue) Deliver(ctx context.Context, ch Channel, self, sender ids.Member
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.inflight = false
-	q.settle(inc.ID, self, err)
+	switch {
+	case !notice:
+		q.settle(inc.ID, self, err)
+	case err == nil:
+		q.overflow, q.told, q.toldAt = 0, true, now
+		q.settle("", self, nil)
+	default:
+		q.settle("", self, err)
+	}
 	if err != nil {
 		return "", err
 	}
 	return inc.ID, nil
+}
+
+// noticeOf returns the notice that the queue refused incidents, at now: an
+// incident of type QueueFull whose ID is fixed by the moment.
+func noticeOf(now time.Time) events.Incident {
+	h := sha256.Sum256(fmt.Appendf(nil, "rollcall/v1 queue full\x00%d", now.UnixNano()))
+	at := clock.Stamp{Wall: now, Trusted: true}
+	return events.Incident{ID: hex.EncodeToString(h[:8]), Start: at, End: at, Events: []events.Type{QueueFull}}
 }
 
 // Unrecorded returns the IDs of the incidents this member sent whose
@@ -389,6 +429,7 @@ func (q *Queue) observe(now time.Time) {
 		step := now.Sub(q.now)
 		q.since = q.since.Add(step)
 		q.last = q.last.Add(step)
+		q.toldAt = q.toldAt.Add(step)
 		for _, it := range q.items {
 			it.added = it.added.Add(step)
 		}
@@ -431,10 +472,12 @@ func (q *Queue) settle(id string, self ids.MemberID, err error) {
 	var rl *RateLimitError
 	switch {
 	case err == nil:
-		q.finish(id)
-		q.unrecorded = append(q.unrecorded, sent{id: id, by: self})
-		if len(q.unrecorded) > MaxQueued {
-			q.unrecorded = slices.Delete(q.unrecorded, 0, 1)
+		if id != "" { // not the notice of a full queue
+			q.finish(id)
+			q.unrecorded = append(q.unrecorded, sent{id: id, by: self})
+			if len(q.unrecorded) > MaxQueued {
+				q.unrecorded = slices.Delete(q.unrecorded, 0, 1)
+			}
 		}
 		q.blocked, q.problem, q.errText = false, problemNone, ""
 	case errors.Is(err, ErrBlocked):

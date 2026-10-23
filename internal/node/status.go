@@ -270,6 +270,7 @@ type Status struct {
 	Version    uint64   `json:"-"`
 	Counters   Counters `json:"-"`
 	Queued     int      `json:"-"`
+	Dropped    int      `json:"-"` // incidents the full queue refused (deliver.Status.Dropped)
 	Delivery   string   `json:"-"` // what stops delivery, from the queue
 }
 
@@ -428,7 +429,7 @@ func (n *Node) Status() Status {
 		}
 	}
 	qs := n.queue.Status()
-	s.Queued, s.Delivery = qs.Queued, qs.Problem
+	s.Queued, s.Dropped, s.Delivery = qs.Queued, qs.Dropped, qs.Problem
 	for i := len(n.inc.recent) - 1; i >= 0 && len(s.Incidents) < maxStatusIncidents; i-- {
 		r := n.inc.recent[i]
 		start := r.inc.Start.Wall
