@@ -308,6 +308,12 @@ func (n *Node) loadHistory(now clock.Stamp) {
 		if json.Unmarshal(b, &es) != nil {
 			continue
 		}
+		// A chain past the log's bounds was written from its base on: the
+		// log starts there, and the first entry's signature vouches for
+		// the base (history.Log.StartAt).
+		if len(es) > 0 && es[0].Origin == m.ID && es[0].Seq > 1 {
+			_ = n.log.StartAt(m.ID, history.Head{Seq: es[0].Seq - 1, Hash: es[0].Prev})
+		}
 		for _, e := range es {
 			if e.Origin == m.ID {
 				n.appendLocked(e, now)
@@ -349,6 +355,13 @@ func (n *Node) headsIn(p ids.MemberID, hs headsMsg, now clock.Stamp) {
 		}
 		mine := n.log.Head(h.Origin)
 		switch {
+		case h.Seq > mine.Seq && mine.Seq == 0 && h.Pruned > 0 && n.log.Pruned(h.Origin).Seq == 0:
+			// The log holds nothing of the origin, and p kept its chain
+			// from a base on: a base is chosen first (offerBase).
+			n.offerBase(p, h, now)
+			if h.Origin == n.id.ID {
+				ownBehind = true
+			}
 		case h.Seq > mine.Seq:
 			from := max(mine.Seq+1, h.Pruned+1)
 			n.planFetch(p, h.Origin, from, h.Seq)
@@ -369,6 +382,80 @@ func (n *Node) headsIn(p ids.MemberID, hs headsMsg, now clock.Stamp) {
 	if !ownBehind {
 		n.caughtUpLocked(now)
 	}
+}
+
+// # A chain from its base
+//
+// A peer keeps at most history.DefaultMaxEntries of an origin's chain, and
+// its heads say from which entry on (Pruned). A node that holds nothing of
+// the origin can start the chain only at such a base: it takes the
+// entries from the base on, and StartAt sets the base from the first of
+// them, whose signature vouches for it. Peers may offer different bases,
+// and one that offers a higher base than it needs to would hide the
+// origin's older entries from this node for good, since a chain cannot
+// grow backwards. So the node collects the offers for baseWait after the
+// first one (a heartbeat of every peer, each of which brings its heads),
+// and fetches from the peer with the LOWEST base then. A fetch that does
+// not start the chain within 2*retryEvery marks that peer as refused for
+// the origin, and the offers are collected again. A peer that holds the
+// chain from seq 1 needs no base, and its entries are fetched at once.
+// The chain is never started on a bare history.ErrGap: only from the first
+// entry of a fetch planned for a base, at exactly that base.
+
+// baseWait is how long the offers of a base are collected.
+const baseWait = retryEvery
+
+// baseOffer is the lowest base offered so far for an origin the log holds
+// nothing of.
+type baseOffer struct {
+	peer    ids.MemberID // the peer that offered it; zero for none
+	pruned  uint64       // its Pruned seq: the base
+	head    uint64       // its head seq
+	since   time.Duration
+	asked   time.Duration         // when the fetch from peer was planned; 0 before
+	refused map[ids.MemberID]bool // peers whose base fetch did not start the chain
+}
+
+// offerBase takes p's head h, with its base, for an origin the log holds
+// nothing of, and plans the fetch from the lowest base once the offers are
+// collected.
+func (n *Node) offerBase(p ids.MemberID, h headMsg, now clock.Stamp) {
+	o := n.bases[h.Origin]
+	if o == nil {
+		o = &baseOffer{since: now.Mono, refused: map[ids.MemberID]bool{}}
+		n.bases[h.Origin] = o
+	}
+	if o.asked != 0 && now.Mono >= o.asked+2*retryEvery {
+		// The fetch from the lowest base did not start the chain.
+		o.refused[o.peer] = true
+		o.peer, o.asked, o.since = ids.MemberID{}, 0, now.Mono
+	}
+	switch {
+	case o.refused[p]:
+	case o.peer == (ids.MemberID{}) || h.Pruned < o.pruned:
+		o.peer, o.pruned, o.head, o.asked = p, h.Pruned, h.Seq, 0
+	case p == o.peer:
+		o.head = max(o.head, h.Seq)
+	}
+	if o.peer != (ids.MemberID{}) && o.asked == 0 && now.Mono >= o.since+baseWait {
+		o.asked = now.Mono
+		n.planFetch(o.peer, h.Origin, o.pruned+1, o.head)
+	}
+}
+
+// startAtBase starts origin's chain at the base the fetch of es, from p
+// starting at from, was planned for, and reports whether es may go on to
+// Append: true when the log holds the origin's chain already or es starts
+// it at seq 1, or when es starts it at its base now.
+func (n *Node) startAtBase(p, origin ids.MemberID, from uint64, es []history.Entry) bool {
+	if len(es) == 0 || es[0].Seq <= 1 || n.log.Head(origin).Seq > 0 || n.log.Pruned(origin).Seq > 0 {
+		return true
+	}
+	o := n.bases[origin]
+	if o == nil || o.peer != p || o.asked == 0 || from != o.pruned+1 || es[0].Seq != from {
+		return false
+	}
+	return n.log.StartAt(origin, history.Head{Seq: es[0].Seq - 1, Hash: es[0].Prev}) == nil
 }
 
 // planFetch asks p for origin's entries from..to.
@@ -401,6 +488,9 @@ func (n *Node) entriesIn(p, origin ids.MemberID, from, to uint64, es []history.E
 		}
 		return 0
 	})
+	if !n.startAtBase(p, origin, from, es) {
+		return
+	}
 	last := uint64(0)
 	for _, e := range es {
 		err := n.log.Append(e, now.Wall)
@@ -420,6 +510,7 @@ func (n *Node) entriesIn(p, origin ids.MemberID, from, to uint64, es []history.E
 			n.planFetch(p, origin, e.Seq-1, e.Seq-1)
 			return
 		case errors.Is(err, history.ErrGap):
+			// Never a reason to start the chain at e (startAtBase).
 			if h := n.log.Head(origin); h.Seq+1 < e.Seq {
 				n.planFetch(p, origin, h.Seq+1, to)
 			}
@@ -427,6 +518,9 @@ func (n *Node) entriesIn(p, origin ids.MemberID, from, to uint64, es []history.E
 		default:
 			last = max(last, e.Seq)
 		}
+	}
+	if last > 0 {
+		delete(n.bases, origin) // the chain has started
 	}
 	if last > 0 && last < to {
 		n.planFetch(p, origin, last+1, to)

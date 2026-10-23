@@ -215,8 +215,9 @@ type Node struct {
 
 	jobs       []job
 	out        []outPacket
-	deliveries map[ids.MemberID]*delivery // epoch key deliveries still to make
-	parts      map[ids.MemberID]*partial  // epoch key deliveries being received
+	deliveries map[ids.MemberID]*delivery  // epoch key deliveries still to make
+	parts      map[ids.MemberID]*partial   // epoch key deliveries being received
+	bases      map[ids.MemberID]*baseOffer // bases offered for origins the log holds nothing of
 
 	inc  incidents
 	rec  recon
@@ -313,7 +314,8 @@ func New(cfg Config, st *store.Store, id *identity.Identity, n Net, c Clock, ch 
 	nd := &Node{cfg: cfg, st: st, id: id, net: n, clk: c, ch: ch,
 		internetOK: true, wanUp: true, ring: &epoch.Ring{},
 		peers: map[ids.MemberID]*peer{}, dirty: map[ids.MemberID]bool{},
-		deliveries: map[ids.MemberID]*delivery{}, parts: map[ids.MemberID]*partial{}}
+		deliveries: map[ids.MemberID]*delivery{}, parts: map[ids.MemberID]*partial{},
+		bases: map[ids.MemberID]*baseOffer{}}
 	nd.inc.init()
 	nd.rec.init()
 	if err := nd.start(); err != nil {
