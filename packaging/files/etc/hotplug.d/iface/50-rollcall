@@ -1,7 +1,13 @@
 #!/bin/sh
 # netifd runs this on every interface event. The CLI forwards the event to the daemon, so
-# rollcall never talks to ubus. Hotplug must never block netifd, so every failure is quiet.
+# rollcall never talks to ubus. Hotplug must never block netifd: the call runs in the background,
+# detached from hotplug's output, under a 5 s limit where busybox has timeout (the CLI has its own
+# 10 s limit besides), and every failure is quiet.
 [ -n "$ACTION" ] && [ -n "$INTERFACE" ] || exit 0
 [ -x /usr/bin/rollcall ] || exit 0
-/usr/bin/rollcall notify iface "$ACTION" "$INTERFACE" || true
+if command -v timeout >/dev/null 2>&1; then
+	timeout 5 /usr/bin/rollcall notify iface "$ACTION" "$INTERFACE" >/dev/null 2>&1 </dev/null &
+else
+	/usr/bin/rollcall notify iface "$ACTION" "$INTERFACE" >/dev/null 2>&1 </dev/null &
+fi
 exit 0

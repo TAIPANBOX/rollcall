@@ -11,7 +11,8 @@ and the generator that writes one profile per architecture. `scripts/mkipk.sh` a
 |---|---|
 | `/usr/bin/rollcalld`, `/usr/bin/rollcall` | daemon and CLI (built by the Makefile) |
 | `/etc/init.d/rollcall` | procd service: user `rollcall`, `no_new_privs`, seccomp, jail, control directory |
-| `/etc/hotplug.d/iface/50-rollcall` | forwards interface events to `rollcall notify iface` |
+| `/etc/hotplug.d/iface/50-rollcall` | forwards interface events to `rollcall notify iface`, in the background |
+| `/etc/hotplug.d/ntp/50-rollcall` | tells the daemon the clock is synchronised (`rollcall notify clock-synced`), in the background |
 | `/etc/config/rollcall` | site configuration; kept across upgrades |
 | `/etc/uci-defaults/90-rollcall` | firewall rule for UDP and TCP 7432 from each peer zone |
 | `/etc/seccomp/rollcall.json` | system call allow-list, generated for the target architecture |
@@ -61,6 +62,15 @@ failed that check, so every start was refused. Root runs the CLI from hotplug, t
 and LuCI, and reaches the socket whatever the directory mode, because root bypasses file
 permissions. The gate `TestInitScriptHardening` applies the control rule to the mode and owner
 the init script sets, and reads the path from `ControlDirPath` in `cmd/rollcalld/main.go`.
+
+## Hotplug
+
+netifd and ntpd wait for their hotplug scripts, so the scripts never wait for the daemon: the
+CLI runs in the background with its input and output on `/dev/null` (so hotplug's own pipe
+closes at once), under `timeout 5` where busybox has the applet, and the CLI keeps its own 10 s
+limit on every control command. The gate `TestHotplugNeverBlocks` requires every CLI call in
+`files/etc/hotplug.d` to be backgrounded and detached. The cost, named: two events for one
+interface a few milliseconds apart may reach the daemon in the opposite order.
 
 ## Jail
 

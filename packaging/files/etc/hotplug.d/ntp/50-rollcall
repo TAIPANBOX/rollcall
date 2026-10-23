@@ -1,8 +1,9 @@
 #!/bin/sh
 # OpenWrt's ntpd runs this through hotplug with ACTION (stratum, step, unsync or periodic) and
 # the variable stratum. Once the clock is synchronised, the CLI tells the daemon, so its events
-# carry a trusted wall clock; the daemon never asks ubus. Hotplug must never block, so every
-# failure is quiet.
+# carry a trusted wall clock; the daemon never asks ubus. Hotplug must never block: the call runs
+# in the background, detached from hotplug's output, under a 5 s limit where busybox has
+# timeout, and every failure is quiet.
 [ -x /usr/bin/rollcall ] || exit 0
 case "$ACTION" in
 step) ;;
@@ -14,5 +15,9 @@ stratum)
 	;;
 *) exit 0 ;;
 esac
-/usr/bin/rollcall notify clock-synced >/dev/null 2>&1 || true
+if command -v timeout >/dev/null 2>&1; then
+	timeout 5 /usr/bin/rollcall notify clock-synced >/dev/null 2>&1 </dev/null &
+else
+	/usr/bin/rollcall notify clock-synced >/dev/null 2>&1 </dev/null &
+fi
 exit 0
