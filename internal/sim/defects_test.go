@@ -24,9 +24,6 @@ var knownDefects = map[string]string{
 	"D14": "a router that restarts while a peer is away forgets the peer (its last boot and version live in RAM only): it " +
 		"reports the peer silent from its own start, a second message for an absence already told, and tells the peer's " +
 		"return as 'went silent ..., back after' counted from its own start, never as the reboot or upgrade it was (sweep I2)",
-	"D18": "a planned reboot is told as unexpected when one observer missed the single 'going down' heartbeat (packet loss, " +
-		"a partition): the incident holds both kinds and the message takes the unplanned one, though the router's own boot " +
-		"record says planned (sweep I6)",
 }
 
 // strict reports whether known defects fail rather than skip.
