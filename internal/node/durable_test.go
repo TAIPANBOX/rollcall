@@ -89,3 +89,47 @@ func TestCorrectionsThenUpdates(t *testing.T) {
 		t.Fatalf("r03 recorded %d updates, want one per corrected absence", len(us))
 	}
 }
+
+// TestShutdownFlushes (clean shutdown): GoingDown and Stop write at once
+// what the node keeps on flash at most once a minute otherwise: the other
+// members' chains, the state file with the incidents and the peers, and
+// the alive file.
+func TestShutdownFlushes(t *testing.T) {
+	for _, how := range []string{"going down", "stop"} {
+		t.Run(how, func(t *testing.T) {
+			g := newGroup(t, setup{n: 2})
+			g.run(70 * sec)
+			g.nodes[1].LocalEvent(events.Event{Type: events.WanDown})
+			g.run(5 * sec)
+			a := g.nodes[0]
+			held := with(a, func() history.Head { return a.log.Head(g.ids[1].ID) })
+			if es := readStored(t, g.stores[0], g.ids[1].ID); len(es) > 0 && es[len(es)-1].Hash() == held.Hash {
+				t.Fatal("r02's last entry is on r01's flash already: the case did not happen")
+			}
+			g.clk.advance(sec)
+			if how == "stop" {
+				if err := a.Stop(); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				a.GoingDown()
+			}
+			es := readStored(t, g.stores[0], g.ids[1].ID)
+			if len(es) == 0 || es[len(es)-1].Hash() != held.Hash {
+				t.Fatalf("after %s r01's flash holds %d entries of r02, not its last one", how, len(es))
+			}
+			b, err := g.stores[0].ReadFile(fileState)
+			if err != nil {
+				t.Fatalf("no state file after %s: %v", how, err)
+			}
+			var f stateFile
+			if err := decodeJSON(b, &f, maxStateFile); err != nil || f.Heads[g.ids[1].ID] != held.Seq || len(f.Peers) != 1 {
+				t.Fatalf("state file after %s: heads %v, %d peers, %v; want r02's head %d and r02", how, f.Heads, len(f.Peers), err, held.Seq)
+			}
+			alive, ok := g.readAlive(0)
+			if !ok || !alive.At.Wall.Equal(g.clk.Now()) {
+				t.Fatalf("alive file after %s: %+v, want written now", how, alive)
+			}
+		})
+	}
+}

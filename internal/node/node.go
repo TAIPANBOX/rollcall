@@ -1311,8 +1311,16 @@ func (n *Node) LocalEvent(e events.Event) {
 	if e.Subject == (ids.MemberID{}) {
 		e.Subject = n.id.ID
 	}
-	if e.At == (clock.Stamp{}) {
+	switch {
+	case e.At == (clock.Stamp{}):
 		e.At = n.localStamp(now)
+	case !e.At.Trusted && (e.At.Boot == n.boot || e.At.Boot == (ids.BootID{})):
+		// A start the caller gave on an untrusted clock: placed on the
+		// clock a trusted peer taught, as an own stamp is (design 4.4),
+		// and still approximate.
+		if off, ok := n.table.Offset(); ok {
+			e.At.Wall, e.At.Boot = time.Unix(0, 0).UTC().Add(off).Add(e.At.Mono), n.boot
+		}
 	}
 	e.Witness, e.Ref = n.id.ID, ids.Hash{}
 	n.recordEvent(e, EventBody{Subject: e.Subject, Type: e.Type}, now)
