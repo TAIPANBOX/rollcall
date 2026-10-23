@@ -46,16 +46,21 @@ not verified; the per-family split exists so that it never has to be.
 
 ## Control directory and socket
 
-The init script creates `/var/run/rollcall` as root:rollcall with mode 0770 before the jail is
-built, and mounts it read-write into the jail. The daemon creates the control socket in it.
+The init script creates `/var/run/rollcall` as rollcall:rollcall with mode 0700 before the jail
+is built, and mounts it read-write into the jail. The daemon creates the control socket in it.
 
 Shared constants, named the same in Go (Task 21, used by `cmd/rollcall` and `cmd/rollcalld`):
 
 - `ControlDirPath` = `/var/run/rollcall`
 - `ControlSocketPath` = `/var/run/rollcall/control.sock`
 
-The mode is 0770, not 0750: the daemon runs as `rollcall` and needs group write to create the
-socket. A mode without group write would stop it at start.
+Why rollcall:rollcall 0700: the daemon runs as `rollcall` and must create the socket, and
+`internal/control` refuses a socket directory that group or others may write to unless the
+sticky bit is set (a writer could swap the socket for a link). The earlier root:rollcall 0770
+failed that check, so every start was refused. Root runs the CLI from hotplug, the init script
+and LuCI, and reaches the socket whatever the directory mode, because root bypasses file
+permissions. The gate `TestInitScriptHardening` applies the control rule to the mode and owner
+the init script sets, and reads the path from `ControlDirPath` in `cmd/rollcalld/main.go`.
 
 ## Other status
 

@@ -16,11 +16,13 @@ start_service() {
 	config_get_bool icmp main icmp 0
 
 	# The control socket lives in its own directory, made here as root before the jail is built.
-	# Group write is needed: the daemon runs as rollcall and creates control.sock in it. The path
-	# is the constant ControlSocketPath in packaging/README.md.
+	# The daemon runs as rollcall and creates control.sock in it, so rollcall owns it. Nobody else
+	# may write to it: internal/control refuses a directory that group or others can write without
+	# the sticky bit. Root, which runs the CLI from hotplug and LuCI, reaches the socket anyway.
+	# The path is the constant ControlDirPath in packaging/README.md.
 	mkdir -p /var/run/rollcall
-	chown root:rollcall /var/run/rollcall
-	chmod 0770 /var/run/rollcall
+	chown rollcall:rollcall /var/run/rollcall
+	chmod 0700 /var/run/rollcall
 	# The run-time directory (-run) is mounted into the jail too, so it must exist first.
 	mkdir -p /tmp/rollcall
 	chown rollcall:rollcall /tmp/rollcall

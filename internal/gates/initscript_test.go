@@ -1,8 +1,11 @@
 package gates
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -20,11 +23,18 @@ var initScriptRequired = []string{
 	"procd_set_param seccomp /etc/seccomp/rollcall.json",
 }
 
+// daemonMainRel holds ControlDirPath, the directory the daemon creates its control socket in.
+const daemonMainRel = "cmd/rollcalld/main.go"
+
+// controlDirConst finds the value of ControlDirPath in the daemon's source.
+var controlDirConst = regexp.MustCompile(`ControlDirPath\s*=\s*"([^"]+)"`)
+
 // TestInitScriptHardening reads the service file and requires the hardening that every rollcall
 // process runs with (invariant 13): its own user, no_new_privs, the seccomp profile and a jail
 // with requirejail, so the daemon never starts unsandboxed. It also refuses ubus, which the
 // daemon never touches, and capabilities outside the ICMP branch, because ICMP is the only probe
-// that needs CAP_NET_RAW.
+// that needs CAP_NET_RAW. Finally it applies the control server's own rule to the control
+// directory the script makes (controlDirProblems), so the daemon is not refused at every start.
 func TestInitScriptHardening(t *testing.T) {
 	root := requireRoot(t)
 	path := filepath.Join(root, filepath.FromSlash(initScriptRel))
@@ -32,9 +42,64 @@ func TestInitScriptHardening(t *testing.T) {
 	if err != nil {
 		t.Fatalf("measured nothing: read %s: %v", initScriptRel, err)
 	}
-	for _, problem := range initScriptProblems(string(data)) {
+	main, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(daemonMainRel)))
+	if err != nil {
+		t.Fatalf("measured nothing: read %s: %v", daemonMainRel, err)
+	}
+	m := controlDirConst.FindSubmatch(main)
+	if m == nil {
+		t.Fatalf("measured nothing: no ControlDirPath constant in %s", daemonMainRel)
+	}
+	problems := initScriptProblems(string(data))
+	problems = append(problems, controlDirProblems(string(data), string(m[1]))...)
+	for _, problem := range problems {
 		t.Errorf("%s: %s", initScriptRel, problem)
 	}
+}
+
+// daemonUser is the account procd runs rollcalld as (procd_set_param user).
+const daemonUser = "rollcall"
+
+// controlDirProblems checks the control directory the service file makes before the jail is
+// built. internal/control (listen) refuses a socket directory that group or others may write to
+// unless the sticky bit is set, so such a mode stops the daemon at every start and procd respawns
+// it to exhaustion. The daemon, running as daemonUser, must also be able to create control.sock in
+// it; root reaches the socket regardless of the mode, because root bypasses file permissions.
+func controlDirProblems(text, dir string) []string {
+	var owner, group, mode string
+	for _, raw := range strings.Split(text, "\n") {
+		f := strings.Fields(strings.TrimSpace(raw))
+		if len(f) != 3 || f[2] != dir {
+			continue
+		}
+		switch f[0] {
+		case "chown":
+			owner, group, _ = strings.Cut(f[1], ":")
+		case "chmod":
+			mode = f[1]
+		}
+	}
+	if mode == "" {
+		return []string{"the control directory " + dir + " gets no explicit mode (want a 'chmod <octal> " + dir + "' line)"}
+	}
+	if owner == "" {
+		return []string{"the control directory " + dir + " gets no explicit owner (want a 'chown " + daemonUser + ":" + daemonUser + " " + dir + "' line)"}
+	}
+	m, err := strconv.ParseUint(mode, 8, 32)
+	if err != nil || m > 0o7777 {
+		return []string{"the control directory " + dir + " has mode " + mode + ", which is not an octal mode"}
+	}
+	perm, sticky := m&0o777, m&0o1000 != 0
+	var problems []string
+	if perm&0o022 != 0 && !sticky {
+		problems = append(problems, fmt.Sprintf("the control directory %s is mode %04o: writable by group or others without the sticky bit, which internal/control refuses, so the daemon cannot start", dir, m))
+	}
+	ownerWrites := owner == daemonUser && perm&0o300 == 0o300
+	groupWrites := group == daemonUser && perm&0o030 == 0o030
+	if !ownerWrites && !groupWrites {
+		problems = append(problems, fmt.Sprintf("the control directory %s is %s:%s mode %04o: user %s cannot create control.sock in it", dir, owner, group, m, daemonUser))
+	}
+	return problems
 }
 
 // initScriptProblems returns what the service text lacks or gets wrong. It works on a string so
@@ -166,6 +231,46 @@ func init() {
 				})
 			},
 			outcome: wantFail, expect: "ubus",
+		},
+		toothCase{
+			// The defect the gate was added for: root:rollcall 0770 stopped every start.
+			name: "initscript_control_dir_group_writable", gate: "TestInitScriptHardening",
+			plant: func(t *testing.T, dst string) {
+				editCopy(t, dst, initScriptRel, func(s string) string {
+					s = strings.Replace(s, "chown rollcall:rollcall /var/run/rollcall\n", "chown root:rollcall /var/run/rollcall\n", 1)
+					return strings.Replace(s, "chmod 0700 /var/run/rollcall\n", "chmod 0770 /var/run/rollcall\n", 1)
+				})
+			},
+			outcome: wantFail, expect: "without the sticky bit",
+		},
+		toothCase{
+			name: "initscript_control_dir_root_owned", gate: "TestInitScriptHardening",
+			plant: func(t *testing.T, dst string) {
+				editCopy(t, dst, initScriptRel, func(s string) string {
+					return strings.Replace(s, "chown rollcall:rollcall /var/run/rollcall\n", "chown root:root /var/run/rollcall\n", 1)
+				})
+			},
+			outcome: wantFail, expect: "cannot create control.sock",
+		},
+		toothCase{
+			name: "initscript_control_dir_no_mode", gate: "TestInitScriptHardening",
+			plant: func(t *testing.T, dst string) {
+				editCopy(t, dst, initScriptRel, func(s string) string {
+					return strings.Replace(s, "chmod 0700 /var/run/rollcall\n", "", 1)
+				})
+			},
+			outcome: wantFail, expect: "gets no explicit mode",
+		},
+		toothCase{
+			name: "initscript_control_dir_sticky_group", gate: "TestInitScriptHardening",
+			plant: func(t *testing.T, dst string) {
+				// Group write with the sticky bit is what control accepts, so this one must pass.
+				editCopy(t, dst, initScriptRel, func(s string) string {
+					s = strings.Replace(s, "chown rollcall:rollcall /var/run/rollcall\n", "chown root:rollcall /var/run/rollcall\n", 1)
+					return strings.Replace(s, "chmod 0700 /var/run/rollcall\n", "chmod 1770 /var/run/rollcall\n", 1)
+				})
+			},
+			outcome: wantPass,
 		},
 		toothCase{
 			name: "initscript_no_file", gate: "TestInitScriptHardening",
