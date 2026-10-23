@@ -446,11 +446,17 @@ func (n *Node) planProbe(helper, target ids.MemberID) {
 		apply: func(a member.Admitted, now clock.Stamp) {
 			r := member.Report{Target: ack.Target, Heartbeat: ack.Heartbeat, Ago: time.Duration(ack.Ago), BootSeq: ack.BootSeq, Boot: ack.Boot}
 			evs, err := n.table.RecordReport(a, r, now)
-			if err != nil {
+			if err != nil && !errors.Is(err, member.ErrDuplicateIdentity) {
 				return
 			}
+			// A clone proven through the helper comes with its
+			// DuplicateIdentity event, as one heard directly does
+			// (heartbeatIn): it is recorded, never dropped.
 			for _, e := range evs {
 				n.recordEvent(e, EventBody{Subject: e.Subject, Type: e.Type}, now)
+			}
+			if err != nil {
+				return
 			}
 			if target == n.id.ID && n.cfg.IdentityDir != "" {
 				n.restoredLocked(now)
