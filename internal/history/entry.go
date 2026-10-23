@@ -103,8 +103,8 @@
 // # Pruning
 //
 // The log is bounded per origin, twice: Append keeps every origin at most at
-// the maxPerOrigin given to NewLog, at once, and Log.Prune applies the age
-// limit and any tighter count. Both keep each origin's head, so every chain
+// the maxPerOrigin given to NewLog and at most at DefaultMaxBytes, at once,
+// and Log.Prune applies the age limit and any tighter count. Both keep each origin's head, so every chain
 // stays verifiable from it, and drop the oldest entries beyond the limits.
 // For each origin they record the Seq and Hash of the last entry dropped
 // (Log.Pruned): the oldest entry kept has that Hash as its Prev, Range

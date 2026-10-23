@@ -20,7 +20,7 @@ var sentinels = []error{ErrUnknownOrigin, ErrKey, ErrFormat, ErrKind, ErrBody, E
 func (l *Log) clone() *Log {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	c := &Log{keyOf: l.keyOf, max: l.max, chains: map[ids.MemberID]*chain{}, forks: map[ids.MemberID]ForkProof{}}
+	c := &Log{keyOf: l.keyOf, max: l.max, maxBytes: l.maxBytes, chains: map[ids.MemberID]*chain{}, forks: map[ids.MemberID]ForkProof{}}
 	for o, ch := range l.chains {
 		cp := *ch
 		cp.entries = slices.Clone(ch.entries)

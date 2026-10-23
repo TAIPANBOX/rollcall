@@ -16,12 +16,32 @@ import (
 )
 
 // The bounds of the history (security spec 5.7, design 4.3), per origin: at
-// most DefaultMaxEntries entries (NewLog's default for maxPerOrigin) and at
-// most DefaultMaxAge of them (for Prune).
+// most DefaultMaxEntries entries (NewLog's default for maxPerOrigin), at most
+// DefaultMaxBytes of them (Append holds every origin to it), and at most
+// DefaultMaxAge of them (for Prune).
+//
+// DefaultMaxBytes counts what an entry holds, its size: its body, kind and
+// signature and entryFixed bytes for its origin, seq, prev and hash. It
+// keeps one origin that writes the largest bodies, a compromised member, to
+// 256 KiB in every holder's RAM instead of 500 entries of 8 KiB (about 4
+// MiB). A whole roster of 32 origins at the budget is 8 MiB, inside the RSS
+// budget of about 15 MB on a 128 MB router (design 3). An honest chain is
+// bounded by count first: 500 entries fit with bodies of 362 bytes on
+// average, while an event body shaped like the node's is about 280 bytes
+// and a witness statement about 100 (TestByteBudgetSpareForHonestChains). A full chain at the budget, written as JSON, stays under half
+// of the store's 1 MiB file limit (TestByteBudgetFitsTheStoreFile).
 const (
 	DefaultMaxEntries = 500
 	DefaultMaxAge     = 30 * 24 * time.Hour
+	DefaultMaxBytes   = 256 << 10
 )
+
+// entryFixed is the part of an entry's size that is not its body, kind or
+// signature: origin 16, seq 8, prev 32, and the hash the log keeps 32.
+const entryFixed = 16 + 8 + 32 + 32
+
+// size returns the bytes e counts for in DefaultMaxBytes.
+func size(e Entry) int { return len(e.Body) + len(e.Kind) + len(e.Sig) + entryFixed }
 
 // digestLabel starts the bytes Log.Digest covers.
 const digestLabel = "rollcall/v1 history-digest\x00"
@@ -108,6 +128,7 @@ type stored struct {
 type chain struct {
 	pruned  Head // the last entry Prune dropped; zero if none
 	entries []stored
+	bytes   int // the sizes of the entries, summed
 }
 
 // head returns the newest entry of c, or c.pruned (zero for a new chain)
@@ -130,20 +151,37 @@ func (c *chain) dropOldest(k int) {
 	}
 	last := c.entries[k-1]
 	c.pruned = Head{Seq: last.e.Seq, Hash: last.hash}
+	for _, s := range c.entries[:k] {
+		c.bytes -= size(s.e)
+	}
 	clear(c.entries[:k])
 	c.entries = c.entries[k:]
+}
+
+// overBytes returns how many of the oldest entries of c must go for the rest
+// to fit in maxBytes; below 1, maxBytes is no limit.
+func (c *chain) overBytes(maxBytes int) int {
+	if maxBytes < 1 {
+		return 0
+	}
+	k, excess := 0, c.bytes-maxBytes
+	for ; excess > 0 && k < len(c.entries); k++ {
+		excess -= size(c.entries[k].e)
+	}
+	return k
 }
 
 // Log holds the chains of all origins, as the package doc describes. Make one
 // with NewLog; a zero Log knows no origin and refuses every entry. A Log must
 // not be copied.
 type Log struct {
-	keyOf  func(ids.MemberID) (ed25519.PublicKey, bool) // set once by NewLog
-	max    int                                          // entries held of one origin at most
-	mu     sync.Mutex
-	chains map[ids.MemberID]*chain
-	forks  map[ids.MemberID]ForkProof // the first proof of each forked origin
-	bases  map[ids.MemberID]Head      // StartAt's base of each origin the log holds no entry of yet
+	keyOf    func(ids.MemberID) (ed25519.PublicKey, bool) // set once by NewLog
+	max      int                                          // entries held of one origin at most
+	maxBytes int                                          // bytes held of one origin at most; below 1 no limit
+	mu       sync.Mutex
+	chains   map[ids.MemberID]*chain
+	forks    map[ids.MemberID]ForkProof // the first proof of each forked origin
+	bases    map[ids.MemberID]Head      // StartAt's base of each origin the log holds no entry of yet
 }
 
 // Append adds e to its origin's chain, or reports why not, as the package
@@ -154,7 +192,7 @@ type Log struct {
 // later Append for that origin. When an appended entry takes its origin past
 // the Log's maxPerOrigin, the oldest entries of that origin are dropped at
 // once, as Prune drops them: never the head, and the last one dropped is
-// recorded (Pruned).
+// recorded (Pruned). So are the oldest entries beyond DefaultMaxBytes.
 func (l *Log) Append(e Entry, now time.Time) error {
 	pub, known := l.key(e.Origin)
 	if !known {
@@ -195,7 +233,8 @@ func (l *Log) Append(e Entry, now time.Time) error {
 		return fmt.Errorf("%w: origin %s seq %d names prev %s, the head is %s", ErrPrev, e.Origin, e.Seq, e.Prev, head.Hash)
 	}
 	c.entries = append(c.entries, stored{e: e.clone(), hash: h, at: now})
-	c.dropOldest(len(c.entries) - l.max) // bound memory now, not at the next Prune
+	c.bytes += size(e)
+	c.dropOldest(max(len(c.entries)-l.max, c.overBytes(l.maxBytes))) // bound memory now, not at the next Prune
 	if l.chains == nil {
 		l.chains = map[ids.MemberID]*chain{}
 	}
@@ -254,13 +293,14 @@ func (l *Log) StartAt(origin ids.MemberID, base Head) error {
 // the roster, and reports false for an origin it does not know; Append takes
 // every entry's key from it and from nowhere else. It is called outside the
 // Log's lock, so it may take a lock of its own, and must be safe for
-// concurrent use. A nil keyOf knows no origin. maxPerOrigin bounds what the
-// Log holds of any one origin (see Append); below 1 it is DefaultMaxEntries.
+// concurrent use. A nil keyOf knows no origin. maxPerOrigin bounds how many
+// entries the Log holds of any one origin (see Append); below 1 it is
+// DefaultMaxEntries. The Log also holds every origin to DefaultMaxBytes.
 func NewLog(keyOf func(origin ids.MemberID) (ed25519.PublicKey, bool), maxPerOrigin int) *Log {
 	if maxPerOrigin < 1 {
 		maxPerOrigin = DefaultMaxEntries
 	}
-	return &Log{keyOf: keyOf, max: maxPerOrigin}
+	return &Log{keyOf: keyOf, max: maxPerOrigin, maxBytes: DefaultMaxBytes}
 }
 
 // key returns keyOf(origin), or false if the Log has no resolver.
@@ -371,8 +411,8 @@ func (l *Log) Forks() []ForkProof {
 // entry after it, stays). A limit of zero or less is no limit. The head
 // always stays, however old and whatever maxEntries is. For every origin it
 // drops entries from, it records the last one dropped (Pruned). Fork proofs
-// are kept. Append already holds every origin to the Log's maxPerOrigin;
-// Prune applies the age limit and any tighter count.
+// are kept. Append already holds every origin to the Log's maxPerOrigin and
+// to DefaultMaxBytes; Prune applies the age limit and any tighter count.
 //
 // Ages are now.Sub(the time Append was given), which uses the monotonic
 // clock when both times carry its reading. An entry received at a time
