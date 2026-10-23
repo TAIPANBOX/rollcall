@@ -47,7 +47,10 @@ import (
 //
 // Catch-up: a heartbeat whose digest differs from the node's makes it ask
 // the sender for its heads (digest_req, heads) and fetch, origin by
-// origin, the entries it lacks (fetch, entries). An entry that does not
+// origin, the entries it lacks (fetch, entries). A head below the node's
+// own for that origin is checked against the entry the node holds at that
+// sequence number; when they differ, the peer's entry is fetched, and
+// Append finds the fork. An entry that does not
 // fit its chain (history.ErrPrev) makes it fetch the origin's entry at
 // Seq-1 from the same peer, which turns the mismatch into a fork proof if
 // the origin signed two entries there.
@@ -333,6 +336,13 @@ func (n *Node) headsIn(p ids.MemberID, hs headsMsg, now clock.Stamp) {
 			}
 		case h.Seq == mine.Seq && h.Seq > 0 && h.Hash != mine.Hash:
 			n.planFetch(p, h.Origin, h.Seq, h.Seq)
+		case h.Seq < mine.Seq && h.Seq > n.log.Pruned(h.Origin).Seq:
+			// The peer's chain is shorter: it must be a prefix of the one
+			// held, or the origin forked, and fetching the peer's entry at
+			// its head shows which (D16).
+			if es := n.log.Range(h.Origin, h.Seq, h.Seq); len(es) == 1 && es[0].Hash() != h.Hash {
+				n.planFetch(p, h.Origin, h.Seq, h.Seq)
+			}
 		}
 	}
 	if !ownBehind {
