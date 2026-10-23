@@ -154,4 +154,4 @@ floor yet.
 - **Clock trust after a daemon restart on a router.** Since the run, the ntp hotplug script also
   takes the periodic event of a synchronised clock; that has not run on a router.
 - **The confirmation count**, above: open.
-- **A signed package feed, and a release.** Neither exists.
+- **The signed feed on a router.** Release candidate 1.0.0-rc1 and its signed apk feed exist since 2026-10-23; the feed was proven in an OpenWrt 25.12 container (no `--allow-untrusted`, every file owned by root), not yet on a router. A feed for OpenWrt 24.10 (opkg) does not exist.

@@ -8,8 +8,8 @@ prints what **expect** says. On anything else, stop and report the step, the com
 output to the person you work for, with any token or code taken out. Never improvise around a
 failed check.
 
-rollcall is not released. There is no package feed: today the packages are built from source and
-installed by hand, on routers the person has set aside for testing.
+rollcall 1.0.0-rc1 is a release candidate. Its packages for OpenWrt 25.12 come from a signed apk
+feed ([feed.md](feed.md)). Use it on routers the person has set aside for testing until 1.0.0.
 
 ## 0. Before anything
 
@@ -27,9 +27,8 @@ installed by hand, on routers the person has set aside for testing.
 - Do not reboot, restart the network, run `wifi`, run `sysupgrade` or power-cycle a router unless
   the person said you may, for that action. Do not change `/etc/config/network`, `firewall` or
   `system` for rollcall: the package writes its own firewall rule.
-- Do not use `--force` or `--force-broken-world` with apk. `--allow-untrusted` is for the package
-  files you built in step 2 and checked by checksum in step 3, and for nothing else, never for a
-  repository.
+- Do not use `--allow-untrusted`, `--force` or `--force-broken-world` with apk. The feed is signed:
+  if apk refuses a package, something is wrong. Stop and report; never work around it.
 - Do not run a command on a router the person did not name. Name the router literally in every
   command that changes something (see [Traps](#traps-found-in-the-lab)).
 - Do not add a zone that faces the internet to `peer_zone`, or static peers, unless the person
@@ -61,58 +60,43 @@ apk list --installed | grep -cE '^(procd-ujail|procd-seccomp|ca-bundle)-'   # ex
 - Fewer than 3 sandbox packages: apk fetches them from the OpenWrt feeds in step 3, so
   `apk update` must succeed first.
 
-## 2. Get the packages
+## 2. Trust the feed
 
-On the machine you work from. A signed package feed does not exist yet. Either build them
-(Go 1.27 and Docker):
-
-```sh
-git clone https://github.com/TAIPANBOX/rollcall && cd rollcall
-make apk luci VERSION=0.0.0-rc1 TARGETS=aarch64_cortex-a53
-```
-
-or run the `ci` workflow by hand in a fork and fetch the job's artifact:
+On each router. The key goes in first, then the feed for the router's own architecture.
 
 ```sh
-gh workflow run ci.yml --ref <branch>
-gh run list --workflow ci.yml --event workflow_dispatch --limit 1    # note the run id
-gh run watch <run id> --exit-status
-gh run download <run id> -n lab-packages -D dist/pkg
+wget -O /etc/apk/keys/rollcall.pem https://taipanbox.github.io/rollcall/rollcall.pem
+sha256sum /etc/apk/keys/rollcall.pem
+echo "https://taipanbox.github.io/rollcall/25.12/$(cat /etc/apk/arch)/packages.adb" >> /etc/apk/repositories.d/customfeeds.list
+apk update
 ```
-
-apk upgrades only to a higher version: give each new build a higher `0.0.0-rcN` (the workflow
-uses its run number).
 
 **Check:**
 
 ```sh
-ls dist/pkg/aarch64_cortex-a53/rollcall-*.apk dist/pkg/luci/luci-app-rollcall-*.apk   # expect: one file each
-shasum -a 256 dist/pkg/aarch64_cortex-a53/*.apk dist/pkg/luci/*.apk                  # keep these for step 3
+sha256sum /etc/apk/keys/rollcall.pem | cut -d' ' -f1
+# expect: 1dd696c7afce0464688a5106229723f60c8cfb9bd2f6ec296ee5fec24f57ff39
+grep -c taipanbox.github.io/rollcall /etc/apk/repositories.d/customfeeds.list   # expect: 1
+apk search rollcall                                 # expect: rollcall-1.0.0_rc1-r1 (and luci-app-rollcall)
 ```
+
+A different sum: delete `/etc/apk/keys/rollcall.pem`, remove the line from `customfeeds.list`,
+and stop. If `apk search` finds nothing while the sum is right, apk did not trust the feed (it
+drops an untrusted feed without a word): report the output of `apk update`.
 
 ## 3. Install
 
-For each router. The files travel on standard input, into a directory of their own.
 `luci-app-rollcall` is optional and pulls in `luci-base`: ask the person before you add it to a
 router without LuCI.
 
 ```sh
-for f in dist/pkg/aarch64_cortex-a53/rollcall-*.apk dist/pkg/luci/luci-app-rollcall-*.apk; do
-  ssh root@<router> "mkdir -p /tmp/rollcall-pkg && cat > /tmp/rollcall-pkg/$(basename "$f")" < "$f"
-done
-ssh root@<router> 'sha256sum /tmp/rollcall-pkg/*.apk'
-```
-
-Compare the sums with step 2. Equal: install.
-
-```sh
-ssh root@<router> 'apk add --allow-untrusted /tmp/rollcall-pkg/*.apk'
+apk add rollcall
 ```
 
 **Check**, on the router:
 
 ```sh
-apk list --installed | grep -E '^(rollcall|luci-app-rollcall)-'   # expect: the version you built
+apk list --installed | grep -E '^(rollcall|luci-app-rollcall)-'   # expect: rollcall-1.0.0_rc1-r1
 id rollcall                                         # expect: uid=1660(rollcall) gid=1660(rollcall) ...
 ls -ld /etc/rollcall | awk '{print $1, $3}'         # expect: drwx------ rollcall
 uci -q get firewall.rollcall_1                      # expect: rule
@@ -282,8 +266,8 @@ the `sandbox` object. The sender is `None` while no router can reach Telegram.
 
 ## Upgrading
 
-Build again with a higher `0.0.0-rcN` (step 2), then step 3 (copy, checksum, `apk add`) with the
-new files, and `/etc/init.d/rollcall restart` on each router so the new daemon runs. apk keeps
+`apk update && apk upgrade rollcall luci-app-rollcall` on each router (only the packages the
+router has), then `/etc/init.d/rollcall restart` so the new daemon runs. apk keeps
 `/etc/rollcall` and `/etc/config/rollcall`: the group, the roles and the token stay. Then run the
 checks of steps 3 and 10 again.
 
