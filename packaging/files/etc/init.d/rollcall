@@ -58,9 +58,15 @@ start_service() {
 	procd_set_param file /etc/config/rollcall /var/run/rollcall/snapshot.json
 	procd_set_param stdout 1
 	procd_set_param stderr 1
-	# CAP_NET_RAW is granted only for ICMP probes. Without the option the daemon holds no capability.
+	# CAP_NET_RAW is granted only for ICMP probes. Without the option the daemon holds no
+	# capability in any set, the bounding set included: without a file ujail sets none of them,
+	# and the setuid to rollcall empties the others but leaves the bounding set full. The empty
+	# file names all five sets, because ujail of procd 2026.03 reads an absent one as every
+	# capability. rollcalld cannot empty the bounding set itself: that needs CAP_SETPCAP.
 	if [ "$icmp" = 1 ]; then
 		procd_set_param capabilities /etc/capabilities/rollcall.json
+	else
+		procd_set_param capabilities /etc/capabilities/rollcall-none.json
 	fi
 	# procfs and sysfs: the daemon reads its boot ID, its own sandbox state, the routes and the
 	# interface state from /proc and /sys. ronly remounts the jail's root read-only (ujail -o), so

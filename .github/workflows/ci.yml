@@ -187,7 +187,8 @@ jobs:
           tar -xzf "$ipk" -C "$RUNNER_TEMP"
           tar -tzf "$RUNNER_TEMP/data.tar.gz" | sort > "$RUNNER_TEMP/got"
           for f in ./usr/bin/rollcalld ./usr/bin/rollcall ./etc/init.d/rollcall \
-                   ./etc/config/rollcall ./etc/seccomp/rollcall.json ./lib/upgrade/keep.d/rollcall; do
+                   ./etc/config/rollcall ./etc/seccomp/rollcall.json ./lib/upgrade/keep.d/rollcall \
+                   ./etc/capabilities/rollcall.json ./etc/capabilities/rollcall-none.json; do
             grep -qx "$f" "$RUNNER_TEMP/got" || { echo "missing from the ipk: $f"; exit 1; }
           done
           tar -xzf "$RUNNER_TEMP/control.tar.gz" -C "$RUNNER_TEMP"
@@ -195,7 +196,10 @@ jobs:
           apk=rollcall-0.0.0_pre0-r1-x86_64.apk
           docker run --rm -v "$PWD:/work" -w /work \
             alpine@sha256:020dfcbaaf4cc1078bf2d9c7ba31a8466e334061dcd2f248001d68f79e52c000 \
-            apk adbdump "$apk" | grep -q 'name: etc/seccomp' || { echo "apk lacks the seccomp profile"; exit 1; }
+            apk adbdump "$apk" > "$RUNNER_TEMP/adbdump.txt"
+          grep -q 'name: etc/seccomp' "$RUNNER_TEMP/adbdump.txt" || { echo "apk lacks the seccomp profile"; exit 1; }
+          # The empty capability set of every start without ICMP probes: without it ujail refuses to start.
+          grep -q 'name: rollcall-none.json' "$RUNNER_TEMP/adbdump.txt" || { echo "apk lacks the empty capabilities file"; exit 1; }
 
       # procd runs /etc/init.d/rollcall as root and hotplug runs /usr/bin/rollcall as root, so an
       # entry any other account owns lets that account gain root. The gate reads every header of

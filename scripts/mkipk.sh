@@ -90,6 +90,7 @@ if [ "$PKG" = rollcall ]; then
 	sh "$ROOT/packaging/seccomp/generate.sh" "$ARCH" > "$BUILD/rollcall.seccomp.json"
 	install -m 0644 "$BUILD/rollcall.seccomp.json" "$DATA/etc/seccomp/rollcall.json"
 	install -m 0644 "$FILES/etc/capabilities/rollcall.json"  "$DATA/etc/capabilities/rollcall.json"
+	install -m 0644 "$FILES/etc/capabilities/rollcall-none.json" "$DATA/etc/capabilities/rollcall-none.json"
 	install -m 0644 "$FILES/lib/upgrade/keep.d/rollcall"     "$DATA/lib/upgrade/keep.d/rollcall"
 else
 	# LuCI: htdocs lands under /www, and root/ is the router's own root (menu.d and rpcd ACL).

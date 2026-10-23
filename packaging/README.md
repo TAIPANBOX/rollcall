@@ -16,7 +16,8 @@ and the generator that writes one profile per architecture. `scripts/mkipk.sh` a
 | `/etc/config/rollcall` | site configuration; kept across upgrades |
 | `/etc/uci-defaults/90-rollcall` | builds the firewall rules at first boot and after an upgrade (`/etc/init.d/rollcall firewall`) |
 | `/etc/seccomp/rollcall.json` | the system call allow-list of the target architecture in procd's format: the readable record of the filter rollcalld installs itself from the same lists; procd does not load it |
-| `/etc/capabilities/rollcall.json` | `CAP_NET_RAW`, used only when `option icmp '1'` |
+| `/etc/capabilities/rollcall.json` | `CAP_NET_RAW` in every set and nothing else, used only when `option icmp '1'` |
+| `/etc/capabilities/rollcall-none.json` | all five sets present and empty, used on every start without ICMP probes, so the bounding set is empty too |
 | `/lib/upgrade/keep.d/rollcall` | keeps `/etc/rollcall/` and `/etc/config/rollcall` on sysupgrade |
 
 The package has no ubus ACL: the daemon never calls ubus.
@@ -257,8 +258,16 @@ user, password or query) and stays mode 0644, read by the daemon itself.
 
 ## Other status
 
-- `capabilities/rollcall.json` follows the procd capability layout as understood at writing
-  time. It is proven only when ICMP probes are enabled on hardware.
+- The capability files follow the layout ujail reads (`jail/capabilities.c` of procd
+  2026.03.13~58eb263d, the procd of OpenWrt 25.12): the arrays `bounding`, `effective`,
+  `inheritable`, `permitted` and `ambient`. Each listed set becomes exactly its names; an absent
+  set is left with every capability, and without a file ujail sets none, so the setuid to
+  `rollcall` empties the other sets but leaves the bounding set full (lab run 2026-10-23:
+  `CapBnd 000001ffffffffff`). Hence a file on every start, with all five sets named. The gate
+  `TestInitScriptHardening` reads both files and both package scripts. Not proven until the next
+  lab run: `CapBnd 0000000000000000` on a router, and `rollcall.json` with ICMP probes on.
+- rollcalld cannot empty its bounding set itself: `PR_CAPBSET_DROP` needs `CAP_SETPCAP` in the
+  effective set, and the daemon runs with none.
 - uid and gid 1660 are unregistered; the postinst creates the account with them. Change them
   in `packaging/postinst` if they collide on a router.
 - The state directory `/etc/rollcall` is owned by `rollcall` with mode 0700.

@@ -48,9 +48,11 @@ var snapshotCall = regexp.MustCompile(`(^|[\s;(!])("\$CLI"|\$CLI|/usr/bin/rollca
 // process runs with (invariant 13): its own user, no_new_privs and a jail with requirejail, so the
 // daemon never starts unsandboxed, and no procd seccomp profile, which cannot filter the static
 // daemon (it installs its own filter, TestDaemonConfinesFirst). It also refuses ubus, which the
-// daemon never touches, and capabilities outside the ICMP branch, because ICMP is the only probe
-// that needs CAP_NET_RAW. Finally it applies the control server's own rule to the control
-// directory the script makes (controlDirProblems), so the daemon is not refused at every start.
+// daemon never touches. It reads the capabilities files the script names (capabilityProblems): a
+// start without ICMP gets one whose five sets are all empty, a start with ICMP one that grants
+// CAP_NET_RAW and nothing else, and no other start names one. Finally it applies the control
+// server's own rule to the control directory the script makes (controlDirProblems), so the
+// daemon is not refused at every start.
 func TestInitScriptHardening(t *testing.T) {
 	root := requireRoot(t)
 	path := filepath.Join(root, filepath.FromSlash(initScriptRel))
@@ -68,6 +70,7 @@ func TestInitScriptHardening(t *testing.T) {
 	}
 	problems := initScriptProblems(string(data))
 	problems = append(problems, controlDirProblems(string(data), string(m[1]))...)
+	problems = append(problems, capabilityProblems(string(data), root)...)
 	for _, problem := range problems {
 		t.Errorf("%s: %s", initScriptRel, problem)
 	}
@@ -126,17 +129,6 @@ func initScriptProblems(text string) []string {
 	jailed, readOnly := false, false
 	roMounts := map[string]bool{}
 	snapshotAt, openAt := -1, -1
-	// One entry per open if block: true when the block's condition tests the icmp option.
-	var ifStack []bool
-	inICMP := func() bool {
-		for _, icmp := range ifStack {
-			if icmp {
-				return true
-			}
-		}
-		return false
-	}
-
 	for n, raw := range strings.Split(text, "\n") {
 		line := strings.TrimSpace(raw)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -185,16 +177,6 @@ func initScriptProblems(text string) []string {
 			}
 		}
 		switch {
-		case strings.HasPrefix(line, "if "):
-			ifStack = append(ifStack, strings.Contains(line, "icmp"))
-		case line == "fi" || strings.HasPrefix(line, "fi "):
-			if len(ifStack) > 0 {
-				ifStack = ifStack[:len(ifStack)-1]
-			}
-		case strings.HasPrefix(line, "procd_set_param capabilities"):
-			if !inICMP() {
-				problems = append(problems, "capabilities set outside the icmp branch: "+line)
-			}
 		case strings.HasPrefix(line, "procd_add_jail_mount "):
 			for _, p := range strings.Fields(line)[1:] {
 				roMounts[p] = true
