@@ -679,11 +679,15 @@ func TestNotifyGoingDownReachesNode(t *testing.T) {
 	}
 	a.must("", "notify", "going-down")
 	now := a.net.multicasts()
-	if len(now) != len(sent)+1 {
-		t.Fatalf("%d heartbeats sent by the notice, want 1 at once", len(now)-len(sent))
+	// The node sends its announcement more than once at once, so that one
+	// lost packet does not lose it (node.GoingDown); every copy says so.
+	if len(now) <= len(sent) {
+		t.Fatal("no heartbeat sent at once by the notice")
 	}
-	if heartbeatOf(t, a.dir, now[len(sent)])[53]&flagGoingDown == 0 {
-		t.Fatal("the heartbeat sent at the notice does not say going down")
+	for _, p := range now[len(sent):] {
+		if heartbeatOf(t, a.dir, p)[53]&flagGoingDown == 0 {
+			t.Fatal("a heartbeat sent at the notice does not say going down")
+		}
 	}
 	marker, err := os.ReadFile(filepath.Join(a.dir, "shutdown.json"))
 	if err != nil || !bytes.Contains(marker, []byte(a.boot.String())) {
