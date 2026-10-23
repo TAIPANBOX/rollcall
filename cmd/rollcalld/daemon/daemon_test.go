@@ -897,11 +897,14 @@ func TestTakeoverConfirmRotate(t *testing.T) {
 	if r, err := h.handle("admin-takeover"); err != nil || r.Message != "Nothing to change." {
 		t.Fatalf("a second takeover: %+v %v", r, err)
 	}
-	if _, err := h.handle("admin-confirm"); err != nil {
-		t.Fatal(err)
+	// Eleven minutes into the primary's silence the confirmation is held
+	// for a day of it (security spec 6.1), and the takeover stays
+	// provisional meanwhile.
+	if _, err := h.handle("admin-confirm"); err == nil || !strings.Contains(err.Error(), "held") {
+		t.Fatalf("a confirmation eleven minutes into the silence: %v, want it held", err)
 	}
-	if s := self(); s["admin"] != "primary" || s["takeover"] != false {
-		t.Fatalf("after the confirmation: %v", s)
+	if s := self(); s["admin"] != "primary" || s["takeover"] != true {
+		t.Fatalf("after the held confirmation: %v", s)
 	}
 	before, _ := os.ReadFile(filepath.Join(f.dir, node.FileEpoch))
 	if _, err := h.handle("rotate"); err != nil {
