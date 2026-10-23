@@ -165,7 +165,7 @@ expect `NoNewPrivs: 1`, `Seccomp: 2` and uid 1660.
 <summary>Removing it</summary>
 
 ```sh
-apk del luci-app-rollcall rollcall
+apk del luci-app-rollcall rollcall    # only rollcall if the LuCI app is not installed
 rm -rf /etc/rollcall /var/run/rollcall /var/run/rollcalld /etc/config/rollcall*
 sed -i '/^rollcall:/d' /etc/passwd /etc/shadow /etc/group
 ```
