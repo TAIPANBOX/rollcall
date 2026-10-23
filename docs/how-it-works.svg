@@ -55,6 +55,6 @@
 <text x="982" y="316" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="#3fb950">plain text, no links</text>
 
 <line x1="48" y1="376" x2="1226" y2="376" stroke="#222b38" stroke-width="1"/>
-<text x="48" y="408" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">Nothing listens on the WAN side. Only routers with the sender role hold the bot token.</text>
+<text x="48" y="408" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">Nothing listens on the WAN side unless you name static peers there. Only routers with the sender role hold the bot token.</text>
 <text x="48" y="432" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">A router that comes back checks what the others recorded about it, and a wrong claim is corrected in its own chain.</text>
 </svg>
