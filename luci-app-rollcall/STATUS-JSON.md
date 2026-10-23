@@ -139,9 +139,12 @@ router holds no confirmation and none lapsed.
 - `id`: short incident ID, the same one the chat message carries.
 - `time`: when the incident started.
 - `text`: the line the chat gets, as plain text.
-- `confirmed_by`: how many members' signed histories agree with the event,
-  this router included.
-- `members`: how many members the roster had when the count was taken.
+- `confirmed_by`: for an absence of a member (a silence, a reboot, an upgrade, a lost link), how
+  many of the other members recorded it themselves or agreed with a signed statement when the
+  message was made, this router included when it saw it. 0 for an incident that is not an absence
+  of a member (an internet or WAN loss is the router's own event), and the chat line then says
+  no count.
+- `members`: the members the count is taken over: the roster without the absent ones.
 - `delivered`: `true` when the chat has the message, `false` while it waits.
 
 ### `topology`

@@ -62,8 +62,12 @@ What they show, and what they do not:
 - **"Times are approximate"** on the first two lines: the daemons had started after the router
   clocks were set, and nothing told them so. After flint2's reboot the clock event came with the
   boot, and its line carries no such note.
-- **"confirmed by 0 of 2"** on beryl2's reboot reads as if no router confirmed it, although flint2
-  and beryl1 both saw beryl2 go silent. Why the count was 0 is not settled yet.
+- **"confirmed by 0 of 2"** on beryl2's reboot read as if no router confirmed it, although flint2
+  and beryl1 both saw beryl2 go silent: the count took only signed statements about the earliest
+  record, and those are made only on a trusted clock. After the lab run the count was changed to
+  the routers that recorded the absence or agreed with it when the message is made, and an
+  internet or WAN loss, which is one router's own event, carries no count. In the tests the lab's
+  lines now read "confirmed by 2 of 2"; this has not run on the routers yet.
 
 The wording is that day's. It may change before a release.
 
