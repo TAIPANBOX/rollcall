@@ -44,12 +44,22 @@ audit() {
 	done
 }
 
-# status_of waits for process $1 and prints its exit status, or SIG<name> when a signal killed it.
-status_of() {
+# reap waits for process $1 and sets GOT to its exit status, or SIG<name> when a signal killed
+# it. It sets a variable rather than printing, because a command substitution runs in a subshell,
+# and a subshell cannot wait for this shell's children.
+GOT=
+reap() {
 	local code=0
 	wait "$1" || code=$?
-	if [ "$code" -gt 128 ]; then echo "SIG$(kill -l $((code - 128)))"; else echo "$code"; fi
+	if [ "$code" -gt 128 ]; then GOT="SIG$(kill -l $((code - 128)))"; else GOT=$code; fi
 }
+
+# Nothing this script starts outlives it.
+PID= PEER=
+cleanup() {
+	for p in $PID $PEER; do kill -KILL "$p" 2>/dev/null || true; done
+}
+trap cleanup EXIT
 
 rm -rf "$WORK"
 mkdir -p "$BIN" "$WORK/config" "$WORK/run"
@@ -121,7 +131,8 @@ for drop in $drops; do
 		sleep 1
 	done
 	kill -KILL "$pid" 2>/dev/null || true
-	got=$(status_of "$pid")
+	reap "$pid"
+	got=$GOT
 	if [ "$got" != SIGSYS ]; then
 		cat "$WORK/teeth-$drop.log"
 		fail "teeth: without $drop the daemon ended with $got, not SIGSYS: the harness or the claim that it is made at start is wrong"
@@ -145,16 +156,26 @@ PEER=$!
 PID=$!
 START=$(date +%s)
 
+alive() { kill -0 "$PID" 2>/dev/null; }
+
+# died reports the daemon's end with its log and the kernel's seccomp records. A daemon still
+# running (only a check failed) is killed first, so the wait cannot hang.
 died() {
 	local got
-	got=$(status_of "$PID")
+	if alive; then
+		kill -KILL "$PID" 2>/dev/null || true
+		wait "$PID" 2>/dev/null || true
+		got="nothing (it was still running; the harness killed it)"
+	else
+		reap "$PID"
+		got=$GOT
+	fi
 	echo "--- daemon log"
 	cat "$WORK/daemon.log"
 	echo "--- kernel seccomp records"
 	audit
 	fail "rollcalld ended with $got $1"
 }
-alive() { kill -0 "$PID" 2>/dev/null; }
 
 for _ in $(seq 1 20); do
 	alive || died "while starting"
@@ -213,7 +234,8 @@ ran=$(($(date +%s) - START))
 # 3. A clean stop, still under the filter.
 sudo "$BIN/rollcall" notify going-down >/dev/null 2>&1 || true
 kill -TERM "$PID"
-got=$(status_of "$PID")
+reap "$PID"
+got=$GOT
 if [ "$got" != 0 ]; then
 	echo "--- daemon log"
 	cat "$WORK/daemon.log"
