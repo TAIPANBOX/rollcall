@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rollcall feed</title>
+<style>
+body{font:16px/1.6 system-ui,sans-serif;max-width:46rem;margin:2.5rem auto;padding:0 16px;color:#1d1d1f;background:#fff}
+code,pre{background:#f2f2f2;border-radius:3px}code{padding:.1rem .3rem}
+pre{padding:.8rem;overflow-x:auto;white-space:pre}h2{margin-top:2rem}
+@media (prefers-color-scheme: dark){body{color:#e8e8e8;background:#161616}code,pre{background:#262626}a{color:#8ab4f8}}
+</style>
+<h1>rollcall</h1>
+<p>A signed apk feed for OpenWrt 25.12 with
+<a href="https://github.com/TAIPANBOX/rollcall">rollcall and luci-app-rollcall</a>: the routers of
+one site watch each other over the LAN and report incidents to a chat.</p>
+<p>Current release: <a href="https://github.com/TAIPANBOX/rollcall/tree/v1.0.0-rc1">v1.0.0-rc1</a>
+(apk version 1.0.0_rc1-r1). This is a release candidate.</p>
+
+<h2>Add the feed</h2>
+<p>On the router, as root. The first line trusts the key, the second adds the feed for the
+router's own architecture.</p>
+<pre>wget -O /etc/apk/keys/rollcall.pem https://taipanbox.github.io/rollcall/rollcall.pem
+echo "https://taipanbox.github.io/rollcall/25.12/$(cat /etc/apk/arch)/packages.adb" &gt;&gt; /etc/apk/repositories.d/customfeeds.list
+
+apk update &amp;&amp; apk add rollcall luci-app-rollcall</pre>
+<p>The key's SHA-256, to compare with <code>sha256sum /etc/apk/keys/rollcall.pem</code>:</p>
+<pre>1dd696c7afce0464688a5106229723f60c8cfb9bd2f6ec296ee5fec24f57ff39</pre>
+<p>The index and every package are signed with that key. Without it apk drops the feed without a
+word and the packages appear not to exist. Nothing above needs <code>--allow-untrusted</code>.
+After the install the service is enabled and not started; the
+<a href="https://github.com/TAIPANBOX/rollcall#install">README</a> goes on from there with
+<code>rollcall init</code>.</p>
+
+<h2>Architectures</h2>
+<ul><li><code>aarch64_cortex-a53</code>: has run on routers</li><li><code>aarch64_generic</code>: built and signed, not yet run on a router</li><li><code>arm_cortex-a7</code>: built and signed, not yet run on a router</li><li><code>arm_cortex-a9</code>: built and signed, not yet run on a router</li><li><code>mips_24kc</code>: built and signed, not yet run on a router</li><li><code>mipsel_24kc</code>: built and signed, not yet run on a router</li><li><code>x86_64</code>: built and signed, not yet run on a router</li></ul>
+<p>The packages are the ones the release workflow built from the tag
+(<a href="https://github.com/TAIPANBOX/rollcall/releases/tag/v1.0.0-rc1">the release page</a>).
+Each was checked against the release checksums and its build provenance attestation before it
+was signed for this feed, so the files here differ from those originals by the signature.</p>
+</html>
