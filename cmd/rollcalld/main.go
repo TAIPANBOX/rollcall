@@ -162,6 +162,7 @@ func run(ctx context.Context, f flags) error {
 	t := time.NewTicker(tickEvery)
 	defer t.Stop()
 	var failed error
+	flooded := false
 loop:
 	for {
 		select {
@@ -176,6 +177,10 @@ loop:
 				log.Print(line)
 			}
 			devs = now
+			if f := tr.UnderFlood(); f != flooded {
+				log.Print(floodNote(flooded, f, tr.Counters()))
+				flooded = f
+			}
 		}
 	}
 	cancel()
@@ -343,4 +348,18 @@ func deviceAddrs(devices []string) []netip.Addr {
 		}
 	}
 	return out
+}
+
+// floodNote is the log line when the transport's flood signal changes, and
+// "" while it holds. The flood is local: it reaches the log and status, never
+// the chat (security spec 5.2).
+func floodNote(was, now bool, c transport.Counters) string {
+	switch {
+	case now && !was:
+		return fmt.Sprintf("rollcalld: under flood: the peer zones carry more than the read budget; dropped so far: %d over one source's rate, %d over the total rate, %d from too many sources, %d oversize",
+			c.SourceLimited, c.RateLimited, c.SourcesFull, c.Oversize)
+	case was && !now:
+		return "rollcalld: the flood on the peer zones has stopped"
+	}
+	return ""
 }

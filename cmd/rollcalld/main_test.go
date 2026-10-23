@@ -190,3 +190,19 @@ func TestDeviceNotes(t *testing.T) {
 		t.Fatalf("notes with nothing changed = %q, want none", n)
 	}
 }
+
+// TestFloodNote: the log says when the transport starts refusing a flood on
+// the peer zones, with what it dropped, and when the flood stops; nothing
+// while the state holds.
+func TestFloodNote(t *testing.T) {
+	c := transport.Counters{SourceLimited: 1500, RateLimited: 20, Oversize: 3, SourcesFull: 0}
+	if got := floodNote(false, true, c); !strings.Contains(got, "under flood") || !strings.Contains(got, "1500") {
+		t.Fatalf("floodNote at the start of a flood = %q", got)
+	}
+	if got := floodNote(true, false, c); !strings.Contains(got, "stopped") {
+		t.Fatalf("floodNote at the end of a flood = %q", got)
+	}
+	if got := floodNote(true, true, c) + floodNote(false, false, c); got != "" {
+		t.Fatalf("floodNote with nothing changed = %q, want none", got)
+	}
+}

@@ -67,6 +67,7 @@ type Transport struct {
 	authenticate func(frame []byte) bool
 	devices      []string      // the configured peer-zone devices, once each, in order
 	every        time.Duration // between passes; ReconcileEvery outside tests
+	lim          *limiter      // the read budget and the flood signal
 	slots        chan struct{} // one token per open TCP connection
 	kick         chan struct{} // Refresh: a pass now
 	done         chan struct{} // closed by Close
@@ -111,6 +112,7 @@ func Open(port int, ifaces []string, authenticate func(frame []byte) bool) (*Tra
 		port:         port,
 		authenticate: authenticate,
 		every:        ReconcileEvery,
+		lim:          newLimiter(),
 		slots:        make(chan struct{}, MaxConns),
 		kick:         make(chan struct{}, 1),
 		done:         make(chan struct{}),
@@ -295,11 +297,14 @@ func (t *Transport) startAcceptLocked(l *listener) {
 
 // pause waits after a transient error. It reports false once the transport is
 // closed, which is the signal for a loop to return.
-func (t *Transport) pause() bool {
+func (t *Transport) pause() bool { return t.wait(retryDelay) }
+
+// wait waits for d, and reports false if the transport closes first.
+func (t *Transport) wait(d time.Duration) bool {
 	select {
 	case <-t.done:
 		return false
-	case <-time.After(retryDelay):
+	case <-time.After(d):
 		return true
 	}
 }
