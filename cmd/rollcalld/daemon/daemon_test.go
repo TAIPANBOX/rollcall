@@ -26,6 +26,7 @@ import (
 	"github.com/TAIPANBOX/rollcall/internal/config"
 	"github.com/TAIPANBOX/rollcall/internal/epoch"
 	"github.com/TAIPANBOX/rollcall/internal/events"
+	"github.com/TAIPANBOX/rollcall/internal/history"
 	"github.com/TAIPANBOX/rollcall/internal/identity"
 	"github.com/TAIPANBOX/rollcall/internal/ids"
 	"github.com/TAIPANBOX/rollcall/internal/node"
@@ -992,5 +993,55 @@ func TestClockSynced(t *testing.T) {
 	}
 	if _, err := h.d.Handle("notify", []string{"clock-synced", "now"}, 0); err == nil {
 		t.Fatal("notify clock-synced with an argument was accepted")
+	}
+}
+
+// eventTrust returns, in the order of this router's own history, whether the
+// stamp of each event of type typ is trusted. The node writes its history to
+// the state directory at most once a minute, so callers run the daemon past that.
+func eventTrust(t *testing.T, dir string, typ events.Type) []bool {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(dir, "history-*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []bool
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var es []history.Entry
+		if err := json.Unmarshal(b, &es); err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range es {
+			if body, err := node.DecodeEvent(e); err == nil && body.Type == typ {
+				out = append(out, body.At.Trusted)
+			}
+		}
+	}
+	return out
+}
+
+// TestInternetEventsTakeTheClockState: an internet event is stamped with the
+// start of its condition, and that stamp carries the node's clock state:
+// untrusted until notify clock-synced, trusted after it.
+func TestInternetEventsTakeTheClockState(t *testing.T) {
+	f := newFixture(t, false, false)
+	h := start(t, f.dir, nil)
+	h.run(6 * time.Second)
+	h.d.localEvent(events.InternetLost, h.clk.Now().Add(-time.Minute), nil)
+	h.run(70 * time.Second)
+	if got := eventTrust(t, f.dir, events.InternetLost); !slices.Equal(got, []bool{false}) {
+		t.Fatalf("the internet loss before clock-synced: trusted %v, want [false]", got)
+	}
+	if _, err := h.handle("notify", "clock-synced"); err != nil {
+		t.Fatal(err)
+	}
+	h.d.localEvent(events.InternetRestored, h.clk.Now().Add(-time.Minute), nil)
+	h.run(70 * time.Second)
+	if got := eventTrust(t, f.dir, events.InternetRestored); !slices.Equal(got, []bool{true}) {
+		t.Fatalf("the internet restoration after clock-synced: trusted %v, want [true]", got)
 	}
 }

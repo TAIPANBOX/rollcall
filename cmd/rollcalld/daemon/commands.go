@@ -268,16 +268,20 @@ func validIface(s string) bool {
 }
 
 // localEvent records an event this router saw, stamped with the time its
-// condition started (since); a zero since is now.
+// condition started (since) and with the clock state the daemon tracks; a
+// zero since is now.
 func (d *Daemon) localEvent(typ events.Type, since time.Time, detail map[string]string) {
 	nd, err := d.running()
 	if err != nil {
 		return
 	}
+	d.mu.Lock()
+	trusted := d.trusted
+	d.mu.Unlock()
 	e := events.Event{Type: typ, Detail: detail}
 	if now := d.o.Clock.Now(); !since.IsZero() && now.Sub(since) > time.Second {
 		mono := max(d.o.Clock.Mono()-now.Sub(since), 0)
-		e.At = clock.Stamp{Wall: since, Mono: mono, Boot: d.o.Boot}
+		e.At = clock.Stamp{Wall: since, Mono: mono, Trusted: trusted, Boot: d.o.Boot}
 	}
 	nd.LocalEvent(e)
 }
