@@ -15,11 +15,12 @@
 // state a node starts from; the daemon looks for it every pollEvery and
 // starts the node once it is there.
 //
-// A node reads its bot token and chat ID only when it starts, so set-token
-// and a finished bind-telegram start a new node on the same store. A node that
-// has run already sent packets under its boot sequence number, so the next
-// one takes a new number (identity.NextBootSeq) and the peers accept it as the
-// same boot with a higher sequence: no event, no replay rejection.
+// set-token and a finished bind-telegram hand the running node its new
+// secrets and channel (node.SetSecrets); it keeps running. A new node is
+// started only after a join, from what the join stored. When the node before
+// it had run, it had sent packets under its boot sequence number, so the new
+// one takes a new number (identity.NextBootSeq) and the peers accept it as
+// the same boot with a higher sequence: no event, no replay rejection.
 package daemon
 
 import (
@@ -102,6 +103,11 @@ type Daemon struct {
 	chatID   int64  // the bound chat; 0 while none is bound
 	binding  context.CancelFunc
 	switched bool // the default route moved to another interface in this run
+	trusted  bool // ntpd reported a synchronised clock in this boot
+
+	// secMu orders the changes of the secrets: set-token and the end of a
+	// binding.
+	secMu sync.Mutex
 }
 
 // New opens the state directory, takes this run's boot sequence number and
@@ -210,10 +216,11 @@ func (d *Daemon) buildLocked() {
 		Boot: d.o.Boot, BootSeq: d.seq, IdentityDir: d.o.StateDir, Planned: d.planned,
 		Peers: c.Peers, Versions: d.o.Versions,
 	}
-	nd, err := node.New(cfg, d.st, d.id, d.o.Net, d.o.Clock, d.channelLocked())
+	nd, err := node.New(cfg, d.st, d.id, d.o.Net, d.o.Clock, d.channelFor(d.token, d.chatID))
 	d.nd, d.ndErr, d.ran = nd, err, err == nil
 	if err == nil {
 		d.planned = false
+		nd.SetClockTrusted(d.trusted)
 		return
 	}
 	if !d.waitingLocked() {
@@ -221,13 +228,13 @@ func (d *Daemon) buildLocked() {
 	}
 }
 
-// channelLocked returns the chat channel a new node gets: Telegram when this
-// router is configured to send and holds a token and a bound chat.
-func (d *Daemon) channelLocked() deliver.Channel {
-	if !d.o.Config.Sender || d.token == "" || d.chatID == 0 {
+// channelFor returns the chat channel of a node holding token and chat:
+// Telegram when this router is configured to send and both are there.
+func (d *Daemon) channelFor(token string, chat int64) deliver.Channel {
+	if !d.o.Config.Sender || token == "" || chat == 0 {
 		return nil
 	}
-	return channel.NewTelegram(d.o.TelegramURL, d.token, d.chatID, d.o.HTTP)
+	return channel.NewTelegram(d.o.TelegramURL, token, chat, d.o.HTTP)
 }
 
 // secretsFile is what node.SaveSecrets writes. It is decoded leniently: the

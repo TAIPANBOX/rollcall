@@ -27,6 +27,7 @@ import (
 	"github.com/TAIPANBOX/rollcall/internal/identity"
 	"github.com/TAIPANBOX/rollcall/internal/ids"
 	"github.com/TAIPANBOX/rollcall/internal/node"
+	"github.com/TAIPANBOX/rollcall/internal/pairing"
 	"github.com/TAIPANBOX/rollcall/internal/wire"
 )
 
@@ -375,7 +376,7 @@ func TestCLIUsage(t *testing.T) {
 		"rollcall admin recover [--json]",
 		"standard input",
 		"rollcall status [--json]",
-		"rollcall notify going-down | iface <action> <interface> | uplink <interface>",
+		"rollcall notify going-down | clock-synced | iface <action> <interface> | uplink <interface>",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("usage lacks %q", want)
@@ -1039,5 +1040,85 @@ func TestInitSiteName(t *testing.T) {
 	c.hostname = func() (string, error) { return "OpenWrt", nil }
 	if code := c.run([]string{"init"}); code != 2 || !strings.Contains(errb.String(), "give one with --name") {
 		t.Errorf("an invalid hostname: exit %d, %q", code, errb.String())
+	}
+}
+
+// TestNotifyForms: the notices of the init script and hotplug, and nothing
+// else, reach rollcalld.
+func TestNotifyForms(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		call []string
+	}{
+		{[]string{"notify", "going-down"}, []string{"notify", "going-down"}},
+		{[]string{"notify", "clock-synced"}, []string{"notify", "clock-synced"}},
+		{[]string{"notify", "iface", "ifdown", "wan"}, []string{"notify", "iface", "ifdown", "wan"}},
+		{[]string{"notify", "uplink", "wwan"}, []string{"notify", "uplink", "wwan"}},
+		{[]string{"notify", "clock-synced", "--json"}, []string{"notify", "clock-synced"}},
+	} {
+		rec := &recorder{}
+		var o, e bytes.Buffer
+		if code := rec.cli(&o, &e, nil).run(tc.args); code != 0 || len(rec.calls) != 1 || !slices.Equal(rec.calls[0], tc.call) {
+			t.Errorf("%q: exit %d, calls %q", tc.args, code, rec.calls)
+		}
+	}
+	for _, args := range [][]string{
+		{"notify"}, {"notify", "clock-synced", "now"}, {"notify", "clock"}, {"notify", "going-down", "--", "x"},
+		{"notify", "iface", "ifdown"}, {"notify", "uplink"}, {"notify", "--evil", "clock-synced"},
+	} {
+		rec := &recorder{}
+		var o, e bytes.Buffer
+		if code := rec.cli(&o, &e, nil).run(args); code == 0 || len(rec.calls) != 0 {
+			t.Errorf("%q: exit %d, %d calls; want a refusal and no call", args, code, len(rec.calls))
+		}
+	}
+}
+
+// TestRunbookCommandsParse: every rollcall command in the lab runbook, in
+// its ssh lines and in its inline commands, is one this CLI accepts, so no
+// step fails on its syntax on a router.
+func TestRunbookCommandsParse(t *testing.T) {
+	raw, err := os.ReadFile("../../docs/lab/runbook.md")
+	if err != nil {
+		t.Fatalf("measured nothing: %v", err)
+	}
+	admin, err := identity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inv pairing.Inviter
+	code, err := inv.Open(tStart, netip.MustParseAddrPort("192.0.2.1:7432"), admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := strings.NewReplacer("<join code>", code.String(),
+		"<an address of flint2 that beryl1 reaches>", "192.0.2.1").Replace(string(raw))
+	verbs := `(?:status|init|invite|join|remove|roles|rotate|set-token|bind-telegram|admin|notify|help|version)`
+	inSSH := regexp.MustCompile(`(?:'|&& )rollcall (` + verbs + `\b[^'&|"]*)`)
+	inline := regexp.MustCompile("`rollcall (" + verbs + "\\b[^`]*)`")
+	var cmds []string
+	for _, line := range strings.Split(doc, "\n") {
+		if strings.Contains(line, "tailscale ssh") {
+			for _, m := range inSSH.FindAllStringSubmatch(line, -1) {
+				cmds = append(cmds, m[1])
+			}
+		}
+		for _, m := range inline.FindAllStringSubmatch(line, -1) {
+			cmds = append(cmds, m[1])
+		}
+	}
+	if len(cmds) < 15 {
+		t.Fatalf("measured nothing: %d commands found in the runbook", len(cmds))
+	}
+	for _, c := range cmds {
+		rec := &recorder{}
+		var o, e bytes.Buffer
+		cl := rec.cli(&o, &e, map[string]string{tokenEnv: canary})
+		cl.stdin = strings.NewReader(formatRecoveryCode(bytes.Repeat([]byte{1}, 32)))
+		cl.stateDir = filepath.Join(t.TempDir(), "state")
+		cl.configPath = filepath.Join(t.TempDir(), "none")
+		if code := cl.run(strings.Fields(c)); code != 0 {
+			t.Errorf("runbook command %q: exit %d, %s", "rollcall "+c, code, strings.TrimSpace(e.String()))
+		}
 	}
 }

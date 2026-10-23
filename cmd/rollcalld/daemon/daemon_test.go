@@ -231,18 +231,29 @@ func storedBootSeq(t *testing.T, dir string) uint64 {
 	return v.BootSeq
 }
 
-// TestRebuildTakesNewBootSeq: a node that started again in the same boot
-// (after set-token) sends under a higher boot sequence number, which its
-// peers accept; a daemon that waits for init never takes a new number, so
-// it writes nothing to flash while it waits.
+// TestRebuildTakesNewBootSeq: set-token gives the running node its token
+// without a restart, so it sends on under the same boot sequence number; a
+// node started again in the same boot (after a join) sends under a higher
+// one, which its peers accept; a daemon that waits for init or a roster
+// never takes a new number, so it writes nothing to flash while it waits.
 func TestRebuildTakesNewBootSeq(t *testing.T) {
 	f := newFixture(t, true, false)
 	h := start(t, f.dir, nil)
 	h.run(6 * time.Second)
-	first := bootSeqOf(t, f.key, h.net.last())
+	nd, first := h.d.current(), bootSeqOf(t, f.key, h.net.last())
 	if _, err := h.handle("set-token", canary); err != nil {
 		t.Fatal(err)
 	}
+	h.run(6 * time.Second)
+	if h.d.current() != nd {
+		t.Fatal("set-token started a new node")
+	}
+	if seq := bootSeqOf(t, f.key, h.net.last()); seq != first {
+		t.Fatalf("boot sequence number %d after set-token, want %d", seq, first)
+	}
+	h.d.mu.Lock()
+	h.d.rebuild = true
+	h.d.mu.Unlock()
 	h.run(6 * time.Second)
 	if again := bootSeqOf(t, f.key, h.net.last()); again <= first {
 		t.Fatalf("boot sequence number %d after the restart of the node, want more than %d", again, first)
@@ -361,6 +372,7 @@ func TestBindTelegramPingsFirst(t *testing.T) {
 	if _, err := h.handle("bind-telegram"); err == nil || !strings.Contains(err.Error(), "set-token") {
 		t.Fatalf("bind-telegram without a token: %v", err)
 	}
+	nd := h.d.current()
 	if _, err := h.handle("set-token", canary); err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +412,10 @@ func TestBindTelegramPingsFirst(t *testing.T) {
 	pings := tg.pings.Load()
 	h.run(2 * time.Second)
 	if tg.pings.Load() == pings {
-		t.Fatal("the node started after the binding does not ping Telegram")
+		t.Fatal("the node does not ping Telegram after the binding")
+	}
+	if h.d.current() != nd {
+		t.Fatal("the binding started a new node")
 	}
 	if st := h.status()["telegram"].(map[string]any)["state"]; st != "ok" {
 		t.Fatalf("telegram state %v after the binding, want ok", st)
@@ -937,5 +952,45 @@ func TestSystemClock(t *testing.T) {
 	}
 	if m := SystemClock(t.TempDir()).Mono(); m > time.Second {
 		t.Fatalf("without proc/uptime Mono starts at %s, want 0", m)
+	}
+}
+
+// flagsOf returns the flags byte of a heartbeat packet (member's layout:
+// offset 53 of the heartbeat; ClockTrusted is 4).
+func flagsOf(t *testing.T, k epoch.Key, b []byte) byte {
+	t.Helper()
+	pk, _ := wire.PacketKey(k.Secret)
+	_, pt, err := wire.Open(func(uint32) ([]byte, bool) { return pk, true }, b)
+	if err != nil || len(pt) < 1+54 || pt[0] != 1 {
+		t.Fatalf("not a heartbeat: %v", err)
+	}
+	return pt[1+53]
+}
+
+// TestClockSynced: notify clock-synced marks the clock trusted, which the
+// heartbeats say from then on, also from a node started again in this boot.
+func TestClockSynced(t *testing.T) {
+	f := newFixture(t, false, false)
+	h := start(t, f.dir, nil)
+	h.run(6 * time.Second)
+	if flagsOf(t, f.key, h.net.last())&4 != 0 {
+		t.Fatal("the clock is trusted before ntpd said so")
+	}
+	if r, err := h.handle("notify", "clock-synced"); err != nil || !r.OK {
+		t.Fatalf("notify clock-synced: %+v %v", r, err)
+	}
+	h.run(6 * time.Second)
+	if flagsOf(t, f.key, h.net.last())&4 == 0 {
+		t.Fatal("the heartbeat does not say the clock is trusted")
+	}
+	h.d.mu.Lock()
+	h.d.rebuild = true
+	h.d.mu.Unlock()
+	h.run(6 * time.Second)
+	if flagsOf(t, f.key, h.net.last())&4 == 0 {
+		t.Fatal("a node started again in this boot forgot the synchronised clock")
+	}
+	if _, err := h.d.Handle("notify", []string{"clock-synced", "now"}, 0); err == nil {
+		t.Fatal("notify clock-synced with an argument was accepted")
 	}
 }

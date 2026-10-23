@@ -2,7 +2,7 @@
 
 This runbook proves the v1 group on three lab routers: flint2 (primary and sender), beryl1 (backup admin) and beryl2. It uses Tailscale SSH to the routers and, for the hostile-LAN checks, the Mac on flint2's LAN. No other router is used.
 
-**Status: draft, written before the CLI has its commands.** `cmd/rollcall` is still a stub in this tree. Every command below follows the plan (Task 21) and the specs in `docs/superpowers/specs/`, and the status report is described in `luci-app-rollcall/STATUS-JSON.md`. The first run checks each command against the CLI's own usage text. If one differs, correct it here in the same change, and do not improvise on a router.
+**Status: draft, not yet run.** The commands below were checked against `rollcall help` of Task 21 (fix round 1). The status report is described in `luci-app-rollcall/STATUS-JSON.md`. If a command differs from the CLI's usage text on the first run, correct it here in the same change, and do not improvise on a router.
 
 ## Rules for the run
 
@@ -74,16 +74,19 @@ Expected: apk installs the packages and resolves the dependencies (`procd-seccom
 
 ## 3. Init, join, roles, token and bind
 
-The members are named `flint2`, `beryl1` and `beryl2`. The plan does not say how `init` and `join` take a name, so check that on the first run and use these names.
+The members are named `flint2`, `beryl1` and `beryl2`. `init` and `join` take the name with `--name`; without it they use the router's hostname, and refuse one that is not a valid name (a-z, 0-9 and `-`, at most 32 characters).
+
+The daemon reads `/etc/config/rollcall` when it starts, and it sends to Telegram only on a router with `option sender '1'` there. The postinst enables the service but does not start it. `init` works on the state directory by itself; `join` runs inside the daemon, so the daemon is started before `join`.
 
 ### 3.1 Init on flint2 (primary)
 
 ```sh
-tailscale ssh root@flint2 'rollcall init'
+tailscale ssh root@flint2 "uci set rollcall.main.sender='1' && uci commit rollcall"
+tailscale ssh root@flint2 'rollcall init --name flint2 && /etc/init.d/rollcall enable && /etc/init.d/rollcall start && sleep 5'
 lab_members
 ```
 
-Expected: the group is created and the recovery code is printed once. Write the recovery code on paper and keep it offline. Do not paste it into a file, a chat or a command in this runbook. `lab_members` prints `True [('flint2', 'up', ['primary'])]` or the same with the name the CLI chose.
+Expected: the group is created and the recovery code is printed once. Write the recovery code on paper and keep it offline. Do not paste it into a file, a chat or a command in this runbook. `lab_members` prints `True [('flint2', 'up', ['primary'])]`.
 
 ### 3.2 Invite and join beryl1
 
@@ -91,10 +94,10 @@ Expected: the group is created and the recovery code is printed once. Write the 
 tailscale ssh root@flint2 'rollcall invite'
 ```
 
-Expected: a join code, valid for 10 minutes and for one use. Copy it by hand into the next command.
+Expected: a line saying the join window is open for 10 minutes, then the join code on its own line, valid for one use. Copy it by hand into the next command. The code names the first IPv4 address of flint2's peer-zone interfaces; if beryl1 cannot reach that address, run `rollcall invite --address <an address of flint2 that beryl1 reaches>` instead.
 
 ```sh
-tailscale ssh root@beryl1 'rollcall join <join code>'
+tailscale ssh root@beryl1 '/etc/init.d/rollcall enable && /etc/init.d/rollcall start && sleep 5 && rollcall join --name beryl1 <join code>'
 lab_members
 ```
 
@@ -114,7 +117,7 @@ Expected: `beryl1` shows `backup` in `lab_members`. The last command prints `bac
 
 ```sh
 tailscale ssh root@flint2 'rollcall invite'
-tailscale ssh root@beryl2 'rollcall join <join code>'
+tailscale ssh root@beryl2 '/etc/init.d/rollcall enable && /etc/init.d/rollcall start && sleep 5 && rollcall join --name beryl2 <join code>'
 lab_members
 ```
 
@@ -127,7 +130,7 @@ tailscale ssh root@flint2 'rollcall roles sender -- flint2'
 lab_members
 ```
 
-Expected: `flint2` shows `primary` and `sender`. Only senders hold the bot token.
+Expected: `flint2` shows `primary` and `sender`. Only senders hold the bot token: `set-token` refuses on a router without the sender role. flint2 got `option sender '1'` in step 3.1, before its daemon started.
 
 ### 3.6 Set the bot token on flint2
 
@@ -137,7 +140,7 @@ The token is in the environment on the Mac, loaded from the local secrets file t
 printf '%s\n' "$TELEGRAM_ROLLCALL_TOKEN" | tailscale ssh root@flint2 'IFS= read -r TELEGRAM_ROLLCALL_TOKEN && export TELEGRAM_ROLLCALL_TOKEN && rollcall set-token'
 ```
 
-Expected: `rollcall` confirms in plain English. The reply never repeats the token. If the variable is empty on the Mac, `set-token` reports that no token is set.
+Expected: `Bot token saved. Run rollcall bind-telegram next to bind the chat.` The reply never repeats the token. If the variable is empty on the Mac, `set-token` reports that `TELEGRAM_ROLLCALL_TOKEN is not set`. It never takes the token as an argument.
 
 Check that no token-shaped string reached the router log, without printing anything secret:
 
@@ -153,7 +156,7 @@ Expected: `0`. Any other number means a token was logged. Revoke the token in Bo
 tailscale ssh root@flint2 'rollcall bind-telegram'
 ```
 
-Expected: a bind code, valid for 10 minutes. The operator sends it to the bot in a private chat from the phone. Then:
+Expected: a line asking to send the code to the bot within 10 minutes, then the bind code on its own line (10 digits). `bind-telegram` checks the token with Telegram first, so a wrong token fails at once. The operator sends the code to the bot in a private chat from the phone. Then:
 
 ```sh
 tailscale ssh root@flint2 'rollcall status --json' | python3 -c 'import json,sys; print(json.load(sys.stdin)["telegram"])'
@@ -185,7 +188,7 @@ The device binding of the listener is the last sandbox question:
 tailscale ssh root@flint2 'logread -e rollcall | grep -i -E "device|bind"'
 ```
 
-Expected: one line per listener that says whether `SO_BINDTODEVICE` was applied. The specs do not fix that wording, so copy the line as it is into the results log (step 10). If no such line exists, record that the daemon does not log the binding. Do not record it as working.
+Expected: one line at each start, `rollcalld <version>: listening on port 7432 on <devices>; SO_BINDTODEVICE applied: true` (or `false`, when the kernel refused the pin to the unprivileged daemon). Copy the line as it is into the results log (step 10). If no such line exists, record that the daemon does not log the binding. Do not record it as working.
 
 ## 5. Topology A: routers as wired (separate LANs on one upstream switch)
 

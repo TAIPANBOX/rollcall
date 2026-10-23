@@ -70,7 +70,8 @@ Admins:
 
 State:
   rollcall status [--json]
-  rollcall notify going-down | iface <action> <interface> | uplink <interface>
+  rollcall notify going-down | clock-synced | iface <action> <interface> | uplink <interface>
+      what the init script and hotplug tell rollcalld
   rollcall version
 
 The router name defaults to the hostname. Names are 1 to 32 characters from
@@ -495,12 +496,12 @@ func (c *cli) notify(args []string) error {
 	w := p.words
 	switch {
 	case p.sep:
-	case len(w) == 1 && w[0] == "going-down":
+	case len(w) == 1 && (w[0] == "going-down" || w[0] == "clock-synced"):
 		return c.admin(p.json, "notify", w...)
 	case len(w) == 3 && w[0] == "iface":
 		return c.admin(p.json, "notify", w...)
 	case len(w) == 2 && w[0] == "uplink":
 		return c.admin(p.json, "notify", w...)
 	}
-	return badUsage("rollcall notify going-down | iface <action> <interface> | uplink <interface>")
+	return badUsage("rollcall notify going-down | clock-synced | iface <action> <interface> | uplink <interface>")
 }

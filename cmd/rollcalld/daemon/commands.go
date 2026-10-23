@@ -37,7 +37,7 @@ import (
 // which the control server sends as the refusal text, redacted.
 //
 //	status
-//	notify going-down | iface <action> <iface> | uplink <iface>
+//	notify going-down | clock-synced | iface <action> <iface> | uplink <iface>
 //	invite <sender 0|1> <address or "">
 //	join <code> <name>
 //	remove <name>
@@ -187,6 +187,17 @@ func (d *Daemon) notify(args []string) ([]byte, error) {
 			d.o.Logf("rollcalld: shutdown marker not written: %v", err)
 		}
 		return ok("The other routers were told that this router is going down.")
+	case len(args) == 1 && args[0] == "clock-synced":
+		// OpenWrt's ntpd reported a usable stratum or stepped the clock
+		// (hotplug.d/ntp/50-rollcall): the wall clock holds for this boot.
+		d.mu.Lock()
+		d.trusted = true
+		nd := d.nd
+		d.mu.Unlock()
+		if nd != nil {
+			nd.SetClockTrusted(true)
+		}
+		return ok("Noted: the clock is synchronised.")
 	case len(args) == 3 && args[0] == "iface":
 		if !validWord(args[1], 16) || !validIface(args[2]) {
 			return nil, errArgs
@@ -511,25 +522,27 @@ func (d *Daemon) setToken(token string) ([]byte, error) {
 	if !validToken(token) {
 		return nil, errors.New("that is not a bot token")
 	}
-	if _, err := d.senderSelf(); err != nil {
+	nd, err := d.senderSelf()
+	if err != nil {
 		return nil, err
 	}
+	d.secMu.Lock()
+	defer d.secMu.Unlock()
 	d.mu.Lock()
 	// The bound chat stays: a token revoked in @BotFather is replaced by a
 	// new token of the same bot, which still reaches that chat.
 	chat := d.chatID
-	err := node.SaveSecrets(d.st, token, chat)
-	if err == nil {
-		d.token, d.chatID, d.rebuild = token, chat, true
-		if d.binding != nil {
-			d.binding()
-			d.binding = nil
-		}
-	}
 	d.mu.Unlock()
-	if err != nil {
+	if err := nd.SetSecrets(pairing.Secrets{BotToken: token, ChatID: chat}, d.channelFor(token, chat)); err != nil {
 		return nil, fmt.Errorf("the token was not saved: %w", err)
 	}
+	d.mu.Lock()
+	d.token, d.chatID = token, chat
+	if d.binding != nil {
+		d.binding()
+		d.binding = nil
+	}
+	d.mu.Unlock()
 	msg := "Bot token saved."
 	if chat == 0 {
 		msg += " Run rollcall bind-telegram next to bind the chat."
@@ -579,19 +592,28 @@ func (d *Daemon) bindTelegram() ([]byte, error) {
 func (d *Daemon) awaitBinding(ctx context.Context, stop context.CancelFunc, tg *channel.Telegram, token, code string) {
 	defer stop()
 	chat, err := tg.BindChat(ctx, code, bindWindow)
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if err != nil || d.token != token {
-		if err != nil && ctx.Err() == nil {
+	if err != nil {
+		if ctx.Err() == nil {
 			d.o.Logf("rollcalld: chat binding ended without a chat: %s", plain(err))
 		}
 		return
 	}
-	if err := node.SaveSecrets(d.st, token, chat); err != nil {
-		d.o.Logf("rollcalld: the bound chat was not saved: %v", err)
+	d.secMu.Lock()
+	defer d.secMu.Unlock()
+	d.mu.Lock()
+	same := d.token == token
+	d.mu.Unlock()
+	nd, err := d.running()
+	if !same || err != nil {
 		return
 	}
-	d.chatID, d.rebuild = chat, true
+	if err := nd.SetSecrets(pairing.Secrets{BotToken: token, ChatID: chat}, d.channelFor(token, chat)); err != nil {
+		d.o.Logf("rollcalld: the bound chat was not saved: %s", plain(err))
+		return
+	}
+	d.mu.Lock()
+	d.chatID = chat
+	d.mu.Unlock()
 	d.o.Logf("rollcalld: chat bound")
 }
 

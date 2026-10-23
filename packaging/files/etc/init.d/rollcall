@@ -21,9 +21,13 @@ start_service() {
 	mkdir -p /var/run/rollcall
 	chown root:rollcall /var/run/rollcall
 	chmod 0770 /var/run/rollcall
+	# The run-time directory (-run) is mounted into the jail too, so it must exist first.
+	mkdir -p /tmp/rollcall
+	chown rollcall:rollcall /tmp/rollcall
+	chmod 0700 /tmp/rollcall
 
 	procd_open_instance
-	procd_set_param command "$DAEMON" -config /etc/config/rollcall -state /etc/rollcall -run /var/run/rollcall
+	procd_set_param command "$DAEMON" -config /etc/config/rollcall -state /etc/rollcall -run /tmp/rollcall
 	procd_set_param user rollcall
 	procd_set_param group rollcall
 	procd_set_param no_new_privs 1
@@ -35,7 +39,9 @@ start_service() {
 	if [ "$icmp" = 1 ]; then
 		procd_set_param capabilities /etc/capabilities/rollcall.json
 	fi
-	procd_add_jail rollcall log requirejail
+	# procfs and sysfs: the daemon reads its boot ID, its own sandbox state, the routes and the
+	# interface state from /proc and /sys.
+	procd_add_jail rollcall log procfs sysfs requirejail
 	procd_add_jail_mount_rw /etc/rollcall /tmp/rollcall /var/run/rollcall
 	procd_add_jail_mount /etc/config/rollcall /etc/config/firewall /etc/config/system /etc/config/network /etc/openwrt_release /etc/ssl/certs /usr/share/zoneinfo
 	procd_close_instance
