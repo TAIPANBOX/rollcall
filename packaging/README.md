@@ -12,7 +12,7 @@ and the generator that writes one profile per architecture. `scripts/mkipk.sh` a
 | `/usr/bin/rollcalld`, `/usr/bin/rollcall` | daemon and CLI (built by the Makefile) |
 | `/etc/init.d/rollcall` | procd service: user `rollcall`, `no_new_privs`, jail, control directory, and the snapshot written as root before each start; no procd seccomp profile (the daemon installs its own filter) |
 | `/etc/hotplug.d/iface/50-rollcall` | forwards interface events to `rollcall notify iface` and writes the snapshot again (`rollcall snapshot`), both in the background |
-| `/etc/hotplug.d/ntp/50-rollcall` | tells the daemon the clock is synchronised (`rollcall notify clock-synced`), in the background |
+| `/etc/hotplug.d/ntp/50-rollcall` | tells the daemon the clock is synchronised (`rollcall notify clock-synced`), in the background, on busybox ntpd's `step`, and on `stratum` or `periodic` with a stratum below 16, so a daemon started after the clock synced hears it within about 11 minutes |
 | `/etc/config/rollcall` | site configuration; kept across upgrades |
 | `/etc/uci-defaults/90-rollcall` | builds the firewall rules at first boot and after an upgrade (`/etc/init.d/rollcall firewall`) |
 | `/etc/seccomp/rollcall.json` | the system call allow-list of the target architecture in procd's format: the readable record of the filter rollcalld installs itself from the same lists; procd does not load it |

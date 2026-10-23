@@ -1,17 +1,26 @@
 #!/bin/sh
-# OpenWrt's ntpd runs this through hotplug with ACTION (stratum, step, unsync or periodic) and
-# the variable stratum. Once the clock is synchronised, the CLI tells the daemon, so its events
-# carry a trusted wall clock; the daemon never asks ubus. Hotplug must never block: the call runs
-# in the background, detached from hotplug's output, under a 5 s limit where busybox has
-# timeout, and every failure is quiet.
+# busybox ntpd runs /usr/sbin/ntpd-hotplug, which hands this script ACTION (stratum, step,
+# unsync or periodic) and ntpd's variable stratum. Once the clock is synchronised, the CLI tells
+# the daemon, so its events carry a trusted wall clock; the daemon never asks ubus.
+#
+# stratum comes when the stratum of a synchronised clock changes, step when ntpd steps the
+# clock. periodic comes every 11 minutes after the last run, synchronised or not, with stratum
+# 16 while ntpd has no time source: with a stratum below 16 it tells a daemon started after the
+# clock synced (a restart, or an install on a running router), which heard neither of the
+# others, within about 11 minutes. Nothing else tells it sooner: busybox ntpd never sets the
+# kernel's maximum error, so adjtimex reports STA_UNSYNC even on a synchronised clock, and the
+# only other trace, /var/state/dnsmasqsec, belongs to dnsmasq.
+#
+# Hotplug must never block: the call runs in the background, detached from hotplug's output,
+# under a 5 s limit where busybox has timeout, and every failure is quiet.
 [ -x /usr/bin/rollcall ] || exit 0
 case "$ACTION" in
 step) ;;
-stratum)
+stratum | periodic)
 	case "$stratum" in
 	'' | *[!0-9]*) exit 0 ;;
 	esac
-	[ "$stratum" -lt 16 ] || exit 0
+	[ "$stratum" -lt 16 ] 2>/dev/null || exit 0
 	;;
 *) exit 0 ;;
 esac
