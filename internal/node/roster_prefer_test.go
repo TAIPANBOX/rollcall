@@ -2,7 +2,6 @@ package node
 
 import (
 	"bytes"
-	"fmt"
 	"testing"
 
 	"github.com/TAIPANBOX/rollcall/internal/identity"
@@ -43,26 +42,22 @@ func TestPreferJudgesVersionByTheTips(t *testing.T) {
 	}
 	rename := func(site string) func(r *roster.Roster) { return func(r *roster.Roster) { r.Site = site } }
 
-	x1s, x1 := nextRoster(t, common, g.first, p, rename("long-1"))
-	x2s, x2 := nextRoster(t, x1, x1s, p, rename("long-2"))
+	// Two first rosters after common; the one with the lower hash is the
+	// short branch's only roster, so that a choice made on the first rosters
+	// alone would keep it, and the long branch grows from the other. Taking
+	// the order as it falls, rather than searching for a lower hash, keeps
+	// the test deterministic whatever the fixture's random keys.
+	as, a := nextRoster(t, common, g.first, p, rename("first-a"))
+	bs, b := nextRoster(t, common, g.first, p, rename("first-b"))
+	ha, hb := as.Hash(), bs.Hash()
+	if bytes.Compare(ha[:], hb[:]) > 0 {
+		as, a, bs, b = bs, b, as, a
+	}
+	short, rShort := []roster.Signed{as}, []roster.Roster{a}
+	x2s, x2 := nextRoster(t, b, bs, p, rename("long-2"))
 	x3s, x3 := nextRoster(t, x2, x2s, p, rename("long-3"))
-	long := []roster.Signed{x1s, x2s, x3s}
-	rLong := []roster.Roster{x1, x2, x3}
-
-	// The short branch's only roster gets the lower hash, so that a choice
-	// made on the first rosters alone would keep it.
-	var short []roster.Signed
-	var rShort []roster.Roster
-	hx := x1s.Hash()
-	for k := 0; k < 64 && short == nil; k++ {
-		s, r := nextRoster(t, common, g.first, p, rename(fmt.Sprintf("short-%d", k)))
-		if hs := s.Hash(); bytes.Compare(hs[:], hx[:]) < 0 {
-			short, rShort = []roster.Signed{s}, []roster.Roster{r}
-		}
-	}
-	if short == nil {
-		t.Fatal("no short branch with the lower hash in 64 tries")
-	}
+	long := []roster.Signed{bs, x2s, x3s}
+	rLong := []roster.Roster{b, x2, x3}
 
 	if !preferTheirs(long, short, rLong, rShort, common) {
 		t.Error("theirs at version 4 lost to ours at version 2, both started by the primary")
