@@ -102,3 +102,24 @@ func TestRestartDuringOutageOneMessage(t *testing.T) {
 		t.Fatalf("messages about the internet %q; want one, from the start of the outage to its end", ms)
 	}
 }
+
+// TestEndKnownWhileRateLimited (D5): another router loses its internet; the
+// sender's first try to tell it is refused (rate limited), and the restore
+// is recorded before the next try. The sender holds the loss back until
+// the restore joins it: one message with the whole outage.
+func TestEndKnownWhileRateLimited(t *testing.T) {
+	g := newGroup(t, setup{n: 2, senders: map[int]int{0: 1}})
+	g.run(90 * sec)
+	g.chat.mu.Lock()
+	g.chat.limited, g.chat.limitWait = 1, 30*sec
+	g.chat.mu.Unlock()
+	b := g.nodes[1]
+	b.LocalEvent(events.Event{Type: events.InternetLost})
+	g.run(35 * sec)
+	b.LocalEvent(events.Event{Type: events.InternetRestored})
+	g.run(time.Minute)
+	t.Logf("chat:\n%s", strings.Join(g.chat.all(), "\n"))
+	if ms := g.chat.messages("internet"); len(ms) != 1 || !strings.Contains(ms[0], "internet was down") {
+		t.Fatalf("messages about the internet %q; want one with the whole outage", ms)
+	}
+}

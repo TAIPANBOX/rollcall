@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/TAIPANBOX/rollcall/internal/clock"
+	"github.com/TAIPANBOX/rollcall/internal/deliver"
 	"github.com/TAIPANBOX/rollcall/internal/epoch"
 	"github.com/TAIPANBOX/rollcall/internal/events"
 	"github.com/TAIPANBOX/rollcall/internal/history"
@@ -174,6 +175,9 @@ type chat struct {
 	msgs  []chatMsg
 	pings map[string][]time.Duration
 	down  bool // Telegram cannot be reached: every call fails
+	// limited sends are refused as rate limited, asking for limitWait.
+	limited   int
+	limitWait time.Duration
 }
 
 // setDown makes Telegram unreachable, or reachable again.
@@ -199,6 +203,10 @@ func (f *fakeChannel) Send(_ context.Context, text string) error {
 	defer f.c.mu.Unlock()
 	if f.c.down {
 		return errUnreachable
+	}
+	if f.c.limited > 0 {
+		f.c.limited--
+		return &deliver.RateLimitError{RetryAfter: f.c.limitWait}
 	}
 	f.c.msgs = append(f.c.msgs, chatMsg{by: f.by, text: text, at: f.c.clk.Mono()})
 	return nil
