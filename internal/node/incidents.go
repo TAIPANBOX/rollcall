@@ -477,25 +477,56 @@ func (n *Node) toldAlreadyLocked(evs []events.Event) bool {
 
 // cutOffViewLocked reports whether e, a member's record of another member's
 // absence, is only what a router that was cut off itself saw (D9): a third
-// member recorded the witness silent over the moment of e, and no member but
+// member recorded the witness silent over the moment of e, the subject
+// itself recorded the witness silent over that moment too, and no member but
 // the witness and the subject recorded the subject absent then. A router
 // that loses its own link sees every other member go silent and come back;
 // the others, who heard each other all along, recorded its absence, which is
 // the one incident. In a group of two nobody is a third, and both views stay.
+//
+// The subject's own record is what tells a cut-off witness from a true
+// outage that one compromised member hides (N1): in a group of three, a
+// member that records the witness silent and keeps quiet about the subject
+// would otherwise drop the witness's true record of the subject's outage.
+// A subject that is really down records nobody silent; one that is up and
+// lost the witness, as every member that heard the others did, records it.
 func (n *Node) cutOffViewLocked(e events.Event) bool {
 	w, x := e.Witness, e.Subject
 	if !absence(e.Type) || events.Own(e) || w == x || x == (ids.MemberID{}) {
 		return false
 	}
-	win := events.DefaultWindow
 	at := e.At.Wall
-	// The witness's absence as each third member saw it: from its silence
-	// record to its next return record, if any.
-	var from, to time.Time
-	cut := false
+	from, to, cut := n.silentOverLocked(w, at, func(by ids.MemberID) bool { return by != w && by != x })
+	if !cut {
+		return false
+	}
+	if _, _, seen := n.silentOverLocked(w, at, func(by ids.MemberID) bool { return by == x }); !seen {
+		return false // the subject did not lose the witness: the witness saw a true absence
+	}
+	win := events.DefaultWindow
 	for _, f := range n.inc.evs {
 		g := f.ev
-		if g.Subject != w || g.Witness == w || g.Witness == x || g.Type != events.MemberSilent || g.At.Wall.After(at.Add(win)) {
+		if g.Subject != x || g.Witness == w || g.Witness == x || !absence(g.Type) {
+			continue
+		}
+		if !g.At.Wall.Before(from.Add(-win)) && (to.IsZero() || !g.At.Wall.After(to.Add(win))) {
+			return false // a third member saw the subject absent too
+		}
+	}
+	return true
+}
+
+// silentOverLocked reports whether a member that witness accepts recorded w
+// silent over the moment at, within the coalescing window: a silence record
+// of w stamped no later than the window after at, whose next return record
+// of w by the same member, if any, is not earlier than the window before at.
+// It returns the first such absence of w, from its silence to that return
+// (zero if none).
+func (n *Node) silentOverLocked(w ids.MemberID, at time.Time, witness func(ids.MemberID) bool) (from, to time.Time, ok bool) {
+	win := events.DefaultWindow
+	for _, f := range n.inc.evs {
+		g := f.ev
+		if g.Subject != w || g.Witness == w || !witness(g.Witness) || g.Type != events.MemberSilent || g.At.Wall.After(at.Add(win)) {
 			continue
 		}
 		end := time.Time{}
@@ -507,23 +538,10 @@ func (n *Node) cutOffViewLocked(e events.Event) bool {
 			}
 		}
 		if end.IsZero() || !end.Before(at.Add(-win)) {
-			cut, from, to = true, g.At.Wall, end
-			break
+			return g.At.Wall, end, true
 		}
 	}
-	if !cut {
-		return false
-	}
-	for _, f := range n.inc.evs {
-		g := f.ev
-		if g.Subject != x || g.Witness == w || g.Witness == x || !absence(g.Type) {
-			continue
-		}
-		if !g.At.Wall.Before(from.Add(-win)) && (to.IsZero() || !g.At.Wall.After(to.Add(win))) {
-			return false // a third member saw the subject absent too
-		}
-	}
-	return true
+	return time.Time{}, time.Time{}, false
 }
 
 // distrustedLocked returns, for every member whose chain forked in the log,
