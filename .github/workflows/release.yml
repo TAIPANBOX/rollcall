@@ -212,9 +212,12 @@ jobs:
         with:
           subject-path: 'release/*'
 
+      # This job checks nothing out, so gh is told the repository: without GH_REPO it looks for a
+      # git checkout and fails ("not a git repository"), as it did for v1.0.0-rc1.
       - name: Publish the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
           set -eu
