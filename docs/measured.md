@@ -206,16 +206,16 @@ epoch 94.34%, roster 93.33%, history 90.65%, deliver 90.57%, pairing 84.69%, ele
 
 ## Tests on a workstation
 
-`go test ./... -count=1 -json` on 2026-10-23 at 19:40 BST, commit `b2f9618`, Go 1.27.3 on
-darwin/arm64: 869 top-level tests passed, 0 failed, 4 skipped, and 902 subtests passed. The four
-skips: two gates that read what CI prepares (`ROLLCALL_COVERAGE`, `ROLLCALL_PACKAGES`), the ICMP
-probe (it needs a raw socket), and one link-local test that does not apply to macOS's loopback. An
-earlier run at 18:44 on `80c38d8` counted 848 and 867, with 31 packages passed and two without
-tests.
+`go test ./... -count=1 -json` on 2026-10-23 at 22:20 BST, commit `cafed12`, Go 1.27.3 on
+darwin/arm64: 871 top-level tests passed, 0 failed, 4 skipped, and 913 subtests passed; 31 packages
+passed, two have no tests. The four skips: two gates that read what CI prepares
+(`ROLLCALL_COVERAGE`, `ROLLCALL_PACKAGES`), the ICMP probe (it needs a raw socket), and one
+link-local test that does not apply to macOS's loopback. Earlier runs that day: 869 and 902 at
+19:40 on `b2f9618`, 848 and 867 at 18:44 on `80c38d8`.
 
-Coverage on `b2f9618`, every statement of `internal/...` together: 94.4%
-(`go test -coverprofile=internal.out ./internal/... && go tool cover -func=internal.out`). On
-`80c38d8` it was 94.3%, from 90.4% (`internal/node`) to 100% per package. CI over `./...` with
+Coverage on `cafed12`, every statement of `internal/...` together: 94.4%
+(`go test -coverprofile=internal.out ./internal/... && go tool cover -func=internal.out`), as on
+`b2f9618`. On `80c38d8` it was 94.3%, from 90.4% (`internal/node`) to 100% per package. CI over `./...` with
 `-race` on `4186091`: 90.3%. On macOS the code that installs the seccomp filter does not run; the
 CI legs above run it. The CI gate keeps coverage from falling below `coverage-baseline.txt`, which
 holds 90.0 since commit `2f3f314`.
