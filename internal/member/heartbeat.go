@@ -47,7 +47,8 @@
 //
 //   - From and Boot not all zero, BootSeq at least 1;
 //   - Name a valid roster name (roster.ValidName: 1 to roster.MaxNameLen
-//     characters from a-z, 0-9 and '-'); the sender's name in the roster;
+//     characters from a-z, 0-9 and '-'): the name the sender gives itself,
+//     not compared with the roster and never shown;
 //   - each version empty (unknown) or up to MaxVersionLen characters from
 //     A-Z, a-z, 0-9 and ". - + _ ~", so no space, quote, slash or control
 //     character reaches a message;
@@ -134,12 +135,15 @@ var (
 
 // Heartbeat is what a member says about itself every Interval (design 4.2).
 type Heartbeat struct {
-	Epoch        uint32        // the epoch whose key seals the packet
-	From         ids.MemberID  // the sender
-	BootSeq      uint64        // the sender's boot sequence number
-	Boot         ids.BootID    // the sender's boot ID
-	Counter      uint64        // the sender's packet counter in this boot
-	Name         string        // the sender's name in the roster
+	Epoch   uint32       // the epoch whose key seals the packet
+	From    ids.MemberID // the sender
+	BootSeq uint64       // the sender's boot sequence number
+	Boot    ids.BootID   // the sender's boot ID
+	Counter uint64       // the sender's packet counter in this boot
+	// Name is the name the sender gives itself. It is checked only as a
+	// valid roster name and never shown: every name a message or the status
+	// shows comes from the roster, by member ID.
+	Name         string
 	Uptime       time.Duration // since the sender booted
 	Versions     [2]string     // the OpenWrt release and the rollcall version; empty when unknown
 	WanUp        bool          // the sender's WAN interface is up
