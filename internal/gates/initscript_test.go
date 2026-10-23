@@ -225,7 +225,8 @@ func init() {
 			name: "initscript_ronly_removed", gate: "TestInitScriptHardening",
 			plant: func(t *testing.T, dst string) {
 				editCopy(t, dst, initScriptRel, func(s string) string {
-					return strings.Replace(s, " ronly", "", 1)
+					return strings.Replace(s, "procd_add_jail rollcall log procfs sysfs ronly requirejail",
+						"procd_add_jail rollcall log procfs sysfs requirejail", 1)
 				})
 			},
 			outcome: wantFail, expect: "no 'ronly'",
