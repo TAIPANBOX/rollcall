@@ -29,6 +29,12 @@ const daemonMainRel = "cmd/rollcalld/main.go"
 // controlDirConst finds the value of ControlDirPath in the daemon's source.
 var controlDirConst = regexp.MustCompile(`ControlDirPath\s*=\s*"([^"]+)"`)
 
+// jailResolver are the read-only mounts the daemon resolves api.telegram.org and probe host names
+// through. On OpenWrt 24.10 and 25.12 /etc/resolv.conf links to /tmp/resolv.conf, which boot links
+// to /tmp/resolv.conf.d/resolv.conf.auto and dnsmasq may replace with a file, so the jail carries
+// all three: whichever way ujail stages /etc/resolv.conf, the file it names is there.
+var jailResolver = []string{"/etc/resolv.conf", "/tmp/resolv.conf", "/tmp/resolv.conf.d"}
+
 // TestInitScriptHardening reads the service file and requires the hardening that every rollcall
 // process runs with (invariant 13): its own user, no_new_privs, the seccomp profile and a jail
 // with requirejail, so the daemon never starts unsandboxed. It also refuses ubus, which the
@@ -108,6 +114,7 @@ func initScriptProblems(text string) []string {
 	var problems []string
 	present := map[string]bool{}
 	jailed, readOnly := false, false
+	roMounts := map[string]bool{}
 	// One entry per open if block: true when the block's condition tests the icmp option.
 	var ifStack []bool
 	inICMP := func() bool {
@@ -138,6 +145,10 @@ func initScriptProblems(text string) []string {
 			if !inICMP() {
 				problems = append(problems, "capabilities set outside the icmp branch: "+line)
 			}
+		case strings.HasPrefix(line, "procd_add_jail_mount "):
+			for _, p := range strings.Fields(line)[1:] {
+				roMounts[p] = true
+			}
 		case strings.HasPrefix(line, "procd_add_jail rollcall"):
 			if hasWord(line, "requirejail") {
 				jailed = true
@@ -159,6 +170,11 @@ func initScriptProblems(text string) []string {
 	}
 	// Security section 7: the jail's root is read-only; only the procd_add_jail_mount_rw paths
 	// are writable. procd.sh turns the word ronly into ujail -o, which remounts / read-only.
+	for _, p := range jailResolver {
+		if !roMounts[p] {
+			problems = append(problems, "the jail does not mount "+p+" read-only: the daemon could not resolve api.telegram.org inside it")
+		}
+	}
 	if !readOnly {
 		problems = append(problems, "no 'ronly' on the procd_add_jail rollcall line: the jail's root would be writable (security section 7)")
 	}
@@ -230,6 +246,15 @@ func init() {
 				})
 			},
 			outcome: wantFail, expect: "no 'ronly'",
+		},
+		toothCase{
+			name: "initscript_resolv_conf_removed", gate: "TestInitScriptHardening",
+			plant: func(t *testing.T, dst string) {
+				editCopy(t, dst, initScriptRel, func(s string) string {
+					return strings.Replace(s, " /etc/resolv.conf /tmp/resolv.conf /tmp/resolv.conf.d", "", 1)
+				})
+			},
+			outcome: wantFail, expect: "does not mount /etc/resolv.conf",
 		},
 		toothCase{
 			name: "initscript_capabilities_outside_icmp", gate: "TestInitScriptHardening",

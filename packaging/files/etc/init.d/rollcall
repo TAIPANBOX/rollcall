@@ -47,6 +47,10 @@ start_service() {
 	procd_add_jail rollcall log procfs sysfs ronly requirejail
 	procd_add_jail_mount_rw /etc/rollcall /tmp/rollcall /var/run/rollcall
 	procd_add_jail_mount /etc/config/rollcall /etc/config/firewall /etc/config/system /etc/config/network /etc/openwrt_release /etc/ssl/certs /usr/share/zoneinfo
+	# DNS for api.telegram.org and probe host names. /etc/resolv.conf links to /tmp/resolv.conf,
+	# which boot links to /tmp/resolv.conf.d/resolv.conf.auto and dnsmasq may replace with its own
+	# file. All three are mounted read-only, so the name resolves however ujail stages the link.
+	procd_add_jail_mount /etc/resolv.conf /tmp/resolv.conf /tmp/resolv.conf.d
 	procd_close_instance
 }
 

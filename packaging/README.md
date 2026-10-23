@@ -71,6 +71,17 @@ so the only writable paths are the `procd_add_jail_mount_rw` ones: `/etc/rollcal
 OpenWrt's `procd.sh` accepts (read on openwrt/openwrt main, 2026-10-23); that the root is in fact
 read-only is proven only by the lab run, by a write outside those paths failing inside the jail.
 
+DNS inside the jail: on OpenWrt 24.10 and 25.12 `/etc/resolv.conf` links to `/tmp/resolv.conf`,
+which `/etc/init.d/boot` links to `/tmp/resolv.conf.d/resolv.conf.auto` and dnsmasq may replace
+with its own file (`nameserver 127.0.0.1`). The init script mounts all three read-only. procd's
+ujail binds a path by following its links (`stat`, then a bind mount of the target), so the
+jail's `/etc/resolv.conf` is the file present when the daemon starts; ujail also adds
+`/etc/resolv.conf` by itself when the jail has no network namespace, and accepts the same mount
+listed twice (procd `jail/fs.c` and `jail/jail.c`, read on openwrt/procd master, 2026-10-23).
+With dnsmasq the file names 127.0.0.1 and stays right; on a router without dnsmasq, a change of
+the upstream DNS servers reaches the daemon at its next start. Proven only by the lab run:
+a Telegram message or a probe by host name from inside the jail.
+
 ## Other status
 
 - `capabilities/rollcall.json` follows the procd capability layout as understood at writing
