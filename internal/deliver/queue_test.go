@@ -279,7 +279,7 @@ func TestAckOnlyFromAMember(t *testing.T) {
 	q.Ack("0000000000000002", b)
 	for i := 0; i < MaxDone; i++ {
 		q.Ack(fmt.Sprintf("bad-%d", i), b)
-		q.Ack(fmt.Sprintf("%016x", 1<<40+i), ids.MemberID{})
+		q.Ack(fmt.Sprintf("%016x", uint64(1)<<40+uint64(i)), ids.MemberID{})
 	}
 	if q.Add(incident(2, t0), t0) {
 		t.Error("malformed or anonymous acks pushed out a real one")
@@ -593,7 +593,8 @@ func TestUnrecordedBounded(t *testing.T) {
 func TestDeliverTagsMessage(t *testing.T) {
 	q := NewQueue()
 	ch := &fakeChannel{}
-	inc := incident(0x1234abcd00000000, t0)
+	inc := incident(0, t0)
+	inc.ID = "1234abcd00000000" // wider than an int on 32-bit targets, so set as text
 	q.Add(inc, t0)
 	deliver(t, q, ch, a, a, t0)
 	_, sent := ch.count()

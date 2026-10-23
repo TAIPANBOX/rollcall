@@ -260,7 +260,7 @@ func validSnapshotJSON() map[string]any {
 		"version": 1,
 		"sources": []any{
 			map[string]any{"name": "firewall", "size": 10, "sha256": strings.Repeat("ab", 32)},
-			map[string]any{"name": "network", "size": 20, "mtime_ns": 1_700_000_000_000_000_000},
+			map[string]any{"name": "network", "size": 20, "mtime_ns": int64(1_700_000_000_000_000_000)},
 			map[string]any{"name": "system", "missing": true},
 		},
 		"zones": []any{
