@@ -356,8 +356,10 @@ func deviceAddrs(devices []string) []netip.Addr {
 func floodNote(was, now bool, c transport.Counters) string {
 	switch {
 	case now && !was:
-		return fmt.Sprintf("rollcalld: under flood: the peer zones carry more than the read budget; dropped so far: %d over one source's rate, %d over the total rate, %d from too many sources, %d oversize",
-			c.SourceLimited, c.RateLimited, c.SourcesFull, c.Oversize)
+		return fmt.Sprintf("rollcalld: under flood: the peer zones carry more than the transport admits; "+
+			"UDP dropped so far: %d over one source's rate, %d over the total rate, %d from too many sources, %d oversize; "+
+			"TCP refused so far: %d over one address's slots, %d with every slot taken, %d without a first frame in time, %d failing authentication",
+			c.SourceLimited, c.RateLimited, c.SourcesFull, c.Oversize, c.ConnsSource, c.ConnsFull, c.PreAuth, c.AuthFailed)
 	case was && !now:
 		return "rollcalld: the flood on the peer zones has stopped"
 	}

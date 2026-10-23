@@ -53,6 +53,10 @@ type Counters struct {
 	RateLimited   uint64 // UDP datagrams over the rate of all sources together
 	ReadPaced     uint64 // reads that waited for the read rate
 	Floods        uint64 // times UnderFlood was raised
+	ConnsFull     uint64 // TCP connections refused: every slot taken
+	ConnsSource   uint64 // TCP connections refused: the address holds its share of slots
+	PreAuth       uint64 // TCP connections closed without a whole first frame in time
+	AuthFailed    uint64 // TCP first frames that failed authenticate
 }
 
 // UnderFlood reports whether the transport has refused a burst of traffic
@@ -219,6 +223,15 @@ func (l *limiter) sweepLocked(now time.Duration) bool {
 		}
 	}
 	return len(l.sources) < maxSources
+}
+
+// refuse counts one refusal outside the read loops (a TCP connection) in
+// counter, a field of l.c, and towards the flood signal.
+func (l *limiter) refuse(counter *uint64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	*counter++
+	l.refusedLocked(l.now())
 }
 
 // refusedLocked counts one refusal towards the flood signal.

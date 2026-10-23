@@ -63,16 +63,16 @@ type DeviceStatus struct {
 // safe for concurrent use. Serve runs the receive loops and the passes over
 // the devices; Close releases the sockets.
 type Transport struct {
-	port         int
-	authenticate func(frame []byte) bool
-	devices      []string      // the configured peer-zone devices, once each, in order
-	every        time.Duration // between passes; ReconcileEvery outside tests
-	lim          *limiter      // the read budget and the flood signal
-	slots        chan struct{} // one token per open TCP connection
-	kick         chan struct{} // Refresh: a pass now
-	done         chan struct{} // closed by Close
-	closeOnce    sync.Once
-	wg           sync.WaitGroup // receive loops, connection handlers and the pass loop
+	port           int
+	authenticate   func(frame []byte) bool
+	devices        []string      // the configured peer-zone devices, once each, in order
+	every          time.Duration // between passes; ReconcileEvery outside tests
+	lim            *limiter      // the read budget and the flood signal
+	connsPerSource int           // TCP slots one address may hold; maxConnsPerSource outside tests
+	kick           chan struct{} // Refresh: a pass now
+	done           chan struct{} // closed by Close
+	closeOnce      sync.Once
+	wg             sync.WaitGroup // receive loops, connection handlers and the pass loop
 
 	mu        sync.Mutex
 	closed    bool
@@ -82,7 +82,8 @@ type Transport struct {
 	endpoints []*endpoint // UDP sockets: unicast addresses and group sockets
 	listeners []*listener
 	devs      map[string]DeviceStatus
-	conns     map[net.Conn]struct{}
+	conns     map[net.Conn]netip.Addr // open TCP connections, by source address
+	bySource  map[netip.Addr]int      // TCP slots each address holds
 }
 
 // Open makes a transport for the given peer-zone devices on port and binds
@@ -109,14 +110,15 @@ func Open(port int, ifaces []string, authenticate func(frame []byte) bool) (*Tra
 		return nil, errNoInterfaces
 	}
 	t := &Transport{
-		port:         port,
-		authenticate: authenticate,
-		every:        ReconcileEvery,
-		lim:          newLimiter(),
-		slots:        make(chan struct{}, MaxConns),
-		kick:         make(chan struct{}, 1),
-		done:         make(chan struct{}),
-		conns:        make(map[net.Conn]struct{}),
+		port:           port,
+		authenticate:   authenticate,
+		every:          ReconcileEvery,
+		lim:            newLimiter(),
+		connsPerSource: maxConnsPerSource,
+		bySource:       make(map[netip.Addr]int),
+		kick:           make(chan struct{}, 1),
+		done:           make(chan struct{}),
+		conns:          make(map[net.Conn]netip.Addr),
 	}
 	for _, name := range ifaces {
 		if !slices.Contains(t.devices, name) {
@@ -307,24 +309,6 @@ func (t *Transport) wait(d time.Duration) bool {
 	case <-time.After(d):
 		return true
 	}
-}
-
-// track records an open connection so Close can shut it. It refuses one that
-// arrives after Close has begun.
-func (t *Transport) track(c net.Conn) bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.closed {
-		return false
-	}
-	t.conns[c] = struct{}{}
-	return true
-}
-
-func (t *Transport) untrack(c net.Conn) {
-	t.mu.Lock()
-	delete(t.conns, c)
-	t.mu.Unlock()
 }
 
 // boundAddrs lists every address the transport listens on, for tests.
