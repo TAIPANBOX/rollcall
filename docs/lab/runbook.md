@@ -94,10 +94,10 @@ Expected: the group is created and the recovery code is printed once. Write the 
 tailscale ssh root@flint2 'rollcall invite'
 ```
 
-Expected: a line saying the join window is open for 10 minutes, then the join code on its own line, valid for one use. Copy it by hand into the next command. The code names the first IPv4 address of flint2's peer-zone interfaces; if beryl1 cannot reach that address, run `rollcall invite --address <an address of flint2 that beryl1 reaches>` instead.
+Expected: a line saying the join window is open for 10 minutes, then the join code on its own line, valid for one use. Copy it by hand into the next command, which hands it to `rollcall join` on standard input: join never takes the code on its command line, where every process on the router could read it. The code names the first IPv4 address of flint2's peer-zone interfaces; if beryl1 cannot reach that address, run `rollcall invite --address <an address of flint2 that beryl1 reaches>` instead.
 
 ```sh
-tailscale ssh root@beryl1 '/etc/init.d/rollcall enable && /etc/init.d/rollcall start && sleep 5 && rollcall join --name beryl1 <join code>'
+echo '<join code>' | tailscale ssh root@beryl1 '/etc/init.d/rollcall enable && /etc/init.d/rollcall start && sleep 5 && rollcall join --name beryl1'
 lab_members
 ```
 
@@ -117,7 +117,7 @@ Expected: `beryl1` shows `backup` in `lab_members`. The last command prints `bac
 
 ```sh
 tailscale ssh root@flint2 'rollcall invite'
-tailscale ssh root@beryl2 '/etc/init.d/rollcall enable && /etc/init.d/rollcall start && sleep 5 && rollcall join --name beryl2 <join code>'
+echo '<join code>' | tailscale ssh root@beryl2 '/etc/init.d/rollcall enable && /etc/init.d/rollcall start && sleep 5 && rollcall join --name beryl2'
 lab_members
 ```
 
