@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="600" viewBox="0 0 960 600" role="img" aria-label="How rollcall 1.0.0-rc1 was proven, left to right: 871 tests, the simulator with 1000 seeds and no failure, 18 gates that must fail on a planted fault, mutation testing, reproducible and attested builds, a lab run on three routers that found four defects, and the release candidate from the signed feed.">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0a0e16"/><stop offset="1" stop-color="#0d1117"/></linearGradient>
+  <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#4493f8"/></linearGradient>
+  <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#161b22" stroke-width="1"/></pattern>
+  <filter id="soft" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#000000" flood-opacity="0.45"/></filter>
+  <marker id="ar-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2dd4bf"/></marker>
+  <marker id="ar-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4493f8"/></marker>
+  <marker id="ar-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ff6b63"/></marker>
+  <marker id="ar-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e3b341"/></marker>
+  <marker id="ar-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#3fb950"/></marker>
+  <marker id="ar-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#69788b"/></marker>
+  <marker id="ar-light" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#9aa7b8"/></marker>
+  <marker id="ar-text" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e6edf3"/></marker>
+  <marker id="ar-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#a371f7"/></marker>
+  <marker id="ar-line" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#283341"/></marker>
+</defs>
+<style>
+  .flow{stroke-dasharray:6 6;animation:flow 1.2s linear infinite}
+  @keyframes flow{to{stroke-dashoffset:-24}}
+  @media (prefers-reduced-motion:reduce){.flow{animation:none}}
+</style>
+<rect width="960" height="600" fill="url(#bg)"/><rect width="960" height="600" fill="url(#grid)" opacity="0.5"/><rect width="960" height="4" fill="url(#accent)"/>
+<text x="32" y="48" font-family="ui-sans-serif,system-ui,sans-serif" font-size="24" font-weight="600" fill="#e6edf3">How it was proven</text>
+<text x="32" y="74" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#69788b">From the first test to the routers. Tests and gates measured on cafed12, 2026-10-23.</text>
+<rect x="32" y="108" width="203" height="200" rx="12" fill="#141a23" stroke="#2dd4bf" filter="url(#soft)"/>
+<circle cx="54.0" cy="132" r="13" fill="#2dd4bf"/>
+<text x="54" y="137" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="600" fill="#0d1117" text-anchor="middle">1</text>
+<text x="76" y="137" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" font-weight="600" fill="#e6edf3">Unit tests</text>
+<text x="50" y="188" font-family="ui-sans-serif,system-ui,sans-serif" font-size="36" font-weight="600" fill="#2dd4bf">871</text>
+<text x="50" y="218" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">tests pass, 0 fail</text>
+<text x="50" y="240" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">94.4% of internal/</text>
+<text x="50" y="262" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">statements covered</text>
+<rect x="263" y="108" width="203" height="200" rx="12" fill="#141a23" stroke="#2dd4bf" filter="url(#soft)"/>
+<circle cx="285.0" cy="132" r="13" fill="#2dd4bf"/>
+<text x="285" y="137" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="600" fill="#0d1117" text-anchor="middle">2</text>
+<text x="307" y="137" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" font-weight="600" fill="#e6edf3">Simulator</text>
+<text x="281" y="188" font-family="ui-sans-serif,system-ui,sans-serif" font-size="36" font-weight="600" fill="#2dd4bf">1000</text>
+<text x="281" y="218" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">seeds of random faults,</text>
+<text x="281" y="240" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">0 failures; 200 seeds</text>
+<text x="281" y="262" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">on every push</text>
+<rect x="494" y="108" width="203" height="200" rx="12" fill="#141a23" stroke="#2dd4bf" filter="url(#soft)"/>
+<circle cx="516.0" cy="132" r="13" fill="#2dd4bf"/>
+<text x="516" y="137" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="600" fill="#0d1117" text-anchor="middle">3</text>
+<text x="538" y="137" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" font-weight="600" fill="#e6edf3">Gates with teeth</text>
+<text x="512" y="188" font-family="ui-sans-serif,system-ui,sans-serif" font-size="36" font-weight="600" fill="#2dd4bf">18</text>
+<text x="512" y="218" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">gates, each made to fail</text>
+<text x="512" y="240" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">on a planted fault:</text>
+<text x="512" y="262" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">123 cases</text>
+<rect x="725" y="108" width="203" height="200" rx="12" fill="#141a23" stroke="#4493f8" filter="url(#soft)"/>
+<circle cx="747.0" cy="132" r="13" fill="#4493f8"/>
+<text x="747" y="137" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="600" fill="#0d1117" text-anchor="middle">4</text>
+<text x="769" y="137" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" font-weight="600" fill="#e6edf3">Mutation</text>
+<text x="743" y="164" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" fill="#69788b">planted bugs caught</text>
+<text x="743" y="194" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" fill="#9aa7b8">replay</text>
+<rect x="803" y="184" width="70" height="10" rx="5" fill="#1f2834"/><rect x="803" y="184" width="70.0" height="10" rx="5" fill="#4493f8"/>
+<text x="916" y="194" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#e6edf3" text-anchor="end">100%</text>
+<text x="743" y="213" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" fill="#9aa7b8">epoch</text>
+<rect x="803" y="203" width="70" height="10" rx="5" fill="#1f2834"/><rect x="803" y="203" width="65.8" height="10" rx="5" fill="#4493f8"/>
+<text x="916" y="213" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#e6edf3" text-anchor="end">94%</text>
+<text x="743" y="232" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" fill="#9aa7b8">roster</text>
+<rect x="803" y="222" width="70" height="10" rx="5" fill="#1f2834"/><rect x="803" y="222" width="65.1" height="10" rx="5" fill="#4493f8"/>
+<text x="916" y="232" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#e6edf3" text-anchor="end">93%</text>
+<text x="743" y="251" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" fill="#9aa7b8">history</text>
+<rect x="803" y="241" width="70" height="10" rx="5" fill="#1f2834"/><rect x="803" y="241" width="63.7" height="10" rx="5" fill="#4493f8"/>
+<text x="916" y="251" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#e6edf3" text-anchor="end">91%</text>
+<text x="743" y="270" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" fill="#9aa7b8">deliver</text>
+<rect x="803" y="260" width="70" height="10" rx="5" fill="#1f2834"/><rect x="803" y="260" width="63.7" height="10" rx="5" fill="#4493f8"/>
+<text x="916" y="270" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#e6edf3" text-anchor="end">91%</text>
+<text x="743" y="289" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" fill="#9aa7b8">node</text>
+<rect x="803" y="279" width="70" height="10" rx="5" fill="#1f2834"/><rect x="803" y="279" width="52.5" height="10" rx="5" fill="#4493f8"/>
+<text x="916" y="289" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#e6edf3" text-anchor="end">75%</text>
+<line class="flow" x1="239" y1="208" x2="259" y2="208" stroke="#2dd4bf" stroke-width="2" marker-end="url(#ar-teal)"/>
+<line class="flow" x1="470" y1="208" x2="490" y2="208" stroke="#2dd4bf" stroke-width="2" marker-end="url(#ar-teal)"/>
+<line class="flow" x1="701" y1="208" x2="721" y2="208" stroke="#2dd4bf" stroke-width="2" marker-end="url(#ar-teal)"/>
+<path class="flow" d="M826.5 312 L826.5 346.0 L172 346.0 L172 380" fill="none" stroke="#2dd4bf" stroke-width="2" marker-end="url(#ar-teal)"/>
+<rect x="32" y="384" width="280" height="160" rx="12" fill="#141a23" stroke="#a371f7" filter="url(#soft)"/>
+<circle cx="54.0" cy="408" r="13" fill="#a371f7"/>
+<text x="54" y="413" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="600" fill="#0d1117" text-anchor="middle">5</text>
+<text x="76" y="413" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" font-weight="600" fill="#e6edf3">Reproducible, attested</text>
+<text x="50" y="448" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">two arm64 builds, byte-identical</text>
+<text x="50" y="470" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">every release file attested</text>
+<text x="50" y="492" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">with build provenance</text>
+<rect x="340" y="384" width="280" height="160" rx="12" fill="#141a23" stroke="#e3b341" filter="url(#soft)"/>
+<circle cx="362.0" cy="408" r="13" fill="#e3b341"/>
+<text x="362" y="413" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="600" fill="#0d1117" text-anchor="middle">6</text>
+<text x="384" y="413" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" font-weight="600" fill="#e6edf3">Lab: three routers</text>
+<text x="358" y="464" font-family="ui-sans-serif,system-ui,sans-serif" font-size="36" font-weight="600" fill="#e3b341">4 defects</text>
+<text x="358" y="494" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">found by the lab run,</text>
+<text x="358" y="516" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">each fixed with a gate</text>
+<rect x="648" y="384" width="280" height="160" rx="12" fill="#141a23" stroke="#3fb950" filter="url(#soft)"/>
+<circle cx="670.0" cy="408" r="13" fill="#3fb950"/>
+<text x="670" y="413" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="600" fill="#0d1117" text-anchor="middle">7</text>
+<text x="692" y="413" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" font-weight="600" fill="#e6edf3">Release candidate</text>
+<text x="666" y="464" font-family="ui-sans-serif,system-ui,sans-serif" font-size="36" font-weight="600" fill="#3fb950">1.0.0-rc1</text>
+<text x="666" y="494" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">from the signed feed,</text>
+<text x="666" y="516" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">on the three routers</text>
+<line class="flow" x1="316" y1="464" x2="336" y2="464" stroke="#2dd4bf" stroke-width="2" marker-end="url(#ar-teal)"/>
+<line class="flow" x1="624" y1="464" x2="644" y2="464" stroke="#2dd4bf" stroke-width="2" marker-end="url(#ar-teal)"/>
+<text x="32" y="582" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" fill="#69788b">Mutation figures: test efficacy per package, CI run on 4186091. Simulator: 1000 seeds run twice, strict.</text>
+</svg>

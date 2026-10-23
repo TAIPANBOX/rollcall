@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="580" viewBox="0 0 960 580" role="img" aria-label="Three threats and what answers each. A device on the LAN: every packet sealed with the group key, replays dropped, no reply to anything that fails. A stolen or compromised router: it can lie only as itself, removal rotates the key, two histories are caught with proof. A lost admin router: the backup admin takes over after 10 minutes, and the offline recovery code overrides both.">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0a0e16"/><stop offset="1" stop-color="#0d1117"/></linearGradient>
+  <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#4493f8"/></linearGradient>
+  <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#161b22" stroke-width="1"/></pattern>
+  <filter id="soft" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#000000" flood-opacity="0.45"/></filter>
+  <marker id="ar-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2dd4bf"/></marker>
+  <marker id="ar-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4493f8"/></marker>
+  <marker id="ar-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ff6b63"/></marker>
+  <marker id="ar-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e3b341"/></marker>
+  <marker id="ar-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#3fb950"/></marker>
+  <marker id="ar-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#69788b"/></marker>
+  <marker id="ar-light" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#9aa7b8"/></marker>
+  <marker id="ar-text" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e6edf3"/></marker>
+  <marker id="ar-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#a371f7"/></marker>
+  <marker id="ar-line" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#283341"/></marker>
+</defs>
+
+<rect width="960" height="580" fill="url(#bg)"/><rect width="960" height="580" fill="url(#grid)" opacity="0.5"/><rect width="960" height="4" fill="url(#accent)"/>
+<text x="32" y="48" font-family="ui-sans-serif,system-ui,sans-serif" font-size="24" font-weight="600" fill="#e6edf3">Who could attack, and what answers</text>
+<text x="32" y="74" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#69788b">The three threats rollcall is built against.</text>
+<rect x="32" y="100" width="352" height="128" rx="12" fill="#1a1214" stroke="#5a2a2a" filter="url(#soft)"/>
+<g transform="translate(56,126)" fill="none" stroke="#ff6b63" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"><rect x="6" y="2" width="40" height="26" rx="3"/><path d="M0 34h52"/></g>
+<text x="126" y="142" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" font-weight="600" fill="#e6edf3">A device on the LAN</text>
+<text x="52" y="198" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#ff9a94">sniffs, spoofs, replays, floods</text>
+<line x1="390" y1="164" x2="418" y2="164" stroke="#2dd4bf" stroke-width="2.5" marker-end="url(#ar-teal)"/>
+<rect x="426" y="100" width="502" height="128" rx="12" fill="#10221f" stroke="#2dd4bf" filter="url(#soft)"/>
+<text x="450" y="138" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#2dd4bf" text-anchor="middle">✓</text>
+<text x="470" y="138" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" fill="#e6edf3">every packet sealed with the group key</text>
+<text x="450" y="170" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#2dd4bf" text-anchor="middle">✓</text>
+<text x="470" y="170" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" fill="#e6edf3">a replayed packet is dropped</text>
+<text x="450" y="202" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#2dd4bf" text-anchor="middle">✓</text>
+<text x="470" y="202" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" fill="#e6edf3">no reply to anything that fails</text>
+<rect x="32" y="248" width="352" height="128" rx="12" fill="#1a1214" stroke="#5a2a2a" filter="url(#soft)"/>
+<g transform="translate(52,270) scale(1)"><rect x="12" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="44" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="0" y="14" width="60" height="24" rx="7" fill="#1f2834" stroke="#ff6b63" stroke-width="1.5"/><circle cx="14" cy="26" r="3" fill="#ff6b63"/><circle cx="24" cy="26" r="3" fill="#ff6b63" opacity="0.6"/><rect x="36" y="22" width="16" height="8" rx="2" fill="#0c1118" stroke="#46546a"/></g>
+<text x="126" y="290" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" font-weight="600" fill="#e6edf3">A stolen or compromised router</text>
+<text x="52" y="346" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#ff9a94">holds its own keys, maybe the token</text>
+<line x1="390" y1="312" x2="418" y2="312" stroke="#2dd4bf" stroke-width="2.5" marker-end="url(#ar-teal)"/>
+<rect x="426" y="248" width="502" height="128" rx="12" fill="#10221f" stroke="#2dd4bf" filter="url(#soft)"/>
+<text x="450" y="286" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#2dd4bf" text-anchor="middle">✓</text>
+<text x="470" y="286" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" fill="#e6edf3">it can lie only as itself: changes are signed</text>
+<text x="450" y="318" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#2dd4bf" text-anchor="middle">✓</text>
+<text x="470" y="318" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" fill="#e6edf3">removed: the group key rotates without it</text>
+<text x="450" y="350" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#2dd4bf" text-anchor="middle">✓</text>
+<text x="470" y="350" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" fill="#e6edf3">two histories shown: caught with proof</text>
+<rect x="32" y="396" width="352" height="128" rx="12" fill="#1a1214" stroke="#5a2a2a" filter="url(#soft)"/>
+<g transform="translate(56,422)" fill="none" stroke="#ff6b63" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"><path d="M4 30h44L44 8l-10 10-8-14-8 14L8 8z"/></g>
+<text x="126" y="438" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" font-weight="600" fill="#e6edf3">A lost admin router</text>
+<text x="52" y="494" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#ff9a94">the router that signs the roster is gone</text>
+<line x1="390" y1="460" x2="418" y2="460" stroke="#2dd4bf" stroke-width="2.5" marker-end="url(#ar-teal)"/>
+<rect x="426" y="396" width="502" height="128" rx="12" fill="#10221f" stroke="#2dd4bf" filter="url(#soft)"/>
+<text x="450" y="434" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#2dd4bf" text-anchor="middle">✓</text>
+<text x="470" y="434" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" fill="#e6edf3">the backup admin takes over after 10 min</text>
+<text x="450" y="466" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#2dd4bf" text-anchor="middle">✓</text>
+<text x="470" y="466" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" fill="#e6edf3">the offline recovery code overrides both</text>
+<text x="450" y="498" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#2dd4bf" text-anchor="middle">✓</text>
+<text x="470" y="498" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" fill="#e6edf3">every change is told in the chat</text>
+<text x="32" y="562" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#69788b">Out of scope: an attacker who is root on a member right now. Removal cuts that router off.</text>
+</svg>

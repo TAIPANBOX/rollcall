@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="500" viewBox="0 0 960 500" role="img" aria-label="Asking before accusing. Left: a router stops answering; after 15 s the observer asks two helpers whether they still hear it; only when none does is it recorded silent at 30 s. Right: a router that lost its own link sees every other router go silent, but the others heard each other all along and record its absence instead.">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0a0e16"/><stop offset="1" stop-color="#0d1117"/></linearGradient>
+  <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#4493f8"/></linearGradient>
+  <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#161b22" stroke-width="1"/></pattern>
+  <filter id="soft" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#000000" flood-opacity="0.45"/></filter>
+  <marker id="ar-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2dd4bf"/></marker>
+  <marker id="ar-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4493f8"/></marker>
+  <marker id="ar-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ff6b63"/></marker>
+  <marker id="ar-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e3b341"/></marker>
+  <marker id="ar-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#3fb950"/></marker>
+  <marker id="ar-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#69788b"/></marker>
+  <marker id="ar-light" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#9aa7b8"/></marker>
+  <marker id="ar-text" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e6edf3"/></marker>
+  <marker id="ar-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#a371f7"/></marker>
+  <marker id="ar-line" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#283341"/></marker>
+</defs>
+<style>
+  .flow{stroke-dasharray:6 6;animation:flow 1.2s linear infinite}
+  @keyframes flow{to{stroke-dashoffset:-24}}
+  @media (prefers-reduced-motion:reduce){.flow{animation:none}}
+</style>
+<rect width="960" height="500" fill="url(#bg)"/><rect width="960" height="500" fill="url(#grid)" opacity="0.5"/><rect width="960" height="4" fill="url(#accent)"/>
+<text x="32" y="48" font-family="ui-sans-serif,system-ui,sans-serif" font-size="24" font-weight="600" fill="#e6edf3">Asking before accusing</text>
+<text x="32" y="74" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#69788b">Silent means: nobody hears it, not just one neighbour.</text>
+<rect x="32" y="96" width="440" height="380" rx="12" fill="#141a23" stroke="#1b2331" filter="url(#soft)"/>
+<text x="52" y="126" font-family="ui-sans-serif,system-ui,sans-serif" font-size="17" font-weight="600" fill="#e6edf3">A router stops answering</text>
+<g transform="translate(64,236) scale(1)"><rect x="12" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="44" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="0" y="14" width="60" height="24" rx="7" fill="#1f2834" stroke="#2dd4bf" stroke-width="1.5"/><circle cx="14" cy="26" r="3" fill="#2dd4bf"/><circle cx="24" cy="26" r="3" fill="#2dd4bf" opacity="0.6"/><rect x="36" y="22" width="16" height="8" rx="2" fill="#0c1118" stroke="#46546a"/></g>
+<text x="94" y="294" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8" text-anchor="middle">observer</text>
+<g transform="translate(214,152) scale(1)"><rect x="12" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="44" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="0" y="14" width="60" height="24" rx="7" fill="#1f2834" stroke="#2dd4bf" stroke-width="1.5"/><circle cx="14" cy="26" r="3" fill="#2dd4bf"/><circle cx="24" cy="26" r="3" fill="#2dd4bf" opacity="0.6"/><rect x="36" y="22" width="16" height="8" rx="2" fill="#0c1118" stroke="#46546a"/></g>
+<text x="244" y="210" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8" text-anchor="middle">helper</text>
+<g transform="translate(214,318) scale(1)"><rect x="12" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="44" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="0" y="14" width="60" height="24" rx="7" fill="#1f2834" stroke="#2dd4bf" stroke-width="1.5"/><circle cx="14" cy="26" r="3" fill="#2dd4bf"/><circle cx="24" cy="26" r="3" fill="#2dd4bf" opacity="0.6"/><rect x="36" y="22" width="16" height="8" rx="2" fill="#0c1118" stroke="#46546a"/></g>
+<text x="244" y="376" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8" text-anchor="middle">helper</text>
+<g transform="translate(370,236) scale(1)" opacity="0.35"><rect x="12" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="44" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="0" y="14" width="60" height="24" rx="7" fill="#1f2834" stroke="#ff6b63" stroke-width="1.5"/><circle cx="14" cy="26" r="3" fill="#ff6b63"/><circle cx="24" cy="26" r="3" fill="#ff6b63" opacity="0.6"/><rect x="36" y="22" width="16" height="8" rx="2" fill="#0c1118" stroke="#46546a"/></g>
+<text x="400" y="294" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#ff6b63" text-anchor="middle">suspect</text>
+<line class="flow" x1="116" y1="246" x2="210" y2="182" stroke="#4493f8" stroke-width="2" marker-end="url(#ar-blue)"/>
+<line class="flow" x1="116" y1="266" x2="210" y2="332" stroke="#4493f8" stroke-width="2" marker-end="url(#ar-blue)"/>
+<text x="128" y="205" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#4493f8" text-anchor="middle">hear it?</text>
+<line x1="278" y1="178" x2="364" y2="262" stroke="#ff6b63" stroke-width="1.5" stroke-dasharray="3 4"/>
+<line x1="278" y1="344" x2="364" y2="262" stroke="#ff6b63" stroke-width="1.5" stroke-dasharray="3 4"/>
+<text x="330" y="196" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" font-weight="600" fill="#ff6b63" text-anchor="middle">no</text>
+<text x="352" y="334" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" font-weight="600" fill="#ff6b63" text-anchor="middle">no</text>
+<rect x="52" y="420" width="200" height="10" rx="3" fill="#2dd4bf" opacity="0.5"/><rect x="252" y="420" width="200" height="10" rx="3" fill="#e3b341" opacity="0.7"/><circle cx="452" cy="425" r="7" fill="#ff6b63"/>
+<text x="52" y="454" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#69788b">0 s</text>
+<text x="252" y="454" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" font-weight="600" fill="#e3b341" text-anchor="middle">15 s: ask</text>
+<text x="452" y="454" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" font-weight="600" fill="#ff6b63" text-anchor="end">30 s: silent</text>
+<text x="352" y="412" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" fill="#69788b" text-anchor="middle">asks again at 20 and 25 s</text>
+<rect x="488" y="96" width="440" height="380" rx="12" fill="#141a23" stroke="#1b2331" filter="url(#soft)"/>
+<text x="508" y="126" font-family="ui-sans-serif,system-ui,sans-serif" font-size="17" font-weight="600" fill="#e6edf3">A router lost its own link</text>
+<g transform="translate(526,236) scale(1)"><rect x="12" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="44" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="0" y="14" width="60" height="24" rx="7" fill="#1f2834" stroke="#e3b341" stroke-width="1.5"/><circle cx="14" cy="26" r="3" fill="#e3b341"/><circle cx="24" cy="26" r="3" fill="#e3b341" opacity="0.6"/><rect x="36" y="22" width="16" height="8" rx="2" fill="#0c1118" stroke="#46546a"/></g>
+<text x="556" y="294" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#e3b341" text-anchor="middle">cut off</text>
+<line x1="730" y1="178" x2="866" y2="262" stroke="#3fb950" stroke-width="2" opacity="0.7"/>
+<line x1="866" y1="262" x2="730" y2="344" stroke="#3fb950" stroke-width="2" opacity="0.7"/>
+<line x1="730" y1="178" x2="730" y2="344" stroke="#3fb950" stroke-width="2" opacity="0.7"/>
+<rect x="696" y="162" width="68" height="32" rx="8" fill="#141a23"/>
+<g transform="translate(700,152) scale(1)"><rect x="12" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="44" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="0" y="14" width="60" height="24" rx="7" fill="#1f2834" stroke="#2dd4bf" stroke-width="1.5"/><circle cx="14" cy="26" r="3" fill="#2dd4bf"/><circle cx="24" cy="26" r="3" fill="#2dd4bf" opacity="0.6"/><rect x="36" y="22" width="16" height="8" rx="2" fill="#0c1118" stroke="#46546a"/></g>
+<rect x="832" y="246" width="68" height="32" rx="8" fill="#141a23"/>
+<g transform="translate(836,236) scale(1)"><rect x="12" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="44" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="0" y="14" width="60" height="24" rx="7" fill="#1f2834" stroke="#2dd4bf" stroke-width="1.5"/><circle cx="14" cy="26" r="3" fill="#2dd4bf"/><circle cx="24" cy="26" r="3" fill="#2dd4bf" opacity="0.6"/><rect x="36" y="22" width="16" height="8" rx="2" fill="#0c1118" stroke="#46546a"/></g>
+<rect x="696" y="328" width="68" height="32" rx="8" fill="#141a23"/>
+<g transform="translate(700,318) scale(1)"><rect x="12" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="44" y="0" width="4" height="16" rx="2" fill="#3a4658"/><rect x="0" y="14" width="60" height="24" rx="7" fill="#1f2834" stroke="#2dd4bf" stroke-width="1.5"/><circle cx="14" cy="26" r="3" fill="#2dd4bf"/><circle cx="24" cy="26" r="3" fill="#2dd4bf" opacity="0.6"/><rect x="36" y="22" width="16" height="8" rx="2" fill="#0c1118" stroke="#46546a"/></g>
+<line x1="592" y1="262" x2="626" y2="262" stroke="#ff6b63" stroke-width="2"/><line x1="652" y1="262" x2="694" y2="262" stroke="#ff6b63" stroke-width="2" stroke-dasharray="3 4"/><path d="M632 255 l14 14 M646 255 l-14 14" stroke="#ff6b63" stroke-width="2.5" stroke-linecap="round"/>
+<text x="866" y="300" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" fill="#3fb950" text-anchor="middle">they hear</text>
+<text x="866" y="316" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" fill="#3fb950" text-anchor="middle">each other</text>
+<text x="526" y="352" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#e3b341">its view: everyone silent</text>
+<text x="526" y="374" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" font-weight="600" fill="#e3b341">set aside, not sent</text>
+<text x="508" y="420" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">The others record its absence:</text>
+<text x="508" y="444" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" font-weight="600" fill="#2dd4bf">one incident about the router that was cut off.</text>
+</svg>

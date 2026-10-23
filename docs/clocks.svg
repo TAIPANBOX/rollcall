@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="392" viewBox="0 0 960 392" role="img" aria-label="Clocks. Every stamp carries the wall clock and the monotonic clock since boot; a length within one boot is exact. A clock is trusted once NTP synced it in this boot, which the ntp hotplug hook tells the daemon. An untrusted clock borrows the median offset of trusted peers and counts as trusted; with none, the line says the times are approximate.">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0a0e16"/><stop offset="1" stop-color="#0d1117"/></linearGradient>
+  <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#4493f8"/></linearGradient>
+  <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#161b22" stroke-width="1"/></pattern>
+  <filter id="soft" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#000000" flood-opacity="0.45"/></filter>
+  <marker id="ar-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2dd4bf"/></marker>
+  <marker id="ar-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4493f8"/></marker>
+  <marker id="ar-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ff6b63"/></marker>
+  <marker id="ar-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e3b341"/></marker>
+  <marker id="ar-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#3fb950"/></marker>
+  <marker id="ar-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#69788b"/></marker>
+  <marker id="ar-light" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#9aa7b8"/></marker>
+  <marker id="ar-text" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e6edf3"/></marker>
+  <marker id="ar-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#a371f7"/></marker>
+  <marker id="ar-line" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#283341"/></marker>
+</defs>
+
+<rect width="960" height="392" fill="url(#bg)"/><rect width="960" height="392" fill="url(#grid)" opacity="0.5"/><rect width="960" height="4" fill="url(#accent)"/>
+<text x="32" y="48" font-family="ui-sans-serif,system-ui,sans-serif" font-size="24" font-weight="600" fill="#e6edf3">Clocks</text>
+<text x="32" y="74" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#69788b">Most routers have no real-time clock: after a power cut the wall clock is wrong until NTP answers.</text>
+<rect x="32" y="100" width="896" height="64" rx="12" fill="#18142a" stroke="#a371f7"/>
+<text x="52" y="138" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#69788b">every stamp:</text>
+<text x="150" y="128" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#a371f7">wall clock</text>
+<text x="150" y="150" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">when</text>
+<text x="390" y="128" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#a371f7">monotonic since boot</text>
+<text x="390" y="150" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">how long, exact</text>
+<text x="660" y="128" font-family="ui-sans-serif,system-ui,sans-serif" font-size="16" font-weight="600" fill="#a371f7">trusted?</text>
+<text x="660" y="150" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">NTP-synced this boot</text>
+<rect x="32" y="204" width="280" height="130" rx="12" fill="#141a23" stroke="#3fb950" filter="url(#soft)"/>
+<text x="50" y="234" font-family="ui-sans-serif,system-ui,sans-serif" font-size="17" font-weight="600" fill="#3fb950">trusted</text>
+<text x="50" y="264" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">NTP synced this boot;</text>
+<text x="50" y="288" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">the ntp hook tells the</text>
+<text x="50" y="312" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">daemon, and every 11 min</text>
+<rect x="340" y="204" width="280" height="130" rx="12" fill="#141a23" stroke="#2dd4bf" filter="url(#soft)"/>
+<text x="358" y="234" font-family="ui-sans-serif,system-ui,sans-serif" font-size="17" font-weight="600" fill="#2dd4bf">borrowed</text>
+<text x="358" y="264" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">untrusted, but a trusted</text>
+<text x="358" y="288" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">peer is heard: use the</text>
+<text x="358" y="312" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">median of their offsets</text>
+<rect x="648" y="204" width="280" height="130" rx="12" fill="#141a23" stroke="#e3b341" filter="url(#soft)"/>
+<text x="666" y="234" font-family="ui-sans-serif,system-ui,sans-serif" font-size="17" font-weight="600" fill="#e3b341">approximate</text>
+<text x="666" y="264" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">no trusted clock to use:</text>
+<text x="666" y="288" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">the line ends with "Times</text>
+<text x="666" y="312" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#e6edf3">are approximate"</text>
+<line x1="318" y1="278" x2="334" y2="278" stroke="#69788b" stroke-width="2" marker-end="url(#ar-gray)"/>
+<line x1="626" y1="278" x2="642" y2="278" stroke="#69788b" stroke-width="2" marker-end="url(#ar-gray)"/>
+<text x="32" y="372" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#69788b">One lying clock cannot move a median. Time plays no part in replay protection.</text>
+</svg>
