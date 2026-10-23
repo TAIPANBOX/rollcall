@@ -742,6 +742,11 @@ func (n *Node) heartbeatIn(from netip.AddrPort, epochID uint32, b []byte, now cl
 	h := obs.Heartbeat
 	p := n.peer(h.From)
 	before := p.hb
+	restored := p.restored && !p.heard
+	if p.addr != from || before.Boot != h.Boot || p.silent || !p.heard {
+		n.flusher.Mark() // the state file keeps what the node knows of its peers
+	}
+	p.restored, p.toldSilent = false, false
 	p.addr = from
 	p.hb, p.heard, p.heardWall, p.heardMono = h, true, now.Wall, now.Mono
 	p.epoch, p.silent, p.suspect = epochID, false, false
@@ -754,6 +759,12 @@ func (n *Node) heartbeatIn(from netip.AddrPort, epochID uint32, b []byte, now cl
 		n.lastHeardPrimary = n.clk.Now()
 	}
 	for _, e := range obs.Events {
+		if restored {
+			if e.Type == events.MemberSilent && n.openAbsenceLocked(e.Subject) {
+				continue // told before this start (D14)
+			}
+			e = returnOfRestored(before, h, e)
+		}
 		body := EventBody{Subject: e.Subject, Type: e.Type}
 		if absence(e.Type) && e.Subject == h.From {
 			if e.Type != events.MemberSilent {
@@ -1127,8 +1138,15 @@ func (n *Node) tickLocked(now clock.Stamp) {
 	for _, e := range silent {
 		p := n.peer(e.Subject)
 		p.silent, p.suspect = true, false
+		n.flusher.Mark()
+		if p.restored && !p.heard && (p.toldSilent || n.openAbsenceLocked(e.Subject)) {
+			// Away since before this start, and its absence was recorded
+			// then: not again from this start (D14).
+			p.toldSilent = true
+			continue
+		}
 		body := EventBody{Subject: e.Subject, Type: e.Type}
-		if p.heard {
+		if p.heard || p.restored {
 			body.Last = Boot{ID: p.hb.Boot, Seq: p.hb.BootSeq}
 		}
 		if hd := n.log.Head(e.Subject); hd.Seq > 0 {

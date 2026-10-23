@@ -146,6 +146,9 @@ func (n *Node) loadStateLocked(now clock.Stamp) {
 	for _, s := range f.Recent {
 		n.restoreIncidentLocked(s, now)
 	}
+	for _, s := range f.Peers {
+		n.restorePeerLocked(s)
+	}
 }
 
 // restoreIncidentLocked keeps the incident s again, and queues it unless it
