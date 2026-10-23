@@ -37,7 +37,7 @@ start_service() {
 	fi
 	procd_add_jail rollcall log requirejail
 	procd_add_jail_mount_rw /etc/rollcall /tmp/rollcall /var/run/rollcall
-	procd_add_jail_mount /etc/config/rollcall /etc/config/firewall /etc/config/system /etc/openwrt_release /etc/ssl/certs /usr/share/zoneinfo
+	procd_add_jail_mount /etc/config/rollcall /etc/config/firewall /etc/config/system /etc/config/network /etc/openwrt_release /etc/ssl/certs /usr/share/zoneinfo
 	procd_close_instance
 }
 
