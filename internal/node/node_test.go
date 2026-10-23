@@ -1663,18 +1663,24 @@ func TestForgedUpdateIgnored(t *testing.T) {
 	g.run(40 * sec)
 	c, liar := g.ids[2].ID, g.ids[3]
 	now := AtOf(g.clk.stampNow())
-	fake := strings.Repeat("ab", 32)
-	inject(g.nodes[0], forge(t, liar, history.Head{},
-		// About another member.
-		EventBody{Subject: c, Type: events.LinkLost, Back: Boot{ID: bootN(2, 1), Seq: 1}, At: now,
-			Detail: map[string]string{"update": fake, "update_seq": "1"}},
-		// About itself, with no correction behind it.
-		EventBody{Subject: liar.ID, Type: events.RebootUnplanned, At: now,
-			Detail: map[string]string{"update": fake, "update_seq": "1"}},
-		// An alarm sent as an update.
-		EventBody{Subject: liar.ID, Type: events.Fork, At: now,
-			Detail: map[string]string{"update": fake, "update_seq": "2"}},
+	// The liar corrects a real claim about itself (r01 saw it silent) ...
+	claim := eventOfType(t, g.nodes[0], events.MemberSilent, liar.ID)
+	corr, err := history.NewCorrection(liar, history.Head{}, []ids.Hash{claim.Hash()}, history.ClassLinkLost, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := history.Head{Seq: corr.Seq, Hash: corr.Hash()}
+	backed := map[string]string{"update": corr.Hash().String(), "update_seq": "1"}
+	fake := map[string]string{"update": strings.Repeat("ab", 32), "update_seq": "1"}
+	es := append([]history.Entry{corr}, forge(t, liar, head,
+		// ... and backs with it an update about another member,
+		EventBody{Subject: c, Type: events.LinkLost, Back: Boot{ID: bootN(2, 1), Seq: 1}, At: now, Detail: backed},
+		// an update about itself with no correction behind it,
+		EventBody{Subject: liar.ID, Type: events.RebootUnplanned, At: now, Detail: fake},
+		// and an alarm sent as an update.
+		EventBody{Subject: liar.ID, Type: events.Fork, At: now, Detail: backed},
 	)...)
+	inject(g.nodes[0], es...)
 	g.run(60 * sec)
 	t.Logf("chat:\n%s", strings.Join(g.chat.all(), "\n"))
 	for _, w := range []string{"lost contact", "rebooted", "showed different histories"} {
