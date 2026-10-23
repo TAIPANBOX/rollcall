@@ -17,9 +17,12 @@
 			}
 		},
 		"write": {
-			"comment": "each entry is one exact command form. Options come before --, and a router name, the only glob, comes last after --; the CLI accepts exactly one name there and checks it against the roster name rule. Recovery is not here: it is CLI-only, as root on the router.",
+			"comment": "each entry is one exact command form. Options come before --, and a router name or, for invite, an address, the only glob, comes last after --; the CLI accepts exactly one word there and checks it (the roster name rule, or one IP address another router can reach). Recovery is not here: it is CLI-only, as root on the router.",
 			"file": {
 				"/usr/bin/rollcall invite --json": [ "exec" ],
+				"/usr/bin/rollcall invite --json --sender": [ "exec" ],
+				"/usr/bin/rollcall invite --json -- *": [ "exec" ],
+				"/usr/bin/rollcall invite --json --sender -- *": [ "exec" ],
 				"/usr/bin/rollcall remove --json -- *": [ "exec" ],
 				"/usr/bin/rollcall rotate --json": [ "exec" ],
 				"/usr/bin/rollcall set-token --json": [ "exec" ],

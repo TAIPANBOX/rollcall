@@ -193,11 +193,54 @@ function selfTable(st) {
 	return E('table', { 'class': 'table' }, [].concat(rows));
 }
 
+/* The invite dialog: the sender role (security design 6, join step 3: only
+ * when the owner ticks it) and the address the new router reaches this one
+ * at, which the CLI checks. They reach the CLI as its own flags, in the forms
+ * of the ACL: invite --json [--sender] [-- <address>]. */
+function inviteDialog(reload) {
+	var sender = E('input', { 'type': 'checkbox', 'id': 'rollcall-invite-sender' });
+	var address = E('input', {
+		'type': 'text',
+		'id': 'rollcall-invite-address',
+		'class': 'cbi-input-text',
+		'autocomplete': 'off',
+		'spellcheck': 'false',
+		'placeholder': _('an address of this router')
+	});
+	ui.showModal(_('Invite a router'), [
+		E('p', {}, [ _('Opens a join window for 10 minutes and shows a join code that works once.') ]),
+		E('p', {}, [
+			E('label', {}, [ sender, ' ', _('The new router sends to Telegram (sender role)') ])
+		]),
+		E('p', {}, [
+			E('label', { 'for': 'rollcall-invite-address' }, [ _('Address the new router reaches this router at') ]),
+			E('br'),
+			address
+		]),
+		E('p', {}, [ _('Leave it empty to use the first address of this router\'s peer zones. Give one when the new router reaches this router at another address, for example across sites over WireGuard or Tailscale.') ]),
+		E('div', { 'class': 'right' }, [
+			button(_('Cancel'), '', ui.hideModal),
+			' ',
+			button(_('Open join window'), 'cbi-button-action', function () {
+				var args = [ 'invite', '--json' ];
+				if (sender.checked) {
+					args.push('--sender');
+				}
+				var addr = String(address.value || '').trim();
+				if (addr) {
+					args.push('--', addr);
+				}
+				return runAdmin(args, null, _('Invite a router')).then(reload);
+			})
+		])
+	]);
+}
+
 function actionRow(st, reload) {
 	var self = st.self || {};
 	var buttons = [
 		button(_('Invite a router'), 'cbi-button-action', function () {
-			return runAdmin([ 'invite', '--json' ], null, _('Invite a router')).then(reload);
+			return inviteDialog(reload);
 		}),
 		button(_('Rotate'), 'cbi-button-action', function () {
 			return confirmThen(_('Rotate the group key'),

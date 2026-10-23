@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -140,5 +141,111 @@ func TestLuCIStatusShowsFlood(t *testing.T) {
 	flooded := renderLuCI(t, luciStatusJS, fullReport(t, func(m map[string]any) { m["under_flood"] = true }), nil)
 	if !flooded.alert("warning", "fail authentication") {
 		t.Fatalf("no flood warning on the status page:\n%s", flooded.Page)
+	}
+}
+
+// TestLuCIStatusHighlightsOldGroupKey: a group key older than its rotation
+// period (30 days) is highlighted on the status page, since rotation may
+// have stopped; a key within the period is shown plainly.
+func TestLuCIStatusHighlightsOldGroupKey(t *testing.T) {
+	withKey := func(gk any) map[string]any {
+		return fullReport(t, func(m map[string]any) { m["group_key"] = gk })
+	}
+	key := func(age int) map[string]any {
+		return map[string]any{"created": "2026-09-01T03:00:00+01:00", "age_days": age, "rotates_every_days": 30}
+	}
+	for _, age := range []int{0, 22, 30} {
+		p := renderLuCI(t, luciStatusJS, withKey(key(age)), nil)
+		if p.alert("", "group key") || slices.ContainsFunc(p.Strong, func(s string) bool { return strings.Contains(s, "days old") }) {
+			t.Errorf("a key %d days old is highlighted: %+v %q", age, p.Alerts, p.Strong)
+		}
+	}
+	if p := renderLuCI(t, luciStatusJS, withKey(nil), nil); p.alert("", "group key") {
+		t.Errorf("no key yet, but a warning: %+v", p.Alerts)
+	}
+	old := renderLuCI(t, luciStatusJS, withKey(key(31)), nil)
+	if !old.alert("warning", "31 days old") {
+		t.Errorf("no warning for a key 31 days old: %+v", old.Alerts)
+	}
+	if !slices.ContainsFunc(old.Strong, func(s string) bool { return strings.Contains(s, "31 days old") }) {
+		t.Errorf("the group key row is not highlighted: %q", old.Strong)
+	}
+}
+
+// adminACL returns the command lines the admin group of the rpcd ACL allows.
+func adminACL(t *testing.T) []string {
+	t.Helper()
+	raw, err := os.ReadFile(luciACLPath)
+	if err != nil {
+		t.Fatalf("measured nothing: %v", err)
+	}
+	var acl map[string]struct {
+		Write struct {
+			File map[string][]string `json:"file"`
+		} `json:"write"`
+	}
+	if err := json.Unmarshal(raw, &acl); err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for k := range acl["luci-app-rollcall-admin"].Write.File {
+		out = append(out, k)
+	}
+	if len(out) == 0 {
+		t.Fatal("measured nothing: no admin entries in the ACL")
+	}
+	return out
+}
+
+// allowed reports whether the command line of params matches an ACL entry,
+// with '*' standing for any text as rpcd's pattern match has it.
+func allowed(acl []string, params []string) bool {
+	line := "/usr/bin/rollcall " + strings.Join(params, " ")
+	for _, k := range acl {
+		re := "^" + strings.ReplaceAll(regexp.QuoteMeta(k), `\*`, ".*") + "$"
+		if regexp.MustCompile(re).MatchString(line) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestLuCIInviteSenderAndAddress: the invite dialog of the admin page gives
+// the sender role and the address of this router through the CLI's flags,
+// in forms the ACL allows, and shows the join code.
+func TestLuCIInviteSenderAndAddress(t *testing.T) {
+	acl := adminACL(t)
+	report := fullReport(t, nil)
+	replies := map[string]any{"invite": map[string]any{"ok": true, "message": "Join window open for 10 minutes.", "join_code": "TEST-JOIN-CODE"}}
+	open, submit := click("Invite a router"), click("Open join window")
+	for _, tc := range []struct {
+		name    string
+		actions []luciAction
+		want    []string
+	}{
+		{"as it was", []luciAction{open, submit}, []string{"invite", "--json"}},
+		{"sender", []luciAction{open, check("rollcall-invite-sender"), submit}, []string{"invite", "--json", "--sender"}},
+		{"address", []luciAction{open, set("rollcall-invite-address", " 192.0.2.7 "), submit}, []string{"invite", "--json", "--", "192.0.2.7"}},
+		{"both", []luciAction{open, check("rollcall-invite-sender"), set("rollcall-invite-address", "2001:db8::7"), submit},
+			[]string{"invite", "--json", "--sender", "--", "2001:db8::7"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := renderLuCI(t, luciAdminJS, report, replies, tc.actions...)
+			var invites [][]string
+			for _, e := range p.Execs {
+				if len(e.Params) > 0 && e.Params[0] == "invite" {
+					invites = append(invites, e.Params)
+				}
+			}
+			if len(invites) != 1 || !slices.Equal(invites[0], tc.want) {
+				t.Fatalf("the page ran %q, want %q", invites, tc.want)
+			}
+			if !allowed(acl, invites[0]) {
+				t.Errorf("the ACL does not allow %q", invites[0])
+			}
+			if !strings.Contains(p.Modal, "TEST-JOIN-CODE") {
+				t.Errorf("the join code is not shown: %q", p.Modal)
+			}
+		})
 	}
 }

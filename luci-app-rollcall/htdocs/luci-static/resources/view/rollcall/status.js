@@ -216,6 +216,17 @@ function sandboxText(sb) {
 		'jail: ' + yesNo(sb.jail) + ')';
 }
 
+/* The age past which the group key should have been replaced: its rotation
+ * period, 30 days unless the report says otherwise. */
+function keyAgeLimit(gk) {
+	return (gk && typeof gk.rotates_every_days === 'number' && gk.rotates_every_days > 0) ? gk.rotates_every_days : 30;
+}
+
+/* A key older than its rotation period means rotation has stopped somewhere. */
+function keyTooOld(gk) {
+	return !!gk && typeof gk.age_days === 'number' && gk.age_days > keyAgeLimit(gk);
+}
+
 function groupKeyText(gk) {
 	if (!gk) {
 		return _('no group key yet');
@@ -275,6 +286,14 @@ function buildPage(st) {
 		]));
 	}
 
+	var keyOld = keyTooOld(st.group_key);
+	if (keyOld) {
+		nodes.push(alertBox('warning', [
+			E('strong', {}, [ _('Old group key: ') ]),
+			T(_('the group key is %s days old; it should have been replaced after %s days. Rotation may have stopped: press Rotate on the Admin tab, and check that every router is up.').format(st.group_key.age_days, keyAgeLimit(st.group_key)))
+		]));
+	}
+
 	var tg = st.telegram || {};
 	if (tg.state === 'bot_blocked' || tg.state === 'tls_failed' || tg.state === 'rate_limited') {
 		nodes.push(alertBox('warning', [ T(lookup(telegramLabels(), tg.state, text(tg.state))) ]));
@@ -298,7 +317,7 @@ function buildPage(st) {
 		labelRow(_('Sandbox'), [ T(sandboxText(st.sandbox)) ]),
 		labelRow(_('Storage'), [ T(storageFailed ? _('error, see above') : _('ok')) ]),
 		labelRow(_('Flood of bad packets'), [ T(flooded ? _('yes, see above') : _('no')) ]),
-		labelRow(_('Group key'), [ T(groupKeyText(st.group_key)) ]),
+		labelRow(_('Group key'), [ keyOld ? E('strong', {}, [ T(groupKeyText(st.group_key)) ]) : T(groupKeyText(st.group_key)) ]),
 		labelRow(_('Discovery errors'), [ discoveryNode(st) ]),
 		labelRow(_('Report generated'), [ T(text(st.generated)) ])
 	]));

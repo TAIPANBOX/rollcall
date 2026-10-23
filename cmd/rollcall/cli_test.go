@@ -406,7 +406,12 @@ func TestCLIUsage(t *testing.T) {
 		t.Fatalf("measured nothing: %d forms in the ACL", len(forms))
 	}
 	for _, f := range forms {
-		args := strings.Fields(strings.ReplaceAll(f[1], "*", "ap-office"))
+		// The glob is a router name, or the address in an invite form.
+		glob := "ap-office"
+		if strings.HasPrefix(f[1], "invite ") {
+			glob = "192.0.2.7"
+		}
+		args := strings.Fields(strings.ReplaceAll(f[1], "*", glob))
 		rec := &recorder{}
 		var o, e bytes.Buffer
 		c := rec.cli(&o, &e, map[string]string{tokenEnv: canary})
@@ -498,6 +503,65 @@ func TestNameArgv(t *testing.T) {
 		}
 		if slices.Contains(args, "--json") && !strings.HasPrefix(o.String(), `{"ok":false,"error":`) {
 			t.Errorf("%q with --json printed %q, want the failure reply", args, o.String())
+		}
+	}
+}
+
+// TestInviteArgv: invite gives the sender role with --sender and the address
+// a new router reaches this one at with --address or alone after "--" (the
+// form of the LuCI ACL); the address is one IP address another router can
+// reach, checked before rollcalld is asked.
+func TestInviteArgv(t *testing.T) {
+	accepted := []struct {
+		args []string
+		call []string
+	}{
+		{[]string{"invite", "--json"}, []string{"invite", "0", ""}},
+		{[]string{"invite", "--json", "--sender"}, []string{"invite", "1", ""}},
+		{[]string{"invite", "--json", "--", "192.0.2.7"}, []string{"invite", "0", "192.0.2.7"}},
+		{[]string{"invite", "--json", "--sender", "--", "192.0.2.7"}, []string{"invite", "1", "192.0.2.7"}},
+		{[]string{"invite", "--json", "--", "2001:db8::7"}, []string{"invite", "0", "2001:db8::7"}},
+		{[]string{"invite", "--address", "100.64.0.9"}, []string{"invite", "0", "100.64.0.9"}},
+		{[]string{"invite", "--address", "::ffff:192.0.2.7"}, []string{"invite", "0", "192.0.2.7"}},
+		{[]string{"invite", "--address", "10.0.0.1", "--sender"}, []string{"invite", "1", "10.0.0.1"}},
+	}
+	for _, tc := range accepted {
+		rec := &recorder{}
+		var o, e bytes.Buffer
+		if code := rec.cli(&o, &e, nil).run(tc.args); code != 0 || len(rec.calls) != 1 || !slices.Equal(rec.calls[0], tc.call) {
+			t.Errorf("%q: exit %d, calls %q, stderr %q; want the call %q", tc.args, code, rec.calls, e.String(), tc.call)
+		}
+	}
+	refused := [][]string{
+		{"invite", "--json", "--address", "127.0.0.1"},                    // loopback
+		{"invite", "--json", "--address", "::1"},                          // loopback
+		{"invite", "--json", "--address", "0.0.0.0"},                      // unspecified
+		{"invite", "--json", "--address", "::"},                           // unspecified
+		{"invite", "--json", "--address", "224.0.0.1"},                    // multicast
+		{"invite", "--json", "--address", "ff02::114"},                    // multicast
+		{"invite", "--json", "--address", "169.254.1.1"},                  // link-local
+		{"invite", "--json", "--address", "fe80::1"},                      // link-local, needs a zone
+		{"invite", "--json", "--address", "255.255.255.255"},              // broadcast
+		{"invite", "--json", "--address", "gateway.lan"},                  // a name
+		{"invite", "--json", "--", "127.0.0.1"},                           // loopback after --
+		{"invite", "--json", "--"},                                        // nothing after --
+		{"invite", "--json", "--", ""},                                    // empty
+		{"invite", "--json", "--", "192.0.2.7", "192.0.2.8"},              // two addresses
+		{"invite", "--json", "--", "192.0.2.7", "--sender"},               // an option after --
+		{"invite", "--json", "--", "ap-office"},                           // a name
+		{"invite", "--json", "--address", "192.0.2.7", "--", "192.0.2.8"}, // both forms
+		{"invite", "--json", "192.0.2.7"},                                 // a word without --
+	}
+	for _, args := range refused {
+		rec := &recorder{}
+		var o, e bytes.Buffer
+		code := rec.cli(&o, &e, nil).run(args)
+		if code == 0 || len(rec.calls) != 0 {
+			t.Errorf("%q: exit %d, %d calls; want a refusal and no call", args, code, len(rec.calls))
+			continue
+		}
+		if !strings.HasPrefix(o.String(), `{"ok":false,"error":`) {
+			t.Errorf("%q printed %q, want the failure reply", args, o.String())
 		}
 	}
 }

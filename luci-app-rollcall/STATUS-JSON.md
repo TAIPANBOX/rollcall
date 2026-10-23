@@ -18,6 +18,9 @@ in `root/usr/share/rpcd/acl.d/luci-app-rollcall.json`.
 |---|---|---|
 | `luci-app-rollcall` (read) | `status --json` | status page, admin page |
 | `luci-app-rollcall-admin` (write) | `invite --json` | admin page |
+| | `invite --json --sender` | admin page: the new router gets the sender role |
+| | `invite --json -- <address>` | admin page: the join code names this address |
+| | `invite --json --sender -- <address>` | admin page: both |
 | | `remove --json -- <name>` | admin page |
 | | `rotate --json` | admin page |
 | | `set-token --json` | admin page (token in the environment, see below) |
@@ -237,6 +240,13 @@ Messages and errors are plain English sentences.
   exactly one name after `--`, checks it with the roster name rule
   (`[a-z0-9-]`, at most 32 characters) and rejects anything else. The page passes
   a name it read from the status report.
+- `invite` takes the address the new router reaches this router at in the same
+  place: alone after `--`, the only glob of its entries. The CLI accepts exactly
+  one word there and refuses anything but one IP address another router can
+  reach (no zone; not loopback, link-local, multicast, broadcast or
+  unspecified). Without it the CLI picks the first address of the peer zones,
+  which a router at another site may not reach. `--sender` gives the new router
+  the sender role, only when the admin ticks it.
 - `admin takeover` is provisional until `admin confirm` runs, as in the
   security document, section 6.1.
 

@@ -50,7 +50,9 @@ Setting up:
   rollcall init [--json] [--name <router>] [--site <site>]
       create the group on its first router; prints the recovery code once
   rollcall invite [--json] [--sender] [--address <ip>]
-      open a join window for 10 minutes and print the join code
+      open a join window for 10 minutes and print the join code; the address
+      (the one the new router reaches this router at) may also come last,
+      alone after --, as LuCI gives it
   rollcall join [--json] [--name <router>] <join code>
       join the group with the code from rollcall invite
 
@@ -320,19 +322,28 @@ func (c *cli) simple(ctlCmd string, args []string) error {
 	return c.admin(p.json, ctlCmd)
 }
 
+// invite opens a join window. The address the join code names is given
+// with --address, or alone after "--", the form of the LuCI ACL, where it
+// is the only glob; either way it is checked here before rollcalld is asked.
 func (c *cli) invite(args []string) error {
 	p, err := parse(args, []string{"--sender"}, []string{"--address"})
 	if err != nil {
 		return err
 	}
-	if err := p.noWords(); err != nil {
-		return err
+	if len(p.words) > 0 {
+		return badUsage("rollcall invite [--json] [--sender] [--address <ip> | -- <ip>]")
 	}
-	addr := p.opts["--address"]
-	if addr != "" {
-		a, err := netip.ParseAddr(addr)
-		if err != nil || a.Zone() != "" {
-			return badUsage("--address takes an IP address without a zone")
+	addr, given := p.opts["--address"]
+	if p.sep {
+		if given || len(p.names) != 1 {
+			return badUsage("give exactly one address: with --address, or alone after --")
+		}
+		addr, given = p.names[0], true
+	}
+	if given {
+		a, err := bootstrapAddr(addr)
+		if err != nil {
+			return err
 		}
 		addr = a.String()
 	}
@@ -341,6 +352,25 @@ func (c *cli) invite(args []string) error {
 		sender = "1"
 	}
 	return c.admin(p.json, "invite", sender, addr)
+}
+
+// bootstrapAddr checks an address for a join code: one IP address, without
+// a zone, that another router can reach, so not loopback, link-local,
+// multicast, broadcast or unspecified. An IPv4-mapped IPv6 address is taken
+// as its IPv4 address.
+func bootstrapAddr(s string) (netip.Addr, error) {
+	a, err := netip.ParseAddr(s)
+	if err != nil {
+		return netip.Addr{}, badUsage("the address is not an IP address")
+	}
+	if a.Zone() != "" {
+		return netip.Addr{}, badUsage("--address takes an IP address without a zone")
+	}
+	a = a.Unmap()
+	if a.IsUnspecified() || a.IsLoopback() || a.IsMulticast() || a.IsLinkLocalUnicast() || a == netip.AddrFrom4([4]byte{255, 255, 255, 255}) {
+		return netip.Addr{}, badUsage("the address must be one another router can reach: not a loopback, link-local, multicast, broadcast or unspecified address")
+	}
+	return a, nil
 }
 
 func (c *cli) join(args []string) error {
