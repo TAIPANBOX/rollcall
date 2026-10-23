@@ -37,7 +37,19 @@ type sim struct {
 	counter   uint64
 	version   string
 	goingDown bool
+
+	// Its monotonic clock: a heartbeat sent at the local moment x carries
+	// Mono x - bootAt. clock is the local moment of its latest heartbeat.
+	// After a reboot, the new boot starts firstBeat before its next
+	// heartbeat.
+	bootAt  time.Duration
+	clock   time.Duration
+	booting bool
 }
+
+// firstBeat is how long after its boot a fixture router sends its first
+// heartbeat.
+const firstBeat = 10 * time.Second
 
 // fixture is a table of ms[0] in a group of ms, on a trusted clock.
 type fixture struct {
@@ -95,32 +107,45 @@ func (f *fixture) restart(startAt time.Duration) {
 func (f *fixture) sim(m tm) *sim {
 	p := f.sims[m.id.ID]
 	if p == nil {
-		p = &sim{seq: 1, boot: 1, version: "24.10.4"}
+		// Up for 90 minutes when the table starts, as fullBeat says.
+		p = &sim{seq: 1, boot: 1, version: "24.10.4", bootAt: start - 90*time.Minute, clock: start}
 		f.sims[m.id.ID] = p
 	}
 	return p
 }
 
-// beat returns m's next heartbeat in its current boot.
-func (f *fixture) beat(m tm) Heartbeat {
+// beat returns m's next heartbeat in its current boot, sent at the moment of
+// its latest one.
+func (f *fixture) beat(m tm) Heartbeat { return f.beatAt(m, f.sim(m).clock) }
+
+// beatAt returns m's next heartbeat in its current boot, sent at the local
+// moment now: its Mono is how long that boot has run by then.
+func (f *fixture) beatAt(m tm, now time.Duration) Heartbeat {
 	p := f.sim(m)
+	if p.booting {
+		p.bootAt, p.booting = now-firstBeat, false
+	}
 	p.counter++
+	p.clock = now
 	h := fullBeat(m)
 	h.BootSeq, h.Boot, h.Counter = p.seq, bootID(p.boot), p.counter
 	h.Versions[0], h.GoingDown = p.version, p.goingDown
+	h.Mono = now - p.bootAt
 	return h
 }
 
-// reboot starts m's next boot.
+// reboot starts m's next boot, firstBeat before its next heartbeat.
 func (f *fixture) reboot(m tm) {
 	p := f.sim(m)
 	p.seq++
 	p.boot++
 	p.goingDown = false
+	p.counter = 0
+	p.booting = true
 }
 
 func (f *fixture) send(m tm, now clock.Stamp) (Observed, error) {
-	return f.tab.Observe(testEpoch, enc(f.t, f.beat(m), m), now)
+	return f.tab.Observe(testEpoch, enc(f.t, f.beatAt(m, now.Mono), m), now)
 }
 
 func (f *fixture) mustSend(m tm, now clock.Stamp) Observed {
@@ -333,7 +358,7 @@ func probeLoop(t *testing.T, f *fixture, h, d, died time.Duration, relay bool) (
 			f.mustSend(r03, at(now))
 			f.mustSend(r04, at(now))
 			if now <= died {
-				latest, sentAt = enc(t, f.beat(r02), r02), now
+				latest, sentAt = enc(t, f.beatAt(r02, now), r02), now
 			}
 		}
 		sus, sil := f.tab.Tick(at(now))
@@ -485,7 +510,7 @@ func TestIndirectProbeHelpers(t *testing.T) {
 		}
 		// r03 is vouched for by r04: no longer suspect, but the local member
 		// still cannot hear it.
-		if _, err := f.relay(r04, r03, enc(t, f.beat(r03), r03), s, at(h+15*s)); err != nil {
+		if _, err := f.relay(r04, r03, enc(t, f.beatAt(r03, h+14*s), r03), s, at(h+15*s)); err != nil {
 			t.Fatal(err)
 		}
 		f.tick(at(h + 16*s))
@@ -510,10 +535,11 @@ func TestProbeAnswerRules(t *testing.T) {
 	ms := members(5)
 	r02, r03, r04, r05 := ms[1], ms[2], ms[3], ms[4]
 	h := start + s
-	// heard is an answer that r02 was heard a second ago, with r02's next
-	// heartbeat, which never reached the local member.
-	heard := func(f *fixture) Report {
-		return Report{Target: r02.id.ID, Ago: s, Heartbeat: enc(t, f.beat(r02), r02)}
+	// heard is an answer, given at the local moment now, that r02 was heard
+	// a second before, with the heartbeat r02 sent then, which never reached
+	// the local member.
+	heard := func(f *fixture, now time.Duration) Report {
+		return Report{Target: r02.id.ID, Ago: s, Heartbeat: enc(t, f.beatAt(r02, now-s), r02)}
 	}
 
 	// setup: r02 suspect at +15 s, helpers r03 and r04 asked; r05 not.
@@ -543,7 +569,7 @@ func TestProbeAnswerRules(t *testing.T) {
 
 	t.Run("a member not asked", func(t *testing.T) {
 		f := setup(t)
-		if _, err := f.tab.RecordReport(f.admit(r05), heard(f), at(h+16*s)); !errors.Is(err, ErrUnsolicited) {
+		if _, err := f.tab.RecordReport(f.admit(r05), heard(f, h+16*s), at(h+16*s)); !errors.Is(err, ErrUnsolicited) {
 			t.Errorf("RecordReport from r05 = %v, want ErrUnsolicited", err)
 		}
 		stillSilentAt(t, f, h+30*s)
@@ -562,7 +588,7 @@ func TestProbeAnswerRules(t *testing.T) {
 		if got := f.tab.IndirectProbeRequest(r02.id.ID); got != nil {
 			t.Errorf("helpers for a member just heard: %x", got)
 		}
-		if _, err := f.tab.RecordReport(f.admit(r03), heard(f), at(h+16*s)); !errors.Is(err, ErrUnsolicited) {
+		if _, err := f.tab.RecordReport(f.admit(r03), heard(f, h+16*s), at(h+16*s)); !errors.Is(err, ErrUnsolicited) {
 			t.Errorf("an answer about a member just heard = %v, want ErrUnsolicited", err)
 		}
 	})
@@ -576,31 +602,31 @@ func TestProbeAnswerRules(t *testing.T) {
 	t.Run("after silence", func(t *testing.T) {
 		f := setup(t)
 		stillSilentAt(t, f, h+30*s)
-		if _, err := f.tab.RecordReport(f.admit(r03), heard(f), at(h+31*s)); !errors.Is(err, ErrUnsolicited) {
+		if _, err := f.tab.RecordReport(f.admit(r03), heard(f, h+31*s), at(h+31*s)); !errors.Is(err, ErrUnsolicited) {
 			t.Errorf("RecordReport after silence = %v, want ErrUnsolicited", err)
 		}
 	})
 	t.Run("asked in an earlier suspicion", func(t *testing.T) {
 		f := setup(t)
-		if _, err := f.tab.RecordReport(f.admit(r03), heard(f), at(h+16*s)); err != nil {
+		if _, err := f.tab.RecordReport(f.admit(r03), heard(f, h+16*s), at(h+16*s)); err != nil {
 			t.Fatal(err)
 		}
 		// The recent vouch ends the suspicion at once, before any Tick: the
 		// other helper's answer is late, and there is nobody to ask.
-		if _, err := f.tab.RecordReport(f.admit(r04), heard(f), at(h+16*s)); !errors.Is(err, ErrUnsolicited) {
+		if _, err := f.tab.RecordReport(f.admit(r04), heard(f, h+16*s), at(h+16*s)); !errors.Is(err, ErrUnsolicited) {
 			t.Errorf("an answer after a recent vouch = %v, want ErrUnsolicited", err)
 		}
 		if got := f.tab.IndirectProbeRequest(r02.id.ID); got != nil {
 			t.Errorf("helpers after a recent vouch: %x", got)
 		}
 		f.tick(at(h + 17*s))
-		if _, err := f.tab.RecordReport(f.admit(r04), heard(f), at(h+18*s)); !errors.Is(err, ErrUnsolicited) {
+		if _, err := f.tab.RecordReport(f.admit(r04), heard(f, h+18*s), at(h+18*s)); !errors.Is(err, ErrUnsolicited) {
 			t.Errorf("an answer after the suspicion ended = %v, want ErrUnsolicited", err)
 		}
 	})
 	t.Run("negative ago", func(t *testing.T) {
 		f := setup(t)
-		rep := heard(f)
+		rep := heard(f, h+16*s)
 		rep.Ago = -s
 		if _, err := f.tab.RecordReport(f.admit(r03), rep, at(h+16*s)); !errors.Is(err, ErrBadReport) {
 			t.Errorf("RecordReport with a negative ago = %v, want ErrBadReport", err)
@@ -609,7 +635,7 @@ func TestProbeAnswerRules(t *testing.T) {
 	})
 	t.Run("not admitted", func(t *testing.T) {
 		f := setup(t)
-		if _, err := f.tab.RecordReport(Admitted{}, heard(f), at(h+16*s)); !errors.Is(err, ErrUnknownMember) {
+		if _, err := f.tab.RecordReport(Admitted{}, heard(f, h+16*s), at(h+16*s)); !errors.Is(err, ErrUnknownMember) {
 			t.Errorf("RecordReport without Admit = %v, want ErrUnknownMember", err)
 		}
 		stillSilentAt(t, f, h+30*s)
@@ -620,20 +646,20 @@ func TestProbeAnswerRules(t *testing.T) {
 		if err := f.tab.SetRoster(testRoster([]tm{ms[0], r02, r04, r05}), testRosterHash, at(h+16*s)); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.tab.RecordReport(a, heard(f), at(h+16*s)); !errors.Is(err, ErrUnknownMember) {
+		if _, err := f.tab.RecordReport(a, heard(f, h+16*s), at(h+16*s)); !errors.Is(err, ErrUnknownMember) {
 			t.Errorf("RecordReport from a removed helper = %v, want ErrUnknownMember", err)
 		}
 	})
 	t.Run("a vouch that is not recent keeps the suspicion", func(t *testing.T) {
 		f := setup(t)
-		rep := heard(f)
+		rep := heard(f, h+16*s)
 		rep.Ago = 15 * s // heard at h+1 s: newer than h, but 15 s ago
 		if _, err := f.tab.RecordReport(f.admit(r03), rep, at(h+16*s)); err != nil {
 			t.Fatal(err)
 		}
 		// Still suspect, so r04's later answer, with a newer heartbeat,
 		// counts: heard at h+2 s.
-		rep = heard(f)
+		rep = heard(f, h+17*s)
 		rep.Ago = 15 * s
 		if _, err := f.tab.RecordReport(f.admit(r04), rep, at(h+17*s)); err != nil {
 			t.Errorf("second answer in the same suspicion = %v", err)
@@ -1803,7 +1829,7 @@ func liarSetup(t *testing.T) (*fixture, [][]byte, time.Duration) {
 	h := start + s
 	var beats [][]byte
 	for i := 0; i < 6; i++ {
-		beats = append(beats, enc(t, f.beat(r02), r02))
+		beats = append(beats, enc(t, f.beatAt(r02, h+time.Duration(i)*5*s), r02))
 	}
 	if _, err := f.tab.Observe(testEpoch, beats[0], at(h)); err != nil {
 		t.Fatal(err)
@@ -2038,7 +2064,7 @@ func TestRelayedHeartbeatCounted(t *testing.T) {
 		if got := f.tab.IndirectProbeRequest(r02.id.ID); !slices.Equal(got, idsOf(r03)) {
 			t.Fatalf("helpers %x", got)
 		}
-		if _, err := f.relay(r03, r02, enc(t, f.beat(r02), r02), 2*s, at(h+16*s)); err != nil {
+		if _, err := f.relay(r03, r02, enc(t, f.beatAt(r02, h+14*s), r02), 2*s, at(h+16*s)); err != nil {
 			t.Fatal(err)
 		}
 		if got, _ := f.tab.Offset(); got != want {

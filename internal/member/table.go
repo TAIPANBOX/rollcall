@@ -34,6 +34,20 @@ const (
 // MaxHelpers is the most members IndirectProbeRequest names.
 const MaxHelpers = 2
 
+// The limits the timing of a peer's heartbeats is judged with (the sections
+// "Failure detection" and "Duplicate identity" of the Table's doc).
+const (
+	// maxDelay is the longest a heartbeat received directly is taken to have
+	// travelled, from the sender's clock reading to the local one: a LAN
+	// takes milliseconds; this also covers a receiver that is busy for one
+	// heartbeat interval.
+	maxDelay = 5 * time.Second
+	// driftDiv bounds the rate at which two routers' monotonic clocks drift
+	// apart to 1/driftDiv (2000 ppm): crystals within 100 ppm, and NTP
+	// slewing each kernel clock by at most 500 ppm, give 1200 ppm.
+	driftDiv = 500
+)
+
 // MaxBootSeqRaise is how far RestoreBootSeq may raise this member's boot
 // sequence number above the one it started with, in one run.
 const MaxBootSeqRaise = 1 << 20
@@ -76,7 +90,8 @@ var (
 	// decode.
 	ErrStateFile = errors.New("member: the peer state file is corrupt")
 	// ErrNotFresher reports a relayed heartbeat that is not newer than the
-	// one the Table holds of its sender.
+	// one the Table holds of its sender: an older boot or counter, or a Mono
+	// that does not advance in the boot it holds.
 	ErrNotFresher = errors.New("member: relayed heartbeat is not newer than the one held")
 )
 
@@ -132,12 +147,22 @@ type Config struct {
 // the same checks as a heartbeat received directly (the target's key in the
 // roster, the replay window, every field), and it must be newer than the
 // newest the Table holds of the target (a higher boot sequence number, or
-// the same with a higher counter). The target is then last heard when the
-// helper says it received that heartbeat, but not before the Table's own
-// last direct hearing. A helper's word alone saves nobody, and a helper can
-// replay only heartbeats the target really sent: once relayed, a heartbeat is
-// the newest the Table holds, so a dead member is silent 30 s after the last
-// heartbeat it sent that anyone asked received.
+// the same with a higher counter and, in a boot the Table holds a heartbeat
+// of, a higher Mono). The target is then last heard when the helper says it
+// received that heartbeat, but not before the Table's own last direct
+// hearing, and, in a boot the Table holds a heartbeat of, not after the
+// target's own clock allows: the moment the Table holds for its newest
+// heartbeat of that boot, plus how far the target's Mono advanced since,
+// plus the drift (driftDiv). The moment the Table holds for a heartbeat is
+// when it received it directly or, for a relayed one, the lower of that
+// bound and when the answer arrived; never what a helper says. A helper's
+// word alone saves nobody, and a helper can replay only heartbeats the
+// target really sent, so a helper that keeps them back to relay them later
+// cannot keep a dead member alive past its last heartbeat: it is silent 30 s
+// after the last heartbeat it sent that anyone asked received. In a boot the
+// Table holds no heartbeat of, the first relayed one has only the helper's
+// word, so a helper can delay a death by at most one suspicion, once per
+// boot.
 //
 // # What a heartbeat shows
 //
@@ -201,9 +226,22 @@ type Config struct {
 // show as a validly signed heartbeat that the replay window refuses for a
 // reason a replay cannot have: the boot sequence number of the current boot
 // with another boot ID, or the previous boot's sequence number and boot ID
-// with a counter beyond the last one accepted in that boot (the old boot is
-// still running). Such a heartbeat is dropped with ErrDuplicateIdentity and
-// raises one DuplicateIdentity event per conflicting boot ID.
+// with a counter beyond the last one accepted in that boot, and a Mono that
+// shows the previous boot still running after the current one started. A
+// router sends one packet per destination, so a member never sees all of a
+// neighbour's counters, and a recorded packet it missed comes with such a
+// counter: only its timing tells a replay from a second router. The Table
+// places the heartbeat's Mono on the local clock from the last heartbeat of
+// that boot it received directly (at the earliest maxDelay before it
+// arrived, less the drift), and the start of the current boot from its
+// heartbeats (at the latest when one arrived, less its Mono and the drift);
+// a heartbeat placed after that start is proof, any other is a replay. When
+// both boots have one kernel boot ID (the daemon restarted), they read one
+// clock: proof is a Mono more than maxDelay past the lowest the current run
+// sent. A previous boot the Table heard nothing of directly proves nothing.
+// Proof is dropped with ErrDuplicateIdentity and raises one
+// DuplicateIdentity event per conflicting boot ID; a replay is dropped with
+// ErrReplay.
 //
 // # Boot sequence numbers (security spec 5.3)
 //
@@ -292,6 +330,65 @@ type bootRun struct {
 	seq     uint64
 	boot    ids.BootID
 	highest uint64 // the highest counter accepted in it
+
+	// What the Mono of its heartbeats showed, as local Mono; never stored.
+	timed   bool          // a heartbeat of it was accepted, directly or relayed
+	minMono time.Duration // the lowest Mono accepted
+	maxMono time.Duration // the highest Mono accepted
+	upAt    time.Duration // its clock read maxMono at upAt or before
+	startBy time.Duration // it started at startBy or before
+	direct  bool          // a heartbeat of it was received directly
+	hearAt  time.Duration // when the one with the highest Mono of those arrived
+	hearMon time.Duration // its Mono
+}
+
+// sentBy returns the latest local moment at which r can have sent a
+// heartbeat with Mono m: upAt, plus m - maxMono and its drift. It returns
+// false when r has no heartbeat accepted, or m is not above maxMono.
+func (r *bootRun) sentBy(m time.Duration) (time.Duration, bool) {
+	if !r.timed || m <= r.maxMono {
+		return 0, false
+	}
+	return addSat(r.upAt, stretch(m-r.maxMono)), true
+}
+
+// note records a heartbeat of r with Mono m, accepted at the local moment
+// now, received directly or, if not direct, in an answer that arrived then.
+func (r *bootRun) note(m, now time.Duration, direct bool) {
+	if !r.timed {
+		r.timed, r.minMono, r.maxMono, r.upAt, r.startBy = true, m, m, now, now-shrink(m)
+	} else if m > r.maxMono {
+		up := now
+		if by, _ := r.sentBy(m); !direct && by < up {
+			up = by
+		}
+		r.maxMono, r.upAt = m, up
+	}
+	r.minMono = min(r.minMono, m)
+	r.startBy = min(r.startBy, now-shrink(m))
+	if direct && (!r.direct || m >= r.hearMon) {
+		r.direct, r.hearAt, r.hearMon = true, now, m
+	}
+}
+
+// stretch returns the longest a span of d on one router's clock can last on
+// another's: d plus its drift. d is not negative.
+func stretch(d time.Duration) time.Duration { return addSat(d, d/driftDiv) }
+
+// shrink returns the shortest a span of d on one router's clock can last on
+// another's: d less its drift. d is not negative.
+func shrink(d time.Duration) time.Duration { return d - d/driftDiv }
+
+// addSat returns a + b, held at the ends of the range instead of wrapping.
+func addSat(a, b time.Duration) time.Duration {
+	c := a + b
+	switch {
+	case b > 0 && c < a:
+		return math.MaxInt64
+	case b < 0 && c > a:
+		return math.MinInt64
+	}
+	return c
 }
 
 // ref returns when p was last heard, by the Table or a helper.
@@ -311,6 +408,7 @@ const (
 	fresh    verdict = iota // not seen: verify the signature, then accept
 	stale                   // older boot, outside the window, or seen
 	conflict                // only a second live router can send it
+	overlap                 // the previous boot beyond its highest counter: a conflict if its timing proves one
 )
 
 // newer reports whether a packet with these numbers is newer than the newest
@@ -325,13 +423,38 @@ func (p *peer) check(seq uint64, boot ids.BootID, counter uint64) verdict {
 	case p.cur.set && seq == p.cur.seq && boot != p.cur.boot:
 		return conflict
 	case p.prev.set && seq == p.prev.seq && boot == p.prev.boot && counter > p.prev.highest:
-		return conflict
+		return overlap
 	case p.restored.set && seq == p.restored.seq && counter <= p.restored.highest:
 		return stale
 	case seq < p.floor || !p.window.Check(seq, boot, counter):
 		return stale
 	}
 	return fresh
+}
+
+// outlived reports whether a heartbeat of p's previous boot with Mono m was
+// sent after p's current boot started, as the Table's doc describes: proof
+// that the previous boot was still running beside the current one.
+func (p *peer) outlived(m time.Duration) bool {
+	old, cur := &p.prev, &p.cur
+	if !cur.timed {
+		return false
+	}
+	if old.boot == cur.boot {
+		// One kernel boot, one clock; neither reading is negative.
+		return m-cur.minMono > maxDelay
+	}
+	if !old.direct {
+		return false
+	}
+	// The earliest local moment it can have been sent.
+	sent := old.hearAt - maxDelay
+	if m >= old.hearMon {
+		sent = addSat(sent, shrink(m-old.hearMon))
+	} else {
+		sent = addSat(sent, -stretch(old.hearMon-m))
+	}
+	return sent > cur.startBy
 }
 
 // Counters counts what a Table did with the packets it was given.
@@ -460,7 +583,7 @@ func (t *Table) Observe(epoch uint32, b []byte, now clock.Stamp) (Observed, erro
 		t.counters.Unknown++
 		return Observed{}, ErrUnknownMember
 	}
-	h, obs, err := t.admitHeartbeat(p, pk, false, now)
+	h, _, obs, err := t.admitHeartbeat(p, pk, false, now)
 	if err != nil {
 		return obs, err
 	}
@@ -470,38 +593,53 @@ func (t *Table) Observe(epoch uint32, b []byte, now clock.Stamp) (Observed, erro
 }
 
 // admitHeartbeat takes the heartbeat pk from p through the replay check, the
-// signature and decodeBody, and records it in p's replay window. A relayed
-// heartbeat must also be newer than the newest held of p. On failure it
-// counts the reason; a duplicate identity comes with its event in Observed.
-func (t *Table) admitHeartbeat(p *peer, pk packet, relayed bool, now clock.Stamp) (Heartbeat, Observed, error) {
-	switch p.check(pk.bootSeq, pk.boot, pk.counter) {
+// signature and decodeBody, records it in p's replay window, and notes its
+// Mono. A relayed heartbeat must also be newer than the newest held of p. It
+// returns the heartbeat and the latest local moment p can have sent it: now
+// for one received directly; for a relayed one, now or the bound p's clock
+// sets in a boot the Table has a heartbeat of, whichever is earlier. On
+// failure it counts the reason; a duplicate identity comes with its event in
+// Observed.
+func (t *Table) admitHeartbeat(p *peer, pk packet, relayed bool, now clock.Stamp) (Heartbeat, time.Duration, Observed, error) {
+	switch v := p.check(pk.bootSeq, pk.boot, pk.counter); v {
 	case stale:
 		t.counters.Replay++
-		return Heartbeat{}, Observed{}, ErrReplay
-	case conflict:
-		obs, err := t.duplicate(p, pk, now)
-		return Heartbeat{}, obs, err
+		return Heartbeat{}, 0, Observed{}, ErrReplay
+	case conflict, overlap:
+		obs, err := t.duplicate(p, pk, v, now)
+		return Heartbeat{}, 0, obs, err
 	}
 	if relayed && !p.newer(pk.bootSeq, pk.counter) {
 		t.counters.Replay++
-		return Heartbeat{}, Observed{}, ErrNotFresher
+		return Heartbeat{}, 0, Observed{}, ErrNotFresher
 	}
 	if !sig.Verify(p.pub, kindHeartbeat, pk.body, pk.sig) {
 		t.counters.Signature++
-		return Heartbeat{}, Observed{}, ErrSignature
+		return Heartbeat{}, 0, Observed{}, ErrSignature
 	}
 	h, err := decodeBody(pk.body)
 	if err != nil {
 		t.counters.Malformed++
-		return Heartbeat{}, Observed{}, err
+		return Heartbeat{}, 0, Observed{}, err
+	}
+	sent := now.Mono
+	if relayed && pk.bootSeq == p.cur.seq && p.cur.timed {
+		// The boot of a heartbeat the Table holds: its clock bounds it.
+		by, ok := p.cur.sentBy(h.Mono)
+		if !ok {
+			t.counters.Replay++
+			return Heartbeat{}, 0, Observed{}, ErrNotFresher
+		}
+		sent = min(sent, by)
 	}
 	if !t.accept(p, pk.bootSeq, pk.boot, pk.counter) {
 		// Cannot happen while t.mu is held from the check to here; kept so
 		// that a window that disagrees never lets a packet through.
 		t.counters.Replay++
-		return Heartbeat{}, Observed{}, ErrReplay
+		return Heartbeat{}, 0, Observed{}, ErrReplay
 	}
-	return h, Observed{}, nil
+	p.cur.note(h.Mono, now.Mono, !relayed)
+	return h, sent, Observed{}, nil
 }
 
 // observeSelf handles a heartbeat that carries the local member's own ID:
@@ -520,12 +658,26 @@ func (t *Table) observeSelf(pk packet) error {
 	return ErrSelf
 }
 
-// duplicate handles a heartbeat that only a second live router could send:
-// with a valid signature it is proof of a duplicate identity.
-func (t *Table) duplicate(p *peer, pk packet, now clock.Stamp) (Observed, error) {
+// duplicate handles a heartbeat the replay check judged v: conflict, which
+// only a second live router can send, or overlap, which proves one only by
+// its timing (outlived). With a valid signature, and for an overlap a Mono
+// that outlived accepts, it is proof of a duplicate identity; an overlap
+// without that is a replay.
+func (t *Table) duplicate(p *peer, pk packet, v verdict, now clock.Stamp) (Observed, error) {
 	if !sig.Verify(p.pub, kindHeartbeat, pk.body, pk.sig) {
 		t.counters.Signature++
 		return Observed{}, ErrSignature
+	}
+	if v == overlap {
+		h, err := decodeBody(pk.body)
+		if err != nil {
+			t.counters.Malformed++
+			return Observed{}, err
+		}
+		if !p.outlived(h.Mono) {
+			t.counters.Replay++
+			return Observed{}, ErrReplay
+		}
 	}
 	t.counters.Duplicate++
 	if p.dupSeen && p.dupBoot == pk.boot {
@@ -759,7 +911,8 @@ func (t *Table) Report(target ids.MemberID, now clock.Stamp) Report {
 // not suspect or a.From() was not asked in this suspicion; ErrBadReport for a
 // negative Ago or a heartbeat of another member; then the errors of Observe
 // for its heartbeat, and ErrNotFresher for one not newer than the newest
-// held. An answer without a heartbeat changes nothing. ErrUnknownMember if
+// held, or whose Mono does not advance past the highest held of its boot.
+// An answer without a heartbeat changes nothing. ErrUnknownMember if
 // a.From() is not, or no longer, in the roster.
 func (t *Table) RecordReport(a Admitted, r Report, now clock.Stamp) ([]events.Event, error) {
 	t.mu.Lock()
@@ -791,14 +944,16 @@ func (t *Table) RecordReport(a Admitted, r Report, now clock.Stamp) ([]events.Ev
 	if pk.from != p.id {
 		return nil, ErrBadReport
 	}
-	h, obs, err := t.admitHeartbeat(p, pk, true, now)
+	h, sent, obs, err := t.admitHeartbeat(p, pk, true, now)
 	if err != nil {
 		return obs.Events, err
 	}
 	t.counters.Relayed++
-	// Never before the Table's own last direct hearing: a helper's age only
-	// says when, never that the target was alive earlier than known.
-	at := max(now.Mono-r.Ago, p.heard)
+	// Never after the target can have sent it: a helper's age only says
+	// when, never that the target was alive later than its own clock allows.
+	// Never before the Table's own last direct hearing either: a helper's age
+	// never says that the target was alive earlier than known.
+	at := max(min(now.Mono-r.Ago, sent), p.heard)
 	return t.heard(p, h, r.Heartbeat, at, false, now), nil
 }
 
