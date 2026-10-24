@@ -128,7 +128,7 @@ func initScriptProblems(text string) []string {
 	present := map[string]bool{}
 	jailed, readOnly := false, false
 	roMounts := map[string]bool{}
-	snapshotAt, openAt := -1, -1
+	snapshotAt, openAt, followAt := -1, -1, -1
 	for n, raw := range strings.Split(text, "\n") {
 		line := strings.TrimSpace(raw)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -136,6 +136,9 @@ func initScriptProblems(text string) []string {
 		}
 		if snapshotAt < 0 && snapshotCall.MatchString(line) {
 			snapshotAt = n
+		}
+		if followAt < 0 && line == "rollcall_firewall_follow" {
+			followAt = n
 		}
 		if openAt < 0 && line == "procd_open_instance" {
 			openAt = n
@@ -215,6 +218,13 @@ func initScriptProblems(text string) []string {
 		problems = append(problems, "no procd_open_instance line")
 	case snapshotAt < 0 || snapshotAt > openAt:
 		problems = append(problems, "the snapshot is not written (\"$CLI\" snapshot) before procd_open_instance: the daemon reads only the snapshot, so it would refuse every start")
+	}
+	// Every start brings the firewall rules in line with the configuration: when only
+	// reload_service rebuilt them, a restart after a change of peer_zone, port or the static peers
+	// kept the old rules, and the peers' packets were dropped (virtual lab run 2026-10-24).
+	if openAt >= 0 && (followAt < 0 || followAt > openAt) {
+		problems = append(problems, "start_service does not bring the firewall rules in line (rollcall_firewall_follow) before procd_open_instance: "+
+			"a restart after a change of peer_zone, port or the static peers keeps the old rules and the peers' packets are dropped")
 	}
 	return problems
 }
@@ -433,6 +443,17 @@ func init() {
 				})
 			},
 			outcome: wantFail, expect: "snapshot is not written",
+		},
+		toothCase{
+			// The defect of the virtual lab run of 2026-10-24: a start that leaves the rules as the
+			// last reload_service built them.
+			name: "initscript_firewall_not_followed", gate: "TestInitScriptHardening",
+			plant: func(t *testing.T, dst string) {
+				editCopy(t, dst, initScriptRel, func(s string) string {
+					return strings.Replace(s, "\trollcall_firewall_follow\n", "", 1)
+				})
+			},
+			outcome: wantFail, expect: "does not bring the firewall rules in line",
 		},
 		toothCase{
 			name: "initscript_no_file", gate: "TestInitScriptHardening",

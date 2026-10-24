@@ -340,6 +340,7 @@ If the router was a sender and leaves for good, tell the person to revoke the to
 | `set-token` says the router does not have the sender role | step 7 skipped for this router | step 7 |
 | `... This router sends only with option sender '1' ...` | step 4 skipped | step 4, then `/etc/init.d/rollcall restart` |
 | a member stays `unheard` or `silent` | it cannot reach the others on port 7432 in a peer zone | check that both routers are in the zone named by `peer_zone`, and `uci -q get firewall.rollcall_1` |
+| joins refused or members `unheard` after a change of `peer_zone`, `port` or `peer` on 1.0.0-rc1 | on rc1 a restart keeps the firewall rules of the old configuration | `/etc/init.d/rollcall reload`; from the next release every start brings the rules in line |
 
 ## Reporting
 

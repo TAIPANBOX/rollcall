@@ -9,8 +9,10 @@ import (
 	"testing"
 )
 
-// fakeUCI answers `uci get` from UCI_DB (lines key=value, value as uci prints it, lists joined by
-// spaces) and appends every other command to UCI_LOG. A missing key fails, as uci does.
+// fakeUCI answers `uci get` and `uci show` from UCI_DB (lines key=value, value as uci prints it,
+// lists joined by spaces), appends every other command to UCI_LOG, and applies set, add_list and
+// delete to UCI_DB, so a second run sees what the first one wrote. A missing key fails, as uci
+// does; delete takes the key and every option under it.
 const fakeUCI = `#!/bin/sh
 [ "$1" = -q ] && shift
 cmd=$1
@@ -19,8 +21,22 @@ case $cmd in
 get)
 	exec awk -v k="$1" 'index($0, k "=") == 1 { print substr($0, length(k) + 2); found = 1; exit } END { exit !found }' "$UCI_DB"
 	;;
-*)
-	printf '%s %s\n' "$cmd" "$*" >>"$UCI_LOG"
+show)
+	exec awk -v c="$1." 'index($0, c) == 1' "$UCI_DB"
+	;;
+esac
+printf '%s %s\n' "$cmd" "$*" >>"$UCI_LOG"
+case $cmd in
+set | add_list)
+	k=${1%%=*}
+	v=${1#*=}
+	awk -v k="$k" -v v="$v" -v c="$cmd" '
+		index($0, k "=") == 1 { if (c == "add_list") $0 = $0 " " v; else $0 = k "=" v; done = 1 }
+		{ print }
+		END { if (!done) print k "=" v }' "$UCI_DB" >"$UCI_DB.new" && mv "$UCI_DB.new" "$UCI_DB"
+	;;
+delete)
+	awk -v k="$1" 'index($0, k "=") != 1 && index($0, k ".") != 1' "$UCI_DB" >"$UCI_DB.new" && mv "$UCI_DB.new" "$UCI_DB"
 	;;
 esac
 `
@@ -150,6 +166,122 @@ func TestFirewallRuleBuilder(t *testing.T) {
 			}
 			if c.warn != "" && !strings.Contains(warnings, c.warn) {
 				t.Errorf("no warning holding %q; warnings:\n%s", c.warn, warnings)
+			}
+		})
+	}
+}
+
+// followCase is one start of the service: the rollcall options the rules were last built for
+// (nil: no rules yet), the options at the start, the rules the start must leave, and whether it
+// must reload the firewall.
+type followCase struct {
+	name   string
+	built  []string
+	now    []string
+	want   []string
+	reload bool
+}
+
+var followCases = []followCase{
+	{name: "the first start writes the rules", built: nil, now: []string{},
+		want: []string{"src=lan port=7432"}, reload: true},
+	{name: "a start with nothing changed leaves the firewall alone", built: []string{}, now: []string{},
+		want: []string{"src=lan port=7432"}, reload: false},
+	{name: "peer_zone moved to wan with a static peer", built: []string{}, now: []string{"peer_zone=wan", "peer=10.32.0.2"},
+		want: []string{"src=wan port=7432 family=ipv4 src_ip=10.32.0.2"}, reload: true},
+	{name: "port changed", built: []string{}, now: []string{"port=7500"},
+		want: []string{"src=lan port=7500"}, reload: true},
+	{name: "a static peer added", built: []string{"peer_zone=wan", "peer=10.32.0.2"},
+		now:  []string{"peer_zone=wan", "peer=10.32.0.2 10.33.0.2"},
+		want: []string{"src=wan port=7432 family=ipv4 src_ip=10.32.0.2,10.33.0.2"}, reload: true},
+}
+
+// TestFirewallFollowsTheConfiguration runs rollcall_firewall_follow, which start_service runs at
+// every start, against the stateful stub: the rules follow peer_zone, port and the static peers,
+// and the firewall is reloaded only when the rules changed. Before, only reload_service rebuilt
+// them, so a restart after such a change kept the old rules, the peers' packets were dropped and
+// every join refused (virtual lab run 2026-10-24, until the firewall command ran by hand).
+func TestFirewallFollowsTheConfiguration(t *testing.T) {
+	root := requireRoot(t)
+	script := filepath.Join(root, filepath.FromSlash(initScriptRel))
+	if _, err := os.Stat(script); err != nil {
+		t.Fatalf("measured nothing: %v", err)
+	}
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Fatalf("measured nothing: no sh: %v", err)
+	}
+	bin := t.TempDir()
+	writeExec(t, filepath.Join(bin, "uci"), fakeUCI)
+	writeExec(t, filepath.Join(bin, "logger"), fakeLogger)
+
+	for _, c := range followCases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			dbPath, logPath := filepath.Join(dir, "db"), filepath.Join(dir, "log")
+			run := func(body string) string {
+				t.Helper()
+				writeFile(t, logPath, "")
+				cmd := exec.Command(sh, "-c", ". \"$1\"\n"+body, "sh", script)
+				cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+					"UCI_DB="+dbPath, "UCI_LOG="+logPath)
+				out, err := cmd.CombinedOutput()
+				if err != nil {
+					t.Fatalf("measured nothing: %s failed: %v\n%s", body, err, out)
+				}
+				data, err := os.ReadFile(logPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return string(data)
+			}
+			withOptions := func(db, opts []string) []string {
+				db = append(db, "rollcall.@rollcall[0]=rollcall")
+				for _, kv := range opts {
+					db = append(db, "rollcall.@rollcall[0]."+kv)
+				}
+				return db
+			}
+
+			db := slices.Clone(firewallZones)
+			if c.built != nil {
+				writeFile(t, dbPath, strings.Join(withOptions(db, c.built), "\n")+"\n")
+				run("firewall")
+				data, err := os.ReadFile(dbPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				db = nil
+				for _, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
+					if !strings.HasPrefix(line, "rollcall.") {
+						db = append(db, line)
+					}
+				}
+			}
+			writeFile(t, dbPath, strings.Join(withOptions(db, c.now), "\n")+"\n")
+			log := run("rollcall_firewall_reload() { echo reload >>\"$UCI_LOG\"; }\nrollcall_firewall_follow")
+
+			reloads := 0
+			var rest []string
+			for _, line := range strings.Split(log, "\n") {
+				if line == "reload" {
+					reloads++
+					continue
+				}
+				rest = append(rest, line)
+			}
+			got, _, _, problems := firewallRules(strings.Join(rest, "\n"))
+			for _, p := range problems {
+				t.Error(p)
+			}
+			if !slices.Equal(got, c.want) {
+				t.Errorf("rules:\n got %q\nwant %q", got, c.want)
+			}
+			switch {
+			case c.reload && reloads != 1:
+				t.Errorf("the rules changed and the firewall reloads %d times, want once", reloads)
+			case !c.reload && reloads != 0:
+				t.Errorf("nothing changed and the firewall reloads %d times, want none", reloads)
 			}
 		})
 	}
@@ -293,6 +425,38 @@ func init() {
 				removeFile(t, filepath.Join(dst, filepath.FromSlash(initScriptRel)))
 			},
 			outcome: wantFail, expect: "measured nothing",
+		},
+		toothCase{name: "firewall_follow_clean", gate: "TestFirewallFollowsTheConfiguration", outcome: wantPass},
+		toothCase{
+			// A start that rebuilds the rules but never reloads the firewall: the new rules sit in
+			// the file and the old ones stay in force.
+			name: "firewall_follow_never_reloads", gate: "TestFirewallFollowsTheConfiguration",
+			plant: func(t *testing.T, dst string) {
+				editCopy(t, dst, initScriptRel, func(s string) string {
+					return strings.Replace(s, `= "$before" ] || rollcall_firewall_reload`, `= "$before" ] || :`, 1)
+				})
+			},
+			outcome: wantFail, expect: "reloads 0 times, want once",
+		},
+		toothCase{
+			// Every start reloads the firewall, a change or not.
+			name: "firewall_follow_always_reloads", gate: "TestFirewallFollowsTheConfiguration",
+			plant: func(t *testing.T, dst string) {
+				editCopy(t, dst, initScriptRel, func(s string) string {
+					return strings.Replace(s, `[ "$(rollcall_rules_shown)" = "$before" ] || rollcall_firewall_reload`, `rollcall_firewall_reload`, 1)
+				})
+			},
+			outcome: wantFail, expect: "reloads 1 times, want none",
+		},
+		toothCase{
+			// The comparison sees no rule at all, so a change of the rules goes unnoticed.
+			name: "firewall_follow_blind", gate: "TestFirewallFollowsTheConfiguration",
+			plant: func(t *testing.T, dst string) {
+				editCopy(t, dst, initScriptRel, func(s string) string {
+					return strings.Replace(s, `grep -E '^firewall\.rollcall(_[0-9]+)?[.=]'`, `grep -E '^firewall\.nothing'`, 1)
+				})
+			},
+			outcome: wantFail, expect: "reloads 0 times, want once",
 		},
 	)
 }

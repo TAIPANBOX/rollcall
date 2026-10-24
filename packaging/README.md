@@ -150,10 +150,14 @@ the init script sets, and reads the path from `ControlDirPath` in `cmd/rollcalld
 ## Firewall
 
 One builder writes the rules: `/etc/init.d/rollcall firewall`. The postinst and
-`uci-defaults/90-rollcall` run it at install, and `reload_service` runs it again whenever the
-rollcall or firewall configuration changes (`procd_add_reload_trigger rollcall firewall`), then
-reloads the firewall and restarts the daemon when `/etc/config/rollcall` or the snapshot changed
-(`procd_set_param file`). It reads the configuration through `uci` alone and removes every rule
+`uci-defaults/90-rollcall` run it at install, and every start runs it again
+(`rollcall_firewall_follow`), so a restart after a change of `peer_zone`, `port` or the static
+peers opens what the new configuration needs; the firewall reloads only when the rules changed.
+A change of the rollcall or firewall configuration through LuCI or `reload_config` runs
+`reload_service` (`procd_add_reload_trigger rollcall firewall`), which starts the service again,
+and procd restarts the daemon when `/etc/config/rollcall` or the snapshot changed
+(`procd_set_param file`). Before, only `reload_service` rebuilt the rules, and a restart kept the
+old ones (virtual lab run, 2026-10-24). It reads the configuration through `uci` alone and removes every rule
 an earlier run wrote (`firewall.rollcall_N`, and `firewall.rollcall` of earlier versions).
 
 - One rule per peer zone, `src` = that zone (fw4 takes one zone per rule), UDP and TCP to
