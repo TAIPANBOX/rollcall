@@ -121,8 +121,9 @@ than the harness) and its log naming as many calls as its list; the control sock
 and TCP 7432 bound, a group made with `rollcall init` and the node started, a heartbeat routed
 (rtnetlink route lookup) to a static peer, discovery on the default-route device, 30 s alive and
 a clean stop. Last, daemons built from a copy of the tree whose list lacks `prctl`, `eventfd2` or
-`epoll_pwait` must log one call fewer and die by SIGSYS within 20 s (run with `GOGC=off` and
-driven by status calls, so the heap grows). `prctl` is shown only where the kernel names
+`epoll_pwait` must log one call fewer and die by SIGSYS within 60 s (run with `GOGC=off` and
+driven by status calls back to back, so the heap grows); one killed before it logged counts when
+the kernel's seccomp record names the call left out. `prctl` is shown only where the kernel names
 anonymous mappings (`CONFIG_ANON_VMA_NAME`); elsewhere the runtime stops calling it at its first
 refusal, before the filter is on, and the job says so. It tries linux/arm on the arm64 runner too
 and reports NOT RUN when that CPU or kernel does not execute AArch32. Not proven by CI: mips (no

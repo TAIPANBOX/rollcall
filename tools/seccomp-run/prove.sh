@@ -25,8 +25,10 @@
 #   2. rollcall notify going-down and SIGTERM: the daemon must stop with status 0;
 #   3. teeth: for each call the daemon makes once its filter is on, a daemon built from a copy of
 #      the tree whose lists lack only that call must log one allowed call fewer and be killed by
-#      SIGSYS within 20 s, run with GOGC=off and driven by status calls, so its heap grows and the
-#      runtime maps memory within seconds rather than hours. prctl (PR_SET_VMA, on each new
+#      SIGSYS within 60 s, run with GOGC=off and driven by status calls back to back, so its heap
+#      grows and the runtime maps memory within seconds rather than hours. A daemon killed before
+#      it logged its filter counts when the kernel's seccomp record names the call left out for
+#      its process. prctl (PR_SET_VMA, on each new
 #      mapping) is made only where the kernel names anonymous mappings (CONFIG_ANON_VMA_NAME):
 #      elsewhere the runtime stops calling it at its first refusal, before the filter is on, so
 #      there its teeth are reported as not shown, with the reason.
@@ -56,6 +58,14 @@ audit() {
 		echo "$line"
 		if [ -n "$nr" ]; then echo "  -> system call $nr is $("$BIN/seccomp-run" -name "$nr")"; fi
 	done
+}
+
+# killed_at prints the name of the system call in the kernel's last seccomp record (type=1326)
+# for process $1, or nothing when the kernel kept none for it.
+killed_at() {
+	local nr
+	nr=$(sudo dmesg 2>/dev/null | grep 'type=1326' | grep " pid=$1 " | sed -n 's/.* syscall=\([0-9]*\).*/\1/p' | tail -n 1) || true
+	[ -z "$nr" ] || "$BIN/seccomp-run" -name "$nr"
 }
 
 # reap waits for process $1 and sets GOT to its exit status, or SIG<name> when a signal killed
@@ -355,29 +365,47 @@ for drop in $drops; do
 	TPID=$!
 	# named: whether the kernel names the runtime's mappings ("[anon: Go: ...]" in maps), which it
 	# does only with CONFIG_ANON_VMA_NAME; unknown until the maps of the live daemon were read.
+	# The runtime names a mapping (prctl PR_SET_VMA) only when the heap grows past what it has
+	# mapped, in steps of 4 MB, so the daemon is kept busy with status calls back to back until it
+	# dies or 60 s pass. Five calls a second for 20 s did not always reach a new step (CI run
+	# 40069842269, x86_64: SIGKILL at the end of the 20 s).
 	named=unknown
-	for _ in $(seq 1 20); do
+	for _ in $(seq 1 60); do
 		kill -0 "$TPID" 2>/dev/null || break
 		if sudo cat "/proc/$TPID/maps" >"$WORK/teeth-maps" 2>/dev/null && [ -s "$WORK/teeth-maps" ]; then
 			if grep -q 'anon: Go:' "$WORK/teeth-maps"; then named=yes; elif [ "$named" = unknown ]; then named=no; fi
 		fi
-		for _ in 1 2 3 4 5; do sudo "$BIN/rollcall" status --json >/dev/null 2>&1 || true; done
-		sleep 1
+		end=$(($(date +%s) + 1))
+		while [ "$(date +%s)" -lt "$end" ] && kill -0 "$TPID" 2>/dev/null; do
+			sudo "$BIN/rollcall" status --json >/dev/null 2>&1 || true
+		done
 	done
 	kill -KILL "$TPID" 2>/dev/null || true
+	pid=$TPID
 	reap "$TPID"
 	TPID=
 	got=$GOT
+	at=
+	[ "$got" != SIGSYS ] || at=$(killed_at "$pid")
 	count=$(sed -n 's/.*seccomp filter installed on every thread: \([0-9]*\) system calls.*/\1/p;T;q' "$log")
-	if [ "$count" != $((ALLOWED - 1)) ]; then
+	# A daemon whose heap grows right after the filter is on dies before it logs its count (CI run
+	# 40031870419, aarch64: no count line). The kernel's record naming the call left out, for its
+	# process, shows the copy's list reached it as surely as the count does.
+	early=
+	if [ -z "$count" ] && [ "$got" = SIGSYS ] && [ "$at" = "$drop" ]; then
+		early=1
+	elif [ "$count" != $((ALLOWED - 1)) ]; then
 		cat "$log"
 		fail "teeth: the daemon built without $drop installed '${count:-no}' allowed calls, not $((ALLOWED - 1)): the copy's list did not reach it"
 	fi
-	if [ "$got" = SIGSYS ]; then
-		echo "teeth: without $drop the daemon ($count calls) was killed by SIGSYS"
+	if [ -n "$early" ]; then
+		echo "teeth: without $drop the daemon was killed by SIGSYS at $drop before it logged its filter (the kernel's record for pid $pid)"
+		shown="$shown $drop"
+	elif [ "$got" = SIGSYS ]; then
+		echo "teeth: without $drop the daemon ($count calls) was killed by SIGSYS${at:+ at $at}"
 		shown="$shown $drop"
 	elif [ "$drop" = prctl ] && [ "$named" = no ]; then
-		echo "teeth: without prctl the daemon ran 20 s and ended with $got: this kernel names no anonymous mapping ($(grep -h '^# CONFIG_ANON_VMA_NAME\|^CONFIG_ANON_VMA_NAME' "/boot/config-$(uname -r)" 2>/dev/null || echo 'its config not readable')), so the Go runtime stopped calling prctl(PR_SET_VMA) at its first refusal, before the filter was on"
+		echo "teeth: without prctl the daemon ran 60 s and ended with $got: this kernel names no anonymous mapping ($(grep -h '^# CONFIG_ANON_VMA_NAME\|^CONFIG_ANON_VMA_NAME' "/boot/config-$(uname -r)" 2>/dev/null || echo 'its config not readable')), so the Go runtime stopped calling prctl(PR_SET_VMA) at its first refusal, before the filter was on"
 		unshown=" Not shown here: prctl, which this kernel ($(uname -r)) never sees once the filter is on (no CONFIG_ANON_VMA_NAME)."
 	else
 		echo "kernel names the runtime's mappings: $named"
