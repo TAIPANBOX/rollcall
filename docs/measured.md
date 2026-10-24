@@ -175,6 +175,52 @@ rollcall beside it: 15.5 MB and 11 MiB. The two ran side by side through two reb
 They are separate packages, and neither depends on the other. Each needs its own Telegram bot: a
 second program polling the same bot gets in the way of rollcall's chat binding.
 
+## Virtual routers in separate networks, 2026-10-24
+
+Three virtual x86_64 routers on OpenWrt 25.12.5 (QEMU/KVM) in an isolated lab, named `r1`, `r2`
+and `r3`. Each sat in its own segment (`10.31.0.0/24`, `10.32.0.0/24`, `10.33.0.0/24`) with its
+own DHCP, and the lab host routed between them. `rollcall-1.0.0_rc1-r1` came from the signed feed,
+its key checked against the same SHA-256. `r1` created the group and `r2` and `r3` joined, each
+reaching the others in the `wan` zone through static peers, as a router in another network does.
+
+![Three virtual routers, each in its own network, and the four faults with the line each gave](vlab.svg)
+
+- **The four faults**, and the line each gave, verbatim from `rollcall status` on `r1`; `r2` and
+  `r3` hold the same four lines. The routers' clocks were in UTC.
+
+```text
+home: r3 rebooted unexpectedly at 05:07, back after 1 min 10 s, confirmed by 2 of 2. Times are approximate.
+home: r2 lost contact 05:09 to 05:10 but stayed up: a link problem, not a reboot, confirmed by 2 of 2.
+home: internet was down from 05:10 to 05:12 (1 min 13 s). Seen by r1. Times are approximate.
+home: r2 rebooted as planned at 05:12, back after 25 s, confirmed by 2 of 2. Times are approximate.
+```
+
+  - **Power of `r3` cut**, by stopping its virtual machine: an unexpected reboot, counted by both
+    other routers.
+  - **WAN cable of `r2` pulled**, the link set down from outside, so the router saw carrier 0: told
+    apart from a reboot and counted by both others, who also recorded "internet was down from 05:09
+    to 05:10 (54 s). Seen by r2." While cut off, `r2` saw `r1` and `r3` go silent and set that aside,
+    as a router that lost its own link does; the other two lists do not carry it.
+  - **Internet of `r1` cut upstream**, its link up: an internet outage seen by `r1`, and no line that
+    `r1` stopped answering, because it still answered.
+  - **A planned reboot of `r2`.**
+- **What this run does not show.** No chat was bound, so nothing was delivered. Each incident is
+  listed with the record of its start and the line that closes it; when the sender delivers, a
+  start whose incident has already closed folds into the closing line, and on the routers on
+  2026-10-23 one outage gave one chat message. The clocks were not yet trusted, hence "Times are
+  approximate". Power here is a stopped virtual machine, not a cord, and the cable a link set down
+  from outside the router.
+- **Found: a restart kept the old firewall rules.** With `peer_zone` set to `wan` and the static
+  peers added, the peers' packets were dropped and the joins refused until
+  `/etc/init.d/rollcall firewall` ran and the firewall reloaded; `r3` joined right after. Only
+  `reload_service` rebuilt the rules, and a restart, the usual step after a change, never ran it.
+  Fixed: every start brings the rules in line with `peer_zone`, `port` and the static peers, and
+  reloads the firewall only when they changed (gate `TestInitScriptHardening`, test
+  `TestFirewallFollowsTheConfiguration`). Run against the uci and busybox of OpenWrt 25.12.6 in a
+  container, the firewall reloaded at the first start, at a change of zone and at a change of port,
+  and not when nothing had changed. On 1.0.0-rc1, after changing `peer_zone`, `port` or `peer`, run
+  `/etc/init.d/rollcall reload` instead of a restart.
+
 ## CI
 
 Run `39990683889`, the push of commit `4186091` on 2026-10-23. Every job passed:
@@ -195,9 +241,10 @@ random faults (power cuts, reboots, upgrades, partitions, internet and Telegram 
 and delay), with its invariants checked afterwards. 1000 seeds, run twice on a development branch,
 were all clean.
 
-**Gates**: 18 under `internal/gates`. `TestGatesHaveTeeth` plants, for each one, the fault it exists
-for and requires the gate to fail, or requires it to pass on clean input. On `cafed12`, 2026-10-23,
-`go test ./internal/gates -run TestGatesHaveTeeth -count=1 -v` passed all 123 cases.
+**Gates**: 19 under `internal/gates`. `TestGatesHaveTeeth` plants, for each one, the fault it exists
+for and requires the gate to fail, or requires it to pass on clean input. On `524f26a`, 2026-10-24,
+all 128 cases passed in the full run below (123 on `cafed12`, before the gate for the firewall rules
+at every start).
 
 CI has no MIPS runner. A mutation job (gremlins v0.6.0) runs on manual runs and tags; it reports
 scores and does not gate. Run `39990682729` on `4186091`, test efficacy per package: replay 100.00%,
@@ -206,16 +253,16 @@ epoch 94.34%, roster 93.33%, history 90.65%, deliver 90.57%, pairing 84.69%, ele
 
 ## Tests on a workstation
 
-`go test ./... -count=1 -json` on 2026-10-23 at 22:20 BST, commit `cafed12`, Go 1.27.3 on
-darwin/arm64: 871 top-level tests passed, 0 failed, 4 skipped, and 913 subtests passed; 31 packages
+`go test ./... -count=1 -json` on 2026-10-24 at 07:16 BST, commit `524f26a`, Go 1.27.3 on
+darwin/arm64: 872 top-level tests passed, 0 failed, 4 skipped, and 923 subtests passed; 31 packages
 passed, two have no tests. The four skips: two gates that read what CI prepares
 (`ROLLCALL_COVERAGE`, `ROLLCALL_PACKAGES`), the ICMP probe (it needs a raw socket), and one
-link-local test that does not apply to macOS's loopback. Earlier runs that day: 869 and 902 at
-19:40 on `b2f9618`, 848 and 867 at 18:44 on `80c38d8`.
+link-local test that does not apply to macOS's loopback. Earlier runs: 871 and 913 on 2026-10-23 at
+22:20 on `cafed12`, 869 and 902 at 19:40 on `b2f9618`, 848 and 867 at 18:44 on `80c38d8`.
 
-Coverage on `cafed12`, every statement of `internal/...` together: 94.4%
+Coverage on `524f26a`, every statement of `internal/...` together: 94.4%
 (`go test -coverprofile=internal.out ./internal/... && go tool cover -func=internal.out`), as on
-`b2f9618`. On `80c38d8` it was 94.3%, from 90.4% (`internal/node`) to 100% per package. CI over `./...` with
+`cafed12` and `b2f9618`. On `80c38d8` it was 94.3%, from 90.4% (`internal/node`) to 100% per package. CI over `./...` with
 `-race` on `4186091`: 90.3%. On macOS the code that installs the seccomp filter does not run; the
 CI legs above run it. The CI gate keeps coverage from falling below `coverage-baseline.txt`, which
 holds 90.0 since commit `2f3f314`.
@@ -224,14 +271,16 @@ holds 90.0 since commit `2f3f314`.
 
 - **Flash wear over days, flash writes per hour, network bytes, power.** Not measured. For the
   flash only baselines were taken; the long run of 1.0.0-rc1 that started at 20:45 will give it.
-- **MIPS on hardware**, and every target but `aarch64_cortex-a53` on a router. arm and x86_64 ran in
-  CI only.
+- **MIPS on hardware**, and every target but `aarch64_cortex-a53` on a router. arm ran in CI only;
+  x86_64 ran in CI and in virtual routers (above).
 - **OpenWrt 24.10 and the `.ipk`.** Built, never installed on a router.
-- **Mesh, separate LANs with their own DHCP, routed segments, NAT.** The lab routers shared one
-  LAN; the other topologies ran in the in-process simulator only.
+- **A mesh and NAT, and separate networks on hardware.** Separate networks with their own DHCP,
+  routed between them, ran on virtual routers (above). The hardware routers shared one LAN, and a
+  mesh and NAT ran in the in-process simulator only.
+- **Delivery to the chat from separate networks.** The virtual run bound no chat.
 - **sysupgrade.** Not run, so whether a clean shutdown is announced during one is not known.
-- **A pulled power cord and an unplugged WAN cable.** The lab forced a reboot and removed a route
-  instead.
+- **A pulled power cord, and an unplugged WAN cable on hardware.** The hardware lab forced a reboot
+  and removed a route instead; the virtual lab stopped a machine and set a link down from outside.
 - **Replay and flood from a device on the LAN.** The tools are in `tools/`; unit tests and the
   simulator cover forged and replayed packets, the lab did not run them.
 - **The LuCI pages on a router.** The package installed; its pages and its rpcd rules were not used.

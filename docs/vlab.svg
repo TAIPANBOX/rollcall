@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="820" viewBox="0 0 1280 820" role="img" aria-label="A rollcall run in separate networks on 2026-10-24: three virtual x86_64 OpenWrt 25.12.5 routers, each in its own segment with its own DHCP, routed by the lab host. Four faults and what rollcall recorded: the power of r3 cut, r3 rebooted unexpectedly, back after 1 min 10 s, confirmed by 2 of 2; the WAN cable of r2 pulled, a link problem, not a reboot, confirmed by 2 of 2; the internet of r1 cut upstream, internet down for 1 min 13 s, seen by r1; a planned reboot of r2, back after 25 s, confirmed by 2 of 2.">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0a0e16"/><stop offset="1" stop-color="#0d1117"/></linearGradient>
+  <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#4493f8"/></linearGradient>
+  <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#161b22" stroke-width="1"/></pattern>
+  <filter id="soft" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#000000" flood-opacity="0.45"/></filter>
+  <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#69788b"/></marker>
+</defs>
+<rect width="1280" height="820" fill="url(#bg)"/><rect width="1280" height="820" fill="url(#grid)" opacity="0.5"/><rect width="1280" height="4" fill="url(#accent)"/>
+<text x="48" y="58" font-family="ui-sans-serif,system-ui,sans-serif" font-size="28" fill="#e6edf3" font-weight="600">Separate networks, four faults</text>
+<text x="48" y="84" font-family="ui-sans-serif,system-ui,sans-serif" font-size="17" fill="#69788b">2026-10-24, rollcall 1.0.0-rc1 from the signed feed, three virtual x86_64 OpenWrt 25.12.5 routers in an isolated lab.</text>
+<rect x="48" y="108" width="1184" height="232" rx="12" fill="#141a23" stroke="#1b2331" filter="url(#soft)"/>
+<rect x="430" y="132" width="420" height="64" rx="10" fill="#11161e" stroke="#46546a"/>
+<text x="640" y="159" font-family="ui-sans-serif,system-ui,sans-serif" font-size="17" fill="#e6edf3" font-weight="600" text-anchor="middle">the lab host</text>
+<text x="640" y="181" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8" text-anchor="middle">routes between the segments; every fault is its command</text>
+<line x1="640" y1="196" x2="258" y2="236" stroke="#2dd4bf" stroke-width="2"/>
+<rect x="88" y="236" width="340" height="84" rx="10" fill="#10221f" stroke="#2dd4bf"/>
+<text x="108" y="266" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="20" fill="#e6edf3" font-weight="600">r1</text>
+<text x="158" y="266" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#9aa7b8">primary admin</text>
+<text x="108" y="294" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="15" fill="#e6edf3">10.31.0.0/24, its own DHCP</text>
+<line x1="640" y1="196" x2="650" y2="236" stroke="#2dd4bf" stroke-width="2"/>
+<rect x="480" y="236" width="340" height="84" rx="10" fill="#10221f" stroke="#2dd4bf"/>
+<text x="500" y="266" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="20" fill="#e6edf3" font-weight="600">r2</text>
+<text x="550" y="266" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#9aa7b8">member</text>
+<text x="500" y="294" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="15" fill="#e6edf3">10.32.0.0/24, its own DHCP</text>
+<line x1="640" y1="196" x2="1042" y2="236" stroke="#2dd4bf" stroke-width="2"/>
+<rect x="872" y="236" width="340" height="84" rx="10" fill="#10221f" stroke="#2dd4bf"/>
+<text x="892" y="266" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="20" fill="#e6edf3" font-weight="600">r3</text>
+<text x="942" y="266" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#9aa7b8">member</text>
+<text x="892" y="294" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="15" fill="#e6edf3">10.33.0.0/24, its own DHCP</text>
+<rect x="48" y="360" width="1184" height="360" rx="12" fill="#141a23" stroke="#1b2331" filter="url(#soft)"/>
+<text x="80" y="396" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#69788b" font-weight="600">what was done (UTC)</text>
+<text x="560" y="396" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#69788b" font-weight="600">what rollcall recorded, verbatim, the same on all three</text>
+<rect x="72" y="416" width="1136" height="62" rx="10" fill="#11161e" stroke="#1b2331"/>
+<rect x="72" y="416" width="6" height="62" rx="3" fill="#ff6b63"/>
+<text x="96" y="453" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="17" fill="#ff6b63" font-weight="600">05:07</text>
+<text x="170" y="443" font-family="ui-sans-serif,system-ui,sans-serif" font-size="17" fill="#e6edf3" font-weight="600">power of r3 cut</text>
+<text x="170" y="465" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">the virtual machine stopped</text>
+<line x1="478" y1="447" x2="540" y2="447" stroke="#69788b" stroke-width="2" marker-end="url(#ar)"/>
+<text x="560" y="443" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="15" fill="#e6edf3">r3 rebooted unexpectedly at 05:07, back after</text>
+<text x="560" y="465" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="15" fill="#e6edf3">1 min 10 s, confirmed by 2 of 2.</text>
+<rect x="72" y="490" width="1136" height="62" rx="10" fill="#11161e" stroke="#1b2331"/>
+<rect x="72" y="490" width="6" height="62" rx="3" fill="#e3b341"/>
+<text x="96" y="527" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="17" fill="#e3b341" font-weight="600">05:09</text>
+<text x="170" y="517" font-family="ui-sans-serif,system-ui,sans-serif" font-size="17" fill="#e6edf3" font-weight="600">WAN cable of r2 pulled</text>
+<text x="170" y="539" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">link down inside the router</text>
+<line x1="478" y1="521" x2="540" y2="521" stroke="#69788b" stroke-width="2" marker-end="url(#ar)"/>
+<text x="560" y="517" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="15" fill="#e6edf3">r2 lost contact 05:09 to 05:10 but stayed up:</text>
+<text x="560" y="539" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="15" fill="#e6edf3">a link problem, not a reboot, confirmed by 2 of 2.</text>
+<rect x="72" y="564" width="1136" height="62" rx="10" fill="#11161e" stroke="#1b2331"/>
+<rect x="72" y="564" width="6" height="62" rx="3" fill="#4493f8"/>
+<text x="96" y="601" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="17" fill="#4493f8" font-weight="600">05:10</text>
+<text x="170" y="591" font-family="ui-sans-serif,system-ui,sans-serif" font-size="17" fill="#e6edf3" font-weight="600">internet of r1 cut upstream</text>
+<text x="170" y="613" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">its link stayed up</text>
+<line x1="478" y1="595" x2="540" y2="595" stroke="#69788b" stroke-width="2" marker-end="url(#ar)"/>
+<text x="560" y="591" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="15" fill="#e6edf3">internet was down from 05:10 to 05:12 (1 min 13 s).</text>
+<text x="560" y="613" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="15" fill="#e6edf3">Seen by r1.</text>
+<rect x="72" y="638" width="1136" height="62" rx="10" fill="#11161e" stroke="#1b2331"/>
+<rect x="72" y="638" width="6" height="62" rx="3" fill="#2dd4bf"/>
+<text x="96" y="675" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="17" fill="#2dd4bf" font-weight="600">05:12</text>
+<text x="170" y="665" font-family="ui-sans-serif,system-ui,sans-serif" font-size="17" fill="#e6edf3" font-weight="600">planned reboot of r2</text>
+<text x="170" y="687" font-family="ui-sans-serif,system-ui,sans-serif" font-size="14" fill="#9aa7b8">a clean shutdown</text>
+<line x1="478" y1="669" x2="540" y2="669" stroke="#69788b" stroke-width="2" marker-end="url(#ar)"/>
+<text x="560" y="665" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="15" fill="#e6edf3">r2 rebooted as planned at 05:12, back after 25 s,</text>
+<text x="560" y="687" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="15" fill="#e6edf3">confirmed by 2 of 2.</text>
+<text x="48" y="752" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#69788b">Clocks in UTC and not yet trusted, so most lines also end in “Times are approximate.” No chat was bound: nothing was delivered.</text>
+<text x="48" y="776" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" fill="#69788b">Power here is a stopped virtual machine and the cable a link set down from outside, not a cord or a plug.</text>
+</svg>

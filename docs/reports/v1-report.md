@@ -98,12 +98,16 @@ Found by the lab run, fixed:
                no count, 9d2c866
             announcements held while no chat was bound went out out of order, and "roles changed"
             did not say which role: ce0ad9e, 8146a83
+            L9 (virtual lab, 2026-10-24) a restart kept the firewall rules of the old peer_zone, so
+               the joins were refused: every start now brings the rules in line, gate
+               TestInitScriptHardening, test TestFirewallFollowsTheConfiguration
 
 NOT proven: flash wear over days: the long run of 1.0.0-rc1 started on 2026-10-23 at 20:45 on the
             three routers; its figures are not in yet (L5, L6, L8, the role wording and the order
             of announcements ran on the routers that evening: docs/measured.md)
             MIPS has not run anywhere; OpenWrt 24.10 not on a router
-            a mesh, separate LANs with their own DHCP, NAT with static peers: simulator only
+            a mesh and NAT: simulator only; separate networks with their own DHCP and static peers:
+            virtual x86_64 routers on 2026-10-24 (docs/measured.md), not hardware
             sysupgrade and a pulled power cord: not run (a forced reboot stood in for the cord)
             the LuCI pages on a router: installed, not used
             the hostile-LAN replay and flood checks were not run on the routers; replay and flood

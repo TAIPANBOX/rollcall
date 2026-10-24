@@ -29,7 +29,7 @@ is the list the package ships, nothing is opened first, and no sandbox means no 
 
 ## Unit tests
 
-- 871 tests pass, 0 fail, 4 skip, plus 913 subtests (`go test ./... -count=1 -json` on `cafed12`).
+- 872 tests pass, 0 fail, 4 skip, plus 923 subtests (`go test ./... -count=1 -json` on `524f26a`).
 - 94.4% of the statements of `internal/...` run under a test; CI measures 90.3% over the whole
   module with the race detector, and fails below the committed floor of 90.0%.
 - The four skips need what a laptop lacks: two read what CI prepares, one needs a raw socket, and
@@ -50,10 +50,10 @@ is the list the package ships, nothing is opened first, and no sandbox means no 
 
 ## Gates that must fail
 
-- 18 gates check rules that no unit test owns, such as the init script, the package owners or the
+- 19 gates check rules that no unit test owns, such as the init script, the package owners or the
   dependency list.
 - `TestGatesHaveTeeth` plants, for each gate, the fault it exists for and requires the gate to
-  fail, or requires it to pass on clean input: 123 cases on `cafed12`.
+  fail, or requires it to pass on clean input: 128 cases on `524f26a`.
 - Examples: an init script without `no_new_privs`, a package file owned by nobody, a module outside
   the allowed list, `InsecureSkipVerify` in the code, the daemon importing `os/exec`, a private key
   in the repository.
@@ -100,8 +100,20 @@ Planted bugs in the product code, and the share the tests catch (gremlins v0.6.0
 - The release candidate then went in from the signed feed; each daemon and its numbers:
   [measured.md](measured.md#footprint-per-router-2157).
 
+## The virtual lab
+
+![Three virtual routers, each in its own network, and the four faults with the line each gave](vlab.svg)
+
+- Three virtual x86_64 OpenWrt routers, each in its own network with its own DHCP and routed
+  between them, ran the release candidate from the signed feed on 2026-10-24.
+- Four faults, each told as what it was: a cut power as an unexpected reboot, a pulled WAN cable as
+  a link problem, an upstream cut as an internet outage, a planned reboot as planned.
+- It found one more defect: a restart kept the firewall rules of the old configuration, so after
+  a change of `peer_zone` the joins were refused. Every start now brings the rules in line, with a
+  gate. The lines and the details: [measured.md](measured.md#virtual-routers-in-separate-networks-2026-10-24).
+
 ## Not proven yet
 
 The list is in the [README](../README.md#not-yet) and in [measured.md](measured.md#not-yet): no
-mesh, no NAT and no MIPS on hardware yet, no sysupgrade, no pulled power cord, no flash wear over
-days.
+mesh, no NAT, no separate networks and no MIPS on hardware yet, no sysupgrade, no pulled power
+cord, no flash wear over days.
