@@ -121,8 +121,9 @@ than the harness) and its log naming as many calls as its list; the control sock
 and TCP 7432 bound, a group made with `rollcall init` and the node started, a heartbeat routed
 (rtnetlink route lookup) to a static peer, discovery on the default-route device, 30 s alive and
 a clean stop. Last, daemons built from a copy of the tree whose list lacks `prctl`, `eventfd2` or
-`epoll_pwait` must log one call fewer and die by SIGSYS within 20 s (run with `GOGC=off` and
-driven by status calls, so the heap grows). `prctl` is shown only where the kernel names
+`epoll_pwait` must log one call fewer and die by SIGSYS within 60 s (run with `GOGC=off` and
+driven by status calls back to back, so the heap grows); one killed before it logged counts when
+the kernel's seccomp record names the call left out. `prctl` is shown only where the kernel names
 anonymous mappings (`CONFIG_ANON_VMA_NAME`); elsewhere the runtime stops calling it at its first
 refusal, before the filter is on, and the job says so. It tries linux/arm on the arm64 runner too
 and reports NOT RUN when that CPU or kernel does not execute AArch32. Not proven by CI: mips (no
@@ -150,10 +151,14 @@ the init script sets, and reads the path from `ControlDirPath` in `cmd/rollcalld
 ## Firewall
 
 One builder writes the rules: `/etc/init.d/rollcall firewall`. The postinst and
-`uci-defaults/90-rollcall` run it at install, and `reload_service` runs it again whenever the
-rollcall or firewall configuration changes (`procd_add_reload_trigger rollcall firewall`), then
-reloads the firewall and restarts the daemon when `/etc/config/rollcall` or the snapshot changed
-(`procd_set_param file`). It reads the configuration through `uci` alone and removes every rule
+`uci-defaults/90-rollcall` run it at install, and every start runs it again
+(`rollcall_firewall_follow`), so a restart after a change of `peer_zone`, `port` or the static
+peers opens what the new configuration needs; the firewall reloads only when the rules changed.
+A change of the rollcall or firewall configuration through LuCI or `reload_config` runs
+`reload_service` (`procd_add_reload_trigger rollcall firewall`), which starts the service again,
+and procd restarts the daemon when `/etc/config/rollcall` or the snapshot changed
+(`procd_set_param file`). Before, only `reload_service` rebuilt the rules, and a restart kept the
+old ones (virtual lab run, 2026-10-24). It reads the configuration through `uci` alone and removes every rule
 an earlier run wrote (`firewall.rollcall_N`, and `firewall.rollcall` of earlier versions).
 
 - One rule per peer zone, `src` = that zone (fw4 takes one zone per rule), UDP and TCP to

@@ -32,6 +32,11 @@ start_service() {
 	mkdir -p /var/run/rollcalld
 	chown rollcall:rollcall /var/run/rollcalld
 	chmod 0700 /var/run/rollcalld
+	# The firewall rules follow the configuration at every start, so a restart after a change of
+	# peer_zone, port or the static peers opens what the new configuration needs. When only
+	# reload_service rebuilt them, a restart kept the old rules, the peers' packets were dropped and
+	# every join was refused (virtual lab run 2026-10-24).
+	rollcall_firewall_follow
 	# The daemon never reads /etc/config/network, system or firewall: on OpenWrt 25.12 network and
 	# system are root's alone (0600) and may hold PPPoE passwords and WireGuard private keys. Root
 	# writes what the daemon needs from them (the zones, their devices, which zones face the
@@ -90,15 +95,32 @@ service_triggers() {
 }
 
 reload_service() {
-	firewall
-	/etc/init.d/firewall reload >/dev/null 2>&1 || true
-	# start runs start_service, which writes the snapshot again before procd compares the files.
+	# start runs start_service, which brings the firewall rules in line and writes the snapshot
+	# again before procd compares the files.
 	start
 }
 
+# rollcall_firewall_follow runs the builder and reloads the firewall only when the rules it leaves
+# differ from the ones before, so a start that changes nothing does not reload the firewall.
+rollcall_firewall_follow() {
+	local before
+	before=$(rollcall_rules_shown)
+	firewall
+	[ "$(rollcall_rules_shown)" = "$before" ] || rollcall_firewall_reload
+}
+
+# rollcall_rules_shown prints the rules the builder owns, as uci shows them.
+rollcall_rules_shown() {
+	uci -q show firewall | grep -E '^firewall\.rollcall(_[0-9]+)?[.=]'
+}
+
+rollcall_firewall_reload() {
+	/etc/init.d/firewall reload >/dev/null 2>&1 || true
+}
+
 # firewall rebuilds the firewall rules that open the rollcall port. It is the only rule builder:
-# uci-defaults and postinst run it at install, reload_service after a change. It reads the
-# configuration through uci alone and removes every rule an earlier run wrote first.
+# uci-defaults and postinst run it at install, every start through rollcall_firewall_follow. It
+# reads the configuration through uci alone and removes every rule an earlier run wrote first.
 #
 # One rule per peer zone (no peer_zone: lan, the daemon's default), UDP and TCP to option port
 # (default 7432). A zone that faces the internet, as internal/config decides it (masq or masq6

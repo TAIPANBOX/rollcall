@@ -187,18 +187,22 @@ keys and, on a sender, the bot token. If you remove a sender for good, revoke it
 ![From the tests to the routers: tests, simulator, gates, mutation, reproducible builds, the lab, the release candidate](docs/proof.svg)
 
 - **Simulator**: virtual routers under random faults; 200 seeds on every push, 1000 clean.
-- **Gates with teeth**: 18 gates, each made to fail on a planted copy of its fault.
+- **Gates with teeth**: 19 gates, each made to fail on a planted copy of its fault.
 - **Mutation testing**: bugs planted in the product code, and the share the tests catch.
 - **Reproducible and attested**: two arm64 builds byte-identical; every release file attested.
 - **A lab run on three routers** found four defects the tests had not; each now has a gate.
+- **Virtual routers in separate networks**, each with its own DHCP: a cut power, a pulled WAN cable,
+  an upstream internet cut and a planned reboot, each told as what it was.
 
 Details: [docs/testing.md](docs/testing.md) and [docs/reports/v1-report.md](docs/reports/v1-report.md).
 
 ## Not yet
 
 - No final 1.0.0 yet, and no feed for OpenWrt 24.10 (opkg).
-- Only `aarch64_cortex-a53` on a router; MIPS has not run anywhere, OpenWrt 24.10 not on a router.
-- A mesh, separate LANs with their own DHCP, and NAT: only in the simulator so far.
+- On hardware only `aarch64_cortex-a53`, x86_64 in virtual routers; MIPS has not run anywhere,
+  OpenWrt 24.10 not on a router.
+- A mesh and NAT: only in the simulator so far. Separate networks with their own DHCP: on
+  virtual routers, not yet on hardware.
 - sysupgrade and a pulled power cord: not run yet.
 - Flash writes and wear over days, and network bytes: the long run started on 2026-10-23 will
   measure them.

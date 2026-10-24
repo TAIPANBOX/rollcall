@@ -1,7 +1,7 @@
 #!/bin/sh
 # Opens the rollcall port to the peer zones at first boot and after an upgrade. The rule builder
-# is the firewall command of /etc/init.d/rollcall, the same one reload_service runs when the
-# rollcall or firewall configuration changes, so there is one builder. It reads option port,
+# is the firewall command of /etc/init.d/rollcall, the same one every start of the service runs
+# to bring the rules in line with the configuration, so there is one builder. It reads option port,
 # the peer zones (lan when none is set) and the static peers, and opens a zone that faces the
 # internet only to the static peers. Running it again is harmless.
 [ -x /etc/init.d/rollcall ] && /etc/init.d/rollcall firewall
