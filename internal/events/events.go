@@ -32,6 +32,12 @@ const (
 	InternetLost     Type = "internet_lost"     // a member's internet probes failed
 	InternetRestored Type = "internet_restored" // and succeed again
 	UplinkSwitched   Type = "uplink_switched"   // a member moved to another uplink
+	// DNSLost: the DNS servers a member's uplink names stopped answering
+	// while its internet probe still got through; DNSRestored: one answers
+	// again. Older versions do not know them and tell each as a fact of its
+	// own ("event dns_lost at ...").
+	DNSLost     Type = "dns_lost"
+	DNSRestored Type = "dns_restored"
 
 	MemberJoined Type = "member_joined"
 	MemberLeft   Type = "member_left"

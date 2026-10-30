@@ -20,6 +20,12 @@ the chat. Everything here describes the code of 1.0.0-rc1; what ran on routers i
   others recorded *its* absence, and its view is set aside. With only two routers, both views stay.
 - **Internet**: every 10 s a TCP connection to port 443 of 1.1.1.1 and 8.8.8.8 (configurable); any
   answer counts, three failed rounds mean lost. **WAN**: hotplug events through the CLI, never ubus.
+- **DNS**: in the same rounds, one query for `openwrt.org` (option `dns_name`) to each DNS server
+  the uplink names in `/tmp/resolv.conf.d/resolv.conf.auto`, past dnsmasq's cache (or to the
+  servers of `list dns_server`). Any answer counts, "no such name" too; three failed rounds mean
+  lost. A round counts only while the internet probe gets through, so a lost internet is told as
+  that, never as DNS as well. Without servers the probe judges nothing and the log says so once;
+  `option dns_probe '0'` turns it off.
 
 ## What kind of incident it was
 
@@ -37,12 +43,24 @@ the chat. Everything here describes the code of 1.0.0-rc1; what ran on routers i
 
 - **One absence, one incident**: the silence, the return and the router's own account, however long
   it was away. The window is 10 s from the first event.
+- **One router's link changes, 30 s apart at most, one message** (`@decided 2026-10-30`): its WAN,
+  internet and DNS losses at the start of an outage in one line ("WAN and internet went down at
+  14:34"), the returns at its end in one line, and a link that keeps dropping in one line with
+  the count ("WAN went down 3 times, 1 min 7 s in all"). The first alert comes later for it
+  (`@decided 2026-10-30`): about 40 to 45 s later for a WAN cut and about 20 s later for an
+  internet loss alone, since the internet probe records its loss about 20 s after the WAN went
+  down and the chain then waits its 30 s (replayed lab cells: 52 to 57 s after the first
+  record, against 12 s and 37 s with a 10 s window). A loss its probe records later still joins the outage it
+  belongs to. A link that never stops dropping is told at the latest 60 s after its first record,
+  while it still flaps ("WAN keeps dropping since 09:01: down 6 times so far"); its end then tells
+  the whole outage with every drop.
 - **A cause and its effects**: the main router reboots and the access points lose the internet:
   one message about the main router.
 - **The whole site**: every router loses the internet, or the power: one message naming them all.
 - **Start and end together**: an outage is held back while its end is about to join it.
 - **Each router's own outage**: a return ends only the loss of the router that came back; two routers
-  back within seconds give one message, from the first loss to the last return.
+  back within seconds give one message, from the first loss to the last return. When some are back
+  and others still down, the message says which.
 - **Late records** of the same type about the same router are told already: absorbed.
 - **One ID**: the tag is the first 8 digits of the incident ID, which every router computes alike.
 

@@ -44,7 +44,7 @@ func TestCloseStopsTheNode(t *testing.T) {
 	h := start(t, f.dir, nil)
 	h.run(70 * time.Second) // the first flushes are behind
 	h.d.localEvent(events.InternetLost, time.Time{}, nil)
-	h.run(15 * time.Second) // the incident is made; the next flush is a minute away
+	h.run(35 * time.Second) // the incident is made (a link change waits 30 s); the next flush is a minute away
 	if got := recentIncidents(t, f.dir); len(got) != 0 {
 		t.Fatalf("the state file holds %v before the shutdown: the case did not happen", got)
 	}

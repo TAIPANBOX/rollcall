@@ -1,7 +1,9 @@
 package deliver
 
 import (
+	"cmp"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -46,6 +48,25 @@ const (
 	wordWanDown      = "WAN was down from %s to %s (%s)"
 	wordWanLost      = "WAN went down at %s"
 	wordWanBack      = "WAN came back at %s"
+	wordDNSDown      = "DNS was down from %s to %s (%s)"
+	wordDNSLost      = "DNS stopped answering at %s"
+	wordDNSBack      = "DNS answered again at %s"
+	wordDNSOnly      = "Only name lookups failed"
+	wordLinksDown    = "%s were down from %s to %s (%s)"
+	wordLinksLost    = "%s went down at %s"
+	wordLinksBack    = "%s came back at %s"
+	wordLinkWasDown  = "%s was down from %s to %s (%s)"
+	wordLinksPartly  = "%s came back at %s on %s, still down on %s"
+	wordFlapping     = "%s keeps dropping since %s: down %d times so far"
+	wordFlappingDown = "%s went down at %s and keeps dropping: down %d times so far"
+	wordOn           = "%s on %s"
+	wordLinkJoin     = "; "
+	wordDrops        = "%s went down %d times"
+	wordDropsOn      = "%s went down %d times on %s"
+	wordDropsAll     = ", %s in all"
+	wordNameWAN      = "WAN"
+	wordNameInternet = "internet"
+	wordNameDNS      = "DNS"
 	wordUplink       = "uplink switched at %s"
 	wordFlood        = "a flood of packets that failed authentication reached the group at %s"
 	wordSeenBy       = "Seen by %s"
@@ -125,6 +146,134 @@ type Facts struct {
 	// Changes are the roster changes a RosterChanged incident announces or a
 	// RosterChangesDropped incident lists as undone, in the order to show.
 	Changes []Change
+	// Links sums up, for an incident of link changes, each kind of link in
+	// it (LinksOf over its events). Without it a link incident is told from
+	// its types, Start and End alone.
+	Links []Link
+	// Ongoing says that the chain of link changes the incident tells had not
+	// gone quiet when it was made (the node's ceiling): a link of it that
+	// dropped more than once is told as one that keeps dropping, not as one
+	// that was down.
+	Ongoing bool
+}
+
+// Link is what an incident of link changes holds of one kind of link: the
+// WAN, the internet behind it, or the DNS servers its uplink names.
+type Link struct {
+	// Kind is the loss that names the kind: events.WanDown,
+	// events.InternetLost or events.DNSLost.
+	Kind events.Type
+	// Lost and Back say whether the incident holds a loss and a return of
+	// it. Down says whether a router's last record of it is a loss: it is
+	// still down at the incident's end.
+	Lost, Back, Down bool
+	// Up and Still are the hex IDs of the routers whose last record of it is
+	// a return, and a loss, in ID order.
+	Up, Still []string
+	// From is its first loss, To its last return, as the routers stamped
+	// them; zero without one.
+	From, To clock.Stamp
+	// Drops is the most times one router saw it go down: a loss while it
+	// was up or not yet known counts, a loss while it was down repeats one.
+	// Of is that router's hex ID, Gone how long its drops that ended lasted
+	// in all, and Ended whether every one of them ended.
+	Drops int
+	Of    string
+	Gone  time.Duration
+	Ended bool
+}
+
+// linkKinds are the kinds of link a message names, in the order it names
+// them, each with its loss, its return and its name.
+var linkKinds = []struct {
+	loss, back events.Type
+	name       string
+}{
+	{events.WanDown, events.WanUp, wordNameWAN},
+	{events.InternetLost, events.InternetRestored, wordNameInternet},
+	{events.DNSLost, events.DNSRestored, wordNameDNS},
+}
+
+// Elided is what a kept incident no longer holds of one router's link to
+// keep its size bounded: Drops drops that ended, down for Gone in all, all
+// of them between the router's first and last records of the link it holds.
+// Kind is the link's loss, Witness the router's hex ID.
+type Elided struct {
+	Kind    events.Type
+	Witness string
+	Drops   int
+	Gone    time.Duration
+}
+
+// LinksOf sums up the losses and returns of links among evs: one Link per
+// kind that occurs, in the order WAN, internet, DNS. Each router's records
+// of a kind are read in the order of their stamps: a loss while the link was
+// up, or as its first record, opens a drop, a loss while it was down repeats
+// that drop, and a return ends it. Every other event is passed over. The
+// drops elided add to their router's count and time down.
+func LinksOf(evs []events.Event, elided ...Elided) []Link {
+	var out []Link
+	for _, k := range linkKinds {
+		per := map[string][]events.Event{}
+		for _, e := range evs {
+			if e.Type == k.loss || e.Type == k.back {
+				w := e.Witness.String()
+				per[w] = append(per[w], e)
+			}
+		}
+		if len(per) == 0 {
+			continue
+		}
+		l := Link{Kind: k.loss}
+		for _, w := range slices.Sorted(maps.Keys(per)) {
+			es := per[w]
+			slices.SortStableFunc(es, func(a, b events.Event) int {
+				if c := a.At.Wall.Compare(b.At.Wall); c != 0 {
+					return c
+				}
+				return cmp.Compare(a.At.Mono, b.At.Mono)
+			})
+			down, drops := false, 0
+			var since clock.Stamp
+			var gone time.Duration
+			for _, e := range es {
+				if e.Type == k.loss {
+					l.Lost = true
+					if l.From == (clock.Stamp{}) || e.At.Wall.Before(l.From.Wall) {
+						l.From = e.At
+					}
+					if !down {
+						down, drops, since = true, drops+1, e.At
+					}
+					continue
+				}
+				l.Back = true
+				if l.To == (clock.Stamp{}) || e.At.Wall.After(l.To.Wall) {
+					l.To = e.At
+				}
+				if down {
+					d, _ := clock.Duration(since, e.At)
+					gone, down = gone+d, false
+				}
+			}
+			for _, x := range elided {
+				if x.Kind == k.loss && x.Witness == w {
+					drops, gone = drops+x.Drops, gone+x.Gone
+				}
+			}
+			l.Down = l.Down || down
+			if down {
+				l.Still = append(l.Still, w)
+			} else {
+				l.Up = append(l.Up, w)
+			}
+			if drops > l.Drops {
+				l.Drops, l.Of, l.Gone, l.Ended = drops, w, gone, !down
+			}
+		}
+		out = append(out, l)
+	}
+	return out
 }
 
 // ChangeKind is what a roster change did to a member.
@@ -216,11 +365,17 @@ func (m *message) describe(inc events.Incident) (string, []string) {
 	}
 	seen := m.seenBy(inc.Witnesses)
 	at := m.at(inc.Start.Wall)
+	if len(m.f.Links) > 0 {
+		first, rest := m.links(inc, m.f.Links)
+		return first, append(rest, seen...)
+	}
 	switch {
 	case has(inc.Events, events.InternetLost) || has(inc.Events, events.InternetRestored):
 		return m.change(inc, events.InternetLost, events.InternetRestored, wordInternetDown, wordInternetLost, wordInternetBack), seen
 	case has(inc.Events, events.WanDown) || has(inc.Events, events.WanUp):
 		return m.change(inc, events.WanDown, events.WanUp, wordWanDown, wordWanLost, wordWanBack), seen
+	case has(inc.Events, events.DNSLost) || has(inc.Events, events.DNSRestored):
+		return m.change(inc, events.DNSLost, events.DNSRestored, wordDNSDown, wordDNSLost, wordDNSBack), append([]string{wordDNSOnly}, seen...)
 	case has(inc.Events, events.UplinkSwitched):
 		return fmt.Sprintf(wordUplink, at), seen
 	case has(inc.Events, events.UnderFlood):
@@ -297,6 +452,210 @@ func (m *message) absence(kind events.Type, known bool, who string, inc events.I
 	default: // MemberBack
 		return fmt.Sprintf(wordBack, who, at, took)
 	}
+}
+
+// links tells an incident of link changes from its summary ls (LinksOf): in
+// one sentence the links that keep dropping (Facts.Ongoing), the links that
+// went down and came back, the links still down, and the links that came
+// back without their loss in the incident; then a
+// sentence for each link one router saw go down more than once, with the
+// count and, when every drop ended, how long they lasted in all; then, when
+// only DNS failed, that only name lookups did.
+//
+// When every link is in one of the three states, the sentence takes its
+// moments from the incident's Start and End, which Coalesce places on the
+// corrected clocks. A mixed incident, or links that went down further apart
+// than events.LinkWindow, tells each link at its own moments.
+func (m *message) links(inc events.Incident, ls []Link) (string, []string) {
+	var was, down, back, partly, flapping []Link
+	for _, l := range ls {
+		switch {
+		case m.f.Ongoing && l.Drops > 1:
+			flapping = append(flapping, l)
+		case l.Down && len(l.Up) > 0:
+			partly = append(partly, l)
+		case l.Down:
+			down = append(down, l)
+		case l.Lost:
+			was = append(was, l)
+		default:
+			back = append(back, l)
+		}
+	}
+	states := 0
+	for _, s := range [][]Link{was, down, back, partly, flapping} {
+		if len(s) > 0 {
+			states++
+		}
+	}
+	one := states == 1
+	var parts []string
+	for _, l := range flapping {
+		name := linkName(l.Kind)
+		if len(inc.Witnesses) > 1 {
+			name = fmt.Sprintf(wordOn, name, m.name(l.Of))
+		}
+		if slices.Contains(l.Still, l.Of) { // the router that keeps dropping it is down for now
+			parts = append(parts, fmt.Sprintf(wordFlappingDown, name, m.at(l.From.Wall), l.Drops))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf(wordFlapping, name, m.at(l.From.Wall), l.Drops)+fmt.Sprintf(wordDropsAll, durationText(l.Gone)))
+	}
+	if len(was) > 0 {
+		parts = append(parts, m.linksWere(inc, was, one))
+	}
+	if len(down) > 0 {
+		at := inc.Start
+		if !one {
+			at = earliestFrom(down)
+		}
+		parts = append(parts, linksSentence(down, wordLinksLost, map[events.Type]string{
+			events.WanDown: wordWanLost, events.InternetLost: wordInternetLost, events.DNSLost: wordDNSLost}, m.at(at.Wall)))
+	}
+	if len(back) > 0 {
+		at := inc.End
+		if !one {
+			at = latestTo(back)
+		}
+		parts = append(parts, linksSentence(back, wordLinksBack, map[events.Type]string{
+			events.WanDown: wordWanBack, events.InternetLost: wordInternetBack, events.DNSLost: wordDNSBack}, m.at(at.Wall)))
+	}
+	parts = append(parts, m.linksPartly(partly)...)
+	var rest []string
+	dnsOnly := true
+	for _, l := range ls {
+		if l.Kind != events.DNSLost {
+			dnsOnly = false
+		}
+		if l.Drops < 2 || slices.ContainsFunc(flapping, func(f Link) bool { return f.Kind == l.Kind }) {
+			continue // a flapping link is counted in the first sentence
+		}
+		name := capitalized(linkName(l.Kind))
+		s := fmt.Sprintf(wordDrops, name, l.Drops)
+		if len(inc.Witnesses) > 1 {
+			s = fmt.Sprintf(wordDropsOn, name, l.Drops, m.name(l.Of))
+		}
+		if l.Ended {
+			s += fmt.Sprintf(wordDropsAll, durationText(l.Gone))
+		}
+		rest = append(rest, s)
+	}
+	if dnsOnly && slices.ContainsFunc(ls, func(l Link) bool { return l.Kind == events.DNSLost }) {
+		rest = append(rest, wordDNSOnly)
+	}
+	return strings.Join(parts, wordLinkJoin), rest
+}
+
+// linksWere tells the links that went down and came back: together, from
+// the first loss to the last return, when they went down within
+// events.LinkWindow of each other, else each with its own span. one says
+// that every link of the incident is among them, so the span is the
+// incident's own.
+func (m *message) linksWere(inc events.Incident, ls []Link, one bool) string {
+	together := true
+	for _, l := range ls {
+		if d := l.From.Wall.Sub(ls[0].From.Wall); d > events.LinkWindow || d < -events.LinkWindow {
+			together = false
+		}
+	}
+	if together {
+		from, to := inc.Start, inc.End
+		if !one {
+			from, to = earliestFrom(ls), latestTo(ls)
+		}
+		a, b := m.span(from.Wall, to.Wall)
+		took := m.duration(from, to)
+		if len(ls) == 1 {
+			return fmt.Sprintf(wordLinkWasDown, linkName(ls[0].Kind), a, b, took)
+		}
+		return fmt.Sprintf(wordLinksDown, linkNames(ls), a, b, took)
+	}
+	var out []string
+	for _, l := range ls {
+		a, b := m.span(l.From.Wall, l.To.Wall)
+		out = append(out, fmt.Sprintf(wordLinkWasDown, linkName(l.Kind), a, b, m.duration(l.From, l.To)))
+	}
+	return strings.Join(out, wordList)
+}
+
+// linksPartly tells the links that came back on some routers and are still
+// down on others: one phrase for the links that share both lists of routers,
+// at the last return among them.
+func (m *message) linksPartly(ls []Link) []string {
+	var out []string
+	done := make([]bool, len(ls))
+	for i, l := range ls {
+		if done[i] {
+			continue
+		}
+		same := []Link{l}
+		for j := i + 1; j < len(ls); j++ {
+			if !done[j] && slices.Equal(ls[j].Up, l.Up) && slices.Equal(ls[j].Still, l.Still) {
+				same, done[j] = append(same, ls[j]), true
+			}
+		}
+		out = append(out, fmt.Sprintf(wordLinksPartly, linkNames(same), m.at(latestTo(same).Wall), m.names(l.Up), m.names(l.Still)))
+	}
+	return out
+}
+
+// linksSentence tells links that went down (or came back) at one moment: a
+// single link in its own words, several by their names.
+func linksSentence(ls []Link, several string, single map[events.Type]string, at string) string {
+	if len(ls) == 1 {
+		return fmt.Sprintf(single[ls[0].Kind], at)
+	}
+	return fmt.Sprintf(several, linkNames(ls), at)
+}
+
+func earliestFrom(ls []Link) clock.Stamp {
+	s := ls[0].From
+	for _, l := range ls[1:] {
+		if l.From.Wall.Before(s.Wall) {
+			s = l.From
+		}
+	}
+	return s
+}
+
+func latestTo(ls []Link) clock.Stamp {
+	s := ls[0].To
+	for _, l := range ls[1:] {
+		if l.To.Wall.After(s.Wall) {
+			s = l.To
+		}
+	}
+	return s
+}
+
+// linkName is the name a message gives a kind of link.
+func linkName(kind events.Type) string {
+	for _, k := range linkKinds {
+		if k.loss == kind {
+			return k.name
+		}
+	}
+	return string(kind)
+}
+
+// linkNames joins the names of the links: "WAN and internet", "WAN,
+// internet and DNS".
+func linkNames(ls []Link) string {
+	names := make([]string, len(ls))
+	for i, l := range ls {
+		names[i] = linkName(l.Kind)
+	}
+	if len(names) == 1 {
+		return names[0]
+	}
+	return strings.Join(names[:len(names)-1], wordList) + wordAnd + names[len(names)-1]
+}
+
+// capitalized returns s with its first letter upper case, to start a
+// sentence.
+func capitalized(s string) string {
+	r, n := utf8.DecodeRuneInString(s)
+	return string(unicode.ToUpper(r)) + s[n:]
 }
 
 // change tells a link change: lost and back with the span, or one of them.

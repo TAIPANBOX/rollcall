@@ -160,6 +160,15 @@ Coalescing: events that share a cause inside a short window become one incident 
 one message. Example: the main router reboots, every access point loses internet,
 the chat gets one message about the main router with the outage duration, not five.
 A site-wide internet loss is one incident naming all witnesses.
+`@decided 2026-10-30`: one router's own link changes (WAN, internet, DNS, lost or back)
+that follow each other within 30 s are one incident and one message: the start of an
+outage in one line, its end in one line, a flapping link in one line that counts its
+drops; the first alert comes about 30 s later for it. Other events keep the 10 s window.
+`@decided 2026-10-30`, on the measured price: for two messages an outage, the first
+alert of a WAN cut comes about 40 to 45 s later than with the 10 s window, and of an
+internet loss alone about 20 s later; the internet probe records its loss about 20 s
+after the WAN, and the chain waits its 30 s after that. A link that never stops dropping
+is told at the latest 60 s after its first record.
 
 History is a signed hash chain per member, with witness statements, fork detection,
 corrections when a router comes back, and (v1.1) checkpoints signed by a majority; see
@@ -210,7 +219,10 @@ inbound port from the internet.
   default route's interface.
 - Internet probes: DNS and TCP 443 to configurable targets every 10 s (they need no
   extra privileges); ICMP is optional and adds `CAP_NET_RAW` only when enabled;
-  `internet_lost` after 3 failures in a row.
+  `internet_lost` after 3 failures in a row. `@decided 2026-10-30`: the DNS probe asks
+  the uplink's own DNS servers (`/tmp/resolv.conf.d/resolv.conf.auto`, past dnsmasq) in
+  the same rounds, and a DNS cut while the TCP probe gets through is an incident of its
+  own (`dns_lost`, `dns_restored`), never an internet loss.
 - Upgrade start: open. A script under `/lib/upgrade/` is a candidate hook (to verify
   on hardware); without it the upgrade is still classified on return (table above).
 

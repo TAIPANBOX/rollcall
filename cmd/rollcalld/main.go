@@ -364,10 +364,20 @@ func errText(err error) string {
 	return strings.ReplaceAll(err.Error(), "\n", "; ")
 }
 
-// watchHost runs the internet probe and the default-route watch.
+// watchHost runs the internet probe, the DNS probe and the default-route
+// watch. The DNS probe asks the uplink's servers (daemon.ResolvConfAuto), or
+// those the configuration names, for its name; routine lines go to log.
 func watchHost(ctx context.Context, d *daemon.Daemon, cfg config.Config) {
 	h := &daemon.Host{D: d, Routes: &host.RouteWatch{},
 		Probe: &probe.Prober{Probe: daemon.InternetProbe(cfg.ProbeTargets, cfg.ICMP, probe.TCP, probe.ICMP)}}
+	if !cfg.DNSProbeOff {
+		name := cfg.DNSName
+		if name == "" {
+			name = config.DefaultDNSName
+		}
+		h.DNS = &probe.Prober{Probe: daemon.DNSProbe(daemon.UplinkDNSServers(cfg.DNSServers, daemon.ResolvConfAuto),
+			name, h.Internet, probe.DNS, log.Printf)}
+	}
 	t := time.NewTicker(tickEvery)
 	defer t.Stop()
 	for {

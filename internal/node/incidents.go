@@ -1,8 +1,13 @@
 package node
 
 import (
+	"cmp"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/TAIPANBOX/rollcall/internal/clock"
@@ -27,6 +32,25 @@ import (
 // incident that reports the whole absence with its length; once that is
 // delivered, its ID and the IDs it merged are acknowledged.
 //
+// A router's own link changes (its WAN, its internet, its DNS) wait longer
+// (@decided 2026-10-30): those of one router that follow each other within
+// events.LinkWindow are one incident (events.CoalesceLinks, rule (f)), and
+// an incident of link changes is final only once each of its events waited
+// linkSettle, so the losses that open an outage go out in one message, the
+// returns that close it in one, and a link that keeps dropping in one that
+// counts the drops. A record that comes later still and belongs to a link
+// incident kept here joins it (absorbLocked) instead of making a message of
+// its own.
+//
+// A link that never stops dropping would never let its chain wait out the
+// window, and the chat would hear nothing while it flaps. So a link
+// incident is made at the latest maxLinkHold after the first of its events
+// was seen, though its chain goes on: it is capped, its message goes out, the
+// records its chain makes after it join it at each later ceiling, and once
+// the chain is quiet its end is merged with it, so the end tells the whole
+// outage and every drop. A chain that keeps dropping for hours stays one
+// incident of bounded size (compactLinks).
+//
 // Roster announcements are incidents of their own whose one event is
 // fixed by the roster alone (its hash as the ref, a zero trusted stamp), so
 // every member queues the same incident for one roster change and the
@@ -47,6 +71,17 @@ const (
 	// the chat about 40 to 45 s after the last heartbeat; a record that
 	// comes later only adds a witness (toldAlreadyLocked).
 	settle = events.DefaultWindow
+	// linkSettle is how long each event of an incident of link changes waits
+	// for the others of its routers (@decided 2026-10-30): the chain of
+	// rule (f). The internet probe records a loss about 20 s after the WAN
+	// went down (dated at its first failed round, decided two rounds later),
+	// and the chain then waits its 30 s after that record, so the first
+	// message of a WAN cut comes about 40 to 45 s later than with the 10 s
+	// window, and of an internet loss alone about 20 s later (the cell replays
+	// in link_window_test.go: 52 to 57 s after the first record, against 12 s
+	// and 37 s). @decided 2026-10-30: that price is taken for two messages an
+	// outage. The ceiling (maxLinkHold) only ever makes an incident earlier.
+	linkSettle = events.LinkWindow
 	// maxIncidentAge keeps old events, caught up after an absence, out of
 	// the chat: they stay in the history only.
 	maxIncidentAge = 24 * time.Hour
@@ -82,6 +117,21 @@ type incRec struct {
 	held    bool
 	heldAt  time.Duration
 	requeue bool // restored, to be queued once its age is judged (state.go)
+	// capped is set on a link incident made by the ceiling while its chain
+	// went on (maxLinkHold): what the chain records afterwards joins it, and
+	// the chain's end is merged with it.
+	capped bool
+	// untold is set once records of its chain joined a capped incident
+	// after its message was made: its end is still to be told
+	// (endChainsLocked).
+	untold bool
+	// ongoing is set on a capped incident that a chain began, not a return
+	// that ends an outage told before: its message says the link keeps
+	// dropping, so its end is told whatever joins it (endChainsLocked).
+	ongoing bool
+	// elided is what compactLinks took out of events to bound them: drops
+	// that ended, per router and link, which the message still counts.
+	elided []deliver.Elided
 }
 
 type incidents struct {
@@ -107,8 +157,9 @@ type incidents struct {
 	witnessBudget  map[ids.MemberID]*budget // statements left per origin (witness.go)
 	witnessDropped uint64                   // statements not made for lack of budget
 
-	ackNotes   []ackNote // acknowledgements that name what they told, newest last
-	coverDirty bool      // events arrived since the last look for incidents they tell
+	ackNotes   []ackNote        // acknowledgements that name what they told, newest last
+	named      map[ids.Hash]int // how many of ackNotes name each event (inPiecesLocked)
+	coverDirty bool             // events arrived since the last look for incidents they tell
 }
 
 // ackNote is an acknowledgement of incident id by a member, with the events
@@ -137,6 +188,7 @@ func (c *incidents) init() {
 	c.ownBacks = map[ids.BootID]bool{}
 	c.forkSeqs = map[ids.MemberID]uint64{}
 	c.witnessBudget = map[ids.MemberID]*budget{}
+	c.named = map[ids.Hash]int{}
 }
 
 // forkAt notes that a fork alarm names seq of o's chain.
@@ -474,6 +526,7 @@ func (n *Node) droppedLocked(base roster.Roster, ours []roster.Signed, oursR []r
 
 // incidentsLocked turns settled events into incidents and queues them.
 func (n *Node) incidentsLocked(now clock.Stamp) {
+	defer n.endChainsLocked(now)
 	n.queueRestoredLocked(now)
 	n.coverLocked()
 	var list []events.Event
@@ -512,18 +565,28 @@ func (n *Node) incidentsLocked(now clock.Stamp) {
 	if len(list) == 0 {
 		return
 	}
-	for _, inc := range events.Coalesce(list, events.DefaultWindow) {
+	for _, inc := range events.CoalesceLinks(list, events.DefaultWindow, events.LinkWindow) {
 		var evs []events.Event
-		ready := true
+		ready, quiet, link := true, true, linkIncident(inc)
+		wait := settle
+		if link {
+			wait = linkSettle
+		}
+		first := now.Mono // when the first of its events was seen
 		for _, ref := range inc.Refs {
 			r := n.inc.evs[ref]
-			if r == nil || now.Mono-r.seen < settle || n.awaitsOwnLocked(r, now) {
+			if r == nil || n.awaitsOwnLocked(r, now) {
 				ready = false
 				break
 			}
+			quiet = quiet && now.Mono-r.seen >= wait
+			first = min(first, r.seen)
 			evs = append(evs, r.ev)
 		}
-		if !ready {
+		// The ceiling: a link incident is made at the latest maxLinkHold
+		// after its first event was seen, its chain over or not.
+		capped := link && !quiet && now.Mono-first >= maxLinkHold
+		if !ready || !quiet && !capped {
 			continue
 		}
 		for _, ref := range inc.Refs {
@@ -532,57 +595,416 @@ func (n *Node) incidentsLocked(now clock.Stamp) {
 		if inc.End.Trusted && now.Trusted && now.Wall.Sub(inc.End.Wall) > maxIncidentAge {
 			continue
 		}
+		if capped {
+			if r := n.cappedChainLocked(evs); r != nil {
+				n.joinLocked(r, evs) // the chain goes on: its end will tell it
+				r.untold = true
+				continue
+			}
+		}
 		if m, parts, mev, ok := n.pairLocked(inc, evs); ok {
 			n.queueLocked(m, mev, parts, now)
-			switch start := parts[0]; {
-			case n.deliveredLocked(start):
-			case n.deliveredLocked(m.ID):
-				// Another member told the whole absence, from its start.
-				n.ackedLocked(start, n.id.ID)
-			default:
-				// Not sent yet: the merged incident tells its start too, in
-				// one message (D5).
-				n.queue.Ack(start, n.id.ID)
+			n.keepChainLocked(m.ID, parts, capped, first)
+			// A return of links may end several starts (pairLinkLocked).
+			for _, start := range parts[:len(parts)-1] {
+				switch {
+				case n.deliveredLocked(start):
+				case n.deliveredLocked(m.ID):
+					// Another member told the whole absence, from its start.
+					n.ackedLocked(start, n.id.ID)
+				default:
+					// Not sent yet: the merged incident tells its start too,
+					// in one message (D5).
+					n.queue.Ack(start, n.id.ID)
+				}
 			}
 			continue
 		}
-		if n.toldAlreadyLocked(evs) || n.continuesOutageLocked(evs) {
+		if n.toldAlreadyLocked(evs) {
+			continue
+		}
+		if r := n.absorbLocked(inc, evs); r != nil {
+			if capped {
+				n.capLocked(r, first, false) // told already, as a start
+			}
 			continue
 		}
 		n.queueLocked(inc, evs, nil, now)
+		if capped {
+			n.capLocked(n.inc.byID[inc.ID], first, true)
+		}
 	}
 }
 
-// lossOf maps a loss to the restore that ends it.
-var lossOf = map[events.Type]events.Type{events.InternetLost: events.InternetRestored, events.WanDown: events.WanUp}
-
-// continuesOutageLocked reports whether evs are only losses (internet, WAN)
-// that their witnesses recorded again during an outage still open here: an
-// incident kept, not yet paired with its end, where each of them recorded
-// that loss already. A router that restarts while the internet is still out
-// finds it out again; that is the same outage, told once from its start to
-// its end (D5).
-func (n *Node) continuesOutageLocked(evs []events.Event) bool {
-	if len(evs) == 0 {
-		return false
-	}
-	for _, e := range evs {
-		if _, ok := lossOf[e.Type]; !ok {
-			return false
+// cappedChainLocked returns the kept capped link incident whose chain evs
+// continue: one of its routers recorded a link change within
+// events.LinkWindow of one of theirs in evs. It returns nil when there is
+// none.
+func (n *Node) cappedChainLocked(evs []events.Event) *incRec {
+	for i := len(n.inc.recent) - 1; i >= 0; i-- {
+		if r := n.inc.recent[i]; r.capped && keptLink(r) && continuesChain(evs, r.events) {
+			return r
 		}
 	}
-	for _, r := range n.inc.recent {
-		if r.paired || r.single || r.inc.Causes != 0 {
+	return nil
+}
+
+// continuesChain reports whether a record of evs lies within
+// events.LinkWindow of a record of the same router in kept.
+func continuesChain(evs, kept []events.Event) bool {
+	return slices.ContainsFunc(evs, func(e events.Event) bool {
+		return linkChange(e.Type) && slices.ContainsFunc(kept, func(f events.Event) bool {
+			return f.Witness == e.Witness && absDuration(f.At.Wall.Sub(e.At.Wall)) <= events.LinkWindow
+		})
+	})
+}
+
+// capLocked marks r capped, made by the ceiling while its chain went on, and
+// counts it held since first, when its first event was seen: the ceiling
+// bounds its wait, and heldLocked holds it no longer. ongoing says that its
+// chain began with it, so its message tells a link that keeps dropping.
+func (n *Node) capLocked(r *incRec, first time.Duration, ongoing bool) {
+	if r == nil {
+		return
+	}
+	r.capped, r.ongoing, r.untold, r.held, r.heldAt = true, ongoing, false, true, first
+	n.flusher.Mark()
+}
+
+// chainEndID is the ID of the end of the capped incident id when its chain
+// went quiet: derived from id, the same on every member that capped it, and
+// another than id even when nothing joined the chain after it.
+func chainEndID(id string) string {
+	h := sha256.Sum256([]byte("rollcall/v1 chain end\x00" + id))
+	return hex.EncodeToString(h[:8])
+}
+
+// endChainsLocked tells the end of each capped chain that went quiet with
+// no incident of its own to end it: whose last records joined it at a
+// ceiling, or whose message said its link keeps dropping (ongoing), and
+// nothing came after. Quiet means that no link change of its routers within
+// events.LinkWindow of its records waits to be taken, and the last of them
+// was seen linkSettle ago. The end is the capped incident again, with
+// everything its chain recorded, under the ID chainEndID gives, in place of
+// the capped one.
+func (n *Node) endChainsLocked(now clock.Stamp) {
+	for _, r := range slices.Clone(n.inc.recent) {
+		if !r.capped || !r.untold && !r.ongoing || !keptLink(r) {
 			continue
 		}
-		open := !slices.ContainsFunc(r.events, func(f events.Event) bool { return f.Type == lossOf[evs[0].Type] })
-		if open && !slices.ContainsFunc(evs, func(e events.Event) bool {
-			return !slices.ContainsFunc(r.events, func(f events.Event) bool { return f.Type == e.Type && f.Witness == e.Witness })
-		}) {
+		last := time.Duration(0)
+		for _, e := range r.events {
+			if x := n.inc.evs[e.Ref]; x != nil {
+				last = max(last, x.seen)
+			}
+		}
+		if now.Mono-last < linkSettle || n.chainPendingLocked(r) {
+			continue
+		}
+		merged := events.Coalesce(r.events, spanOf(r.events)+events.DefaultWindow)
+		end := chainEndID(r.inc.ID)
+		if len(merged) != 1 || n.inc.byID[end] != nil {
+			continue
+		}
+		merged[0].ID = end
+		r.paired = true
+		n.queueLocked(merged[0], r.events, []string{r.inc.ID}, now)
+		n.inc.byID[end].elided = slices.Clone(r.elided)
+		if !n.deliveredLocked(r.inc.ID) {
+			n.queue.Ack(r.inc.ID, n.id.ID) // not sent yet: the end tells it all
+		}
+	}
+}
+
+// chainPendingLocked reports whether a link change not yet taken continues
+// r's chain.
+func (n *Node) chainPendingLocked(r *incRec) bool {
+	for _, x := range n.inc.evs {
+		if !x.assigned && !x.single && continuesChain([]events.Event{x.ev}, r.events) {
 			return true
 		}
 	}
 	return false
+}
+
+// joinLocked joins evs to r, a kept link incident, which keeps its ID and
+// tells them too, and bounds its events (compactLinks).
+func (n *Node) joinLocked(r *incRec, evs []events.Event) {
+	all := append(slices.Clone(r.events), evs...)
+	kept, elided := compactLinks(all, maxLinkEvents)
+	merged := events.Coalesce(kept, spanOf(kept)+events.DefaultWindow)
+	if len(merged) != 1 {
+		return
+	}
+	m := merged[0]
+	m.ID, m.Seq = r.inc.ID, r.inc.Seq
+	r.inc, r.events, r.elided = m, kept, append(r.elided, elided...)
+	n.flusher.Mark()
+}
+
+// keepChainLocked gives id, a link incident merged of parts, what the parts
+// elided, bounds its events, and caps it when the ceiling made it.
+func (n *Node) keepChainLocked(id string, parts []string, capped bool, first time.Duration) {
+	r := n.inc.byID[id]
+	if r == nil || r.single {
+		return
+	}
+	for _, p := range parts {
+		if q := n.inc.byID[p]; q != nil && q != r {
+			r.elided = append(r.elided, q.elided...)
+		}
+	}
+	if len(r.events) > maxLinkEvents {
+		n.joinLocked(r, nil)
+	}
+	if capped {
+		n.capLocked(r, first, false) // a return that ends an outage told before
+	}
+}
+
+// maxLinkEvents bounds the events a kept link incident holds; compactLinks
+// counts the rest.
+const maxLinkEvents = 64
+
+// compactLinks returns evs, when there are more than limit of them, with the
+// middle drops of each router's link taken out, and what it took out: for
+// each router and link with three drops that ended or more, it keeps the
+// records up to the end of the first and from after the end of the last but
+// one, and counts the drops between them and how long they lasted. So the
+// first loss, the last return, the last record and the counts stay as
+// deliver.LinksOf reads them; only the moments of the middle drops go.
+func compactLinks(evs []events.Event, limit int) ([]events.Event, []deliver.Elided) {
+	if len(evs) <= limit {
+		return evs, nil
+	}
+	per := map[linkKey][]events.Event{}
+	for _, e := range evs {
+		for loss, back := range lossOf {
+			if e.Type == loss || e.Type == back {
+				k := linkKey{loss, e.Witness}
+				per[k] = append(per[k], e)
+			}
+		}
+	}
+	keys := slices.SortedFunc(maps.Keys(per), func(a, b linkKey) int {
+		if c := cmp.Compare(a.loss, b.loss); c != 0 {
+			return c
+		}
+		return compareMember(a.who, b.who)
+	})
+	drop := map[ids.Hash]bool{}
+	var out []deliver.Elided
+	for _, k := range keys {
+		es := per[k]
+		slices.SortStableFunc(es, func(a, b events.Event) int {
+			if c := a.At.Wall.Compare(b.At.Wall); c != 0 {
+				return c
+			}
+			return cmp.Compare(a.At.Mono, b.At.Mono)
+		})
+		var ends []int // the returns that end a drop
+		down := false
+		for i, e := range es {
+			switch {
+			case e.Type == k.loss:
+				down = true
+			case down:
+				down, ends = false, append(ends, i)
+			}
+		}
+		if len(ends) < 3 {
+			continue
+		}
+		block := es[ends[0]+1 : ends[len(ends)-2]+1]
+		x := deliver.Elided{Kind: k.loss, Witness: k.who.String()}
+		var since clock.Stamp
+		down = false
+		for _, e := range block {
+			drop[e.Ref] = true
+			switch {
+			case e.Type == k.loss && !down:
+				down, since, x.Drops = true, e.At, x.Drops+1
+			case e.Type != k.loss && down:
+				d, _ := clock.Duration(since, e.At)
+				down, x.Gone = false, x.Gone+d
+			}
+		}
+		out = append(out, x)
+	}
+	kept := slices.DeleteFunc(slices.Clone(evs), func(e events.Event) bool { return drop[e.Ref] })
+	return kept, out
+}
+
+func compareMember(a, b ids.MemberID) int { return strings.Compare(string(a[:]), string(b[:])) }
+
+// lossOf maps a loss to the restore that ends it.
+var lossOf = map[events.Type]events.Type{
+	events.InternetLost: events.InternetRestored, events.WanDown: events.WanUp, events.DNSLost: events.DNSRestored,
+}
+
+// linkKey is one kind of link, named by its loss, of one router.
+type linkKey struct {
+	loss events.Type
+	who  ids.MemberID
+}
+
+// linkEnds returns, for each link a router recorded in evs, whether its
+// last record there, in the order of the stamps, is a loss (true: the link
+// is down) or a return (false).
+func linkEnds(evs []events.Event) map[linkKey]bool {
+	sorted := slices.Clone(evs)
+	slices.SortStableFunc(sorted, func(a, b events.Event) int {
+		if c := a.At.Wall.Compare(b.At.Wall); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.At.Mono, b.At.Mono)
+	})
+	out := map[linkKey]bool{}
+	for _, e := range sorted {
+		for loss, back := range lossOf {
+			switch e.Type {
+			case loss:
+				out[linkKey{loss, e.Witness}] = true
+			case back:
+				out[linkKey{loss, e.Witness}] = false
+			}
+		}
+	}
+	return out
+}
+
+// anyDown reports whether ends holds a link that is down, anyBack whether
+// it holds one that came back.
+func anyDown(ends map[linkKey]bool) bool {
+	return slices.Contains(slices.Collect(maps.Values(ends)), true)
+}
+func anyBack(ends map[linkKey]bool) bool {
+	return slices.Contains(slices.Collect(maps.Values(ends)), false)
+}
+
+// linkOnly reports whether evs are a router's own link changes and nothing
+// else.
+func linkOnly(evs []events.Event) bool {
+	return len(evs) > 0 && !slices.ContainsFunc(evs, func(e events.Event) bool { return !linkChange(e.Type) })
+}
+
+// linkIncident reports whether inc tells link changes alone: no absence
+// and no other kind of event (rule (b) of events.Coalesce).
+func linkIncident(inc events.Incident) bool {
+	return inc.Causes == 0 && len(inc.Events) > 0 && !slices.ContainsFunc(inc.Events, func(t events.Type) bool { return !linkChange(t) })
+}
+
+// keptLink reports whether r is a kept incident of link changes that no
+// return was merged into yet.
+func keptLink(r *incRec) bool {
+	return !r.paired && !r.single && r.inc.Causes == 0 && linkOnly(r.events)
+}
+
+// absorbLocked joins evs, the events of the link incident inc that no return
+// paired with a start, to a kept link incident they belong to, and returns
+// that incident, or nil. The incident keeps its ID; what it tells grows, and so does
+// what a return merged with it later tells. They belong to it when either
+//
+//   - every link evs are about ends down there, and is down in the incident
+//     too: its routers' records, again, of an outage it tells that has not
+//     ended. A router that restarts while its internet is still out finds it
+//     out again, and a link that comes back for a few seconds within an
+//     outage ends down again (D5); or
+//   - every event of evs is stamped within events.LinkWindow of a record of
+//     the same router in the incident: had it come in time, rule (f) would
+//     have put it there (lateRecordsLocked).
+//
+// So the losses of one router within the window are one message, however
+// late a probe records one (@decided 2026-10-30).
+func (n *Node) absorbLocked(inc events.Incident, evs []events.Event) *incRec {
+	if inc.Causes != 0 || !linkOnly(evs) {
+		return nil
+	}
+	ends := linkEnds(evs)
+	for i := len(n.inc.recent) - 1; i >= 0; i-- {
+		r := n.inc.recent[i]
+		if !keptLink(r) {
+			continue
+		}
+		open := linkEnds(r.events)
+		if !continuesOutage(ends, open) && !n.lateRecordsLocked(evs, r, open) {
+			continue
+		}
+		n.joinLocked(r, evs)
+		return r
+	}
+	return nil
+}
+
+// continuesOutage reports whether every link in ends is down, and down in
+// open, the links of a kept incident, too.
+func continuesOutage(ends, open map[linkKey]bool) bool {
+	if len(ends) == 0 {
+		return false
+	}
+	for k, down := range ends {
+		if !down || !open[k] {
+			return false
+		}
+	}
+	return true
+}
+
+// lateRecordsLocked reports whether every event of evs is stamped within
+// events.LinkWindow of a record of the same router in r, a kept link
+// incident, and may join it. While r was not delivered, every such
+// record joins it and its message tells it. Once r was delivered, only
+// losses join, and only while r tells an outage that has not ended: its end
+// will tell them. A loss after an outage the chat was told had ended is news.
+func (n *Node) lateRecordsLocked(evs []events.Event, r *incRec, open map[linkKey]bool) bool {
+	delivered := n.deliveredLocked(r.inc.ID)
+	if delivered && !anyDown(open) {
+		return false
+	}
+	for _, e := range evs {
+		if _, loss := lossOf[e.Type]; delivered && !loss {
+			return false
+		}
+		if !slices.ContainsFunc(r.events, func(f events.Event) bool {
+			return f.Witness == e.Witness && absDuration(f.At.Wall.Sub(e.At.Wall)) <= events.LinkWindow
+		}) {
+			return false
+		}
+	}
+	return true
+}
+
+// spanOf is how far apart the first and the last stamp of evs lie.
+func spanOf(evs []events.Event) time.Duration {
+	var lo, hi time.Time
+	for i, e := range evs {
+		if i == 0 || e.At.Wall.Before(lo) {
+			lo = e.At.Wall
+		}
+		if i == 0 || e.At.Wall.After(hi) {
+			hi = e.At.Wall
+		}
+	}
+	return hi.Sub(lo)
+}
+
+// olderIDs are the IDs of the incidents a member of an older version makes
+// of the DNS events in evs. It knows no DNS event, so events.Coalesce groups
+// one only with events of the same type about the same member (a fact), and
+// one router's DNS losses, or returns, lie three probe rounds or more apart:
+// it tells each as an incident of its own, whose ID that event alone fixes,
+// the same in every version. The sender acknowledges them with what it told
+// (recordAcksLocked), so an older member keeps nothing to send again; the
+// other way round, the older sender's acknowledgements name the events they
+// told, and inPiecesLocked counts the incident told here.
+func olderIDs(evs []events.Event) []string {
+	var out []string
+	for _, e := range evs {
+		if e.Type == events.DNSLost || e.Type == events.DNSRestored {
+			out = append(out, events.Coalesce([]events.Event{e}, events.DefaultWindow)[0].ID)
+		}
+	}
+	return out
 }
 
 // toldAlreadyLocked reports whether every event of evs, late records that
@@ -733,7 +1155,16 @@ func (n *Node) queueLocked(inc events.Incident, evs []events.Event, components [
 // holds: the same type about the same member, or the same type of link
 // change. A guess at a return whose member's own account is in the incident
 // needs none: the incident tells the account. An incident that tells more,
-// a return after a silence that was told alone, is not told by it.
+// a return after a silence that was told alone, is not told by it, nor is an
+// incident by the acknowledgement of one it merged: a start that held a WAN
+// loss and return told the start, not the outage its end merges (seen with a
+// flapping link, whose end holds no type the start did not).
+//
+// An incident of link changes alone also counts as told when the kept
+// acknowledgements together name every one of its events (inPiecesLocked):
+// a sender of an older version, whose window is 10 s, tells one router's
+// outage in more messages than the window of 30 s makes here, and each of
+// them names its own events (@decided 2026-10-30).
 
 // noteAckLocked keeps the events the acknowledgement of id by by names, when
 // it is the head of by's chain (entryIn hands each entry over right after
@@ -753,18 +1184,22 @@ func (n *Node) noteAckLocked(id string, by ids.MemberID) {
 	}
 	note := ackNote{id: id, by: by, refs: refs}
 	n.inc.ackNotes = append(n.inc.ackNotes, note)
+	n.inc.name(note.refs, 1)
 	if over := len(n.inc.ackNotes) - keepAckNotes; over > 0 {
+		for _, old := range n.inc.ackNotes[:over] {
+			n.inc.name(old.refs, -1)
+		}
 		n.inc.ackNotes = slices.Clone(n.inc.ackNotes[over:])
 	}
 	for _, r := range n.inc.recent {
-		if !n.deliveredLocked(r.inc.ID) && n.coveredLocked(r, note) {
+		if !n.deliveredLocked(r.inc.ID) && (n.coveredLocked(r, note) || n.inPiecesLocked(r)) {
 			n.ackedLocked(r.inc.ID, by)
 		}
 	}
 }
 
-// toldByAckLocked reports whether a kept acknowledgement tells r, and counts
-// r as told by it then.
+// toldByAckLocked reports whether kept acknowledgements tell r, and counts
+// r as told by them then.
 func (n *Node) toldByAckLocked(r *incRec) bool {
 	for _, note := range n.inc.ackNotes {
 		if n.coveredLocked(r, note) {
@@ -772,7 +1207,44 @@ func (n *Node) toldByAckLocked(r *incRec) bool {
 			return true
 		}
 	}
+	if n.inPiecesLocked(r) {
+		n.ackedLocked(r.inc.ID, n.inc.ackNotes[len(n.inc.ackNotes)-1].by)
+		return true
+	}
 	return false
+}
+
+// inPiecesLocked reports whether r, a kept incident of link changes alone,
+// has every one of its events named by a kept acknowledgement: told, in
+// pieces, by messages that were delivered.
+func (n *Node) inPiecesLocked(r *incRec) bool {
+	if r.single || !linkOnly(r.events) || len(n.inc.ackNotes) == 0 {
+		return false
+	}
+	if len(r.components) == 0 {
+		return !slices.ContainsFunc(r.events, func(e events.Event) bool { return n.inc.named[e.Ref] == 0 })
+	}
+	// A merged incident: the acknowledgements of its own parts told them,
+	// not it (coveredLocked), so they name nothing here.
+	named := map[ids.Hash]bool{}
+	for _, note := range n.inc.ackNotes {
+		if !slices.Contains(r.components, note.id) {
+			for _, h := range note.refs {
+				named[h] = true
+			}
+		}
+	}
+	return !slices.ContainsFunc(r.events, func(e events.Event) bool { return !named[e.Ref] })
+}
+
+// name counts refs as named by one more kept acknowledgement (by d = 1), or
+// by one fewer (d = -1), so that inPiecesLocked looks each event up once.
+func (c *incidents) name(refs []ids.Hash, d int) {
+	for _, h := range refs {
+		if c.named[h] += d; c.named[h] <= 0 {
+			delete(c.named, h)
+		}
+	}
 }
 
 // coverLocked looks again, once events arrived, for kept incidents the
@@ -794,7 +1266,8 @@ func (n *Node) coverLocked() {
 // coveredLocked reports whether note's message told what r tells, as the
 // doc above says.
 func (n *Node) coveredLocked(r *incRec, note ackNote) bool {
-	if r.single || len(r.events) == 0 || r.inc.ID == note.id {
+	if r.single || len(r.events) == 0 || r.inc.ID == note.id || slices.Contains(r.components, note.id) {
+		// The acknowledgement of a part of r told that part, not r.
 		return false
 	}
 	named := map[ids.Hash]bool{}
@@ -843,7 +1316,8 @@ func twin(e, f events.Event) bool {
 // incident tells for the site.
 func linkChange(t events.Type) bool {
 	switch t {
-	case events.WanDown, events.WanUp, events.InternetLost, events.InternetRestored, events.UplinkSwitched:
+	case events.WanDown, events.WanUp, events.InternetLost, events.InternetRestored, events.UplinkSwitched,
+		events.DNSLost, events.DNSRestored:
 		return true
 	}
 	return false
@@ -880,7 +1354,10 @@ func (n *Node) deliveredLocked(id string) bool {
 		return true
 	}
 	r := n.inc.byID[id]
-	return r != nil && len(r.components) > 1 && !slices.ContainsFunc(r.components, func(c string) bool { return !n.inc.ackedIDs[c] })
+	if r == nil {
+		return false
+	}
+	return len(r.components) > 1 && !slices.ContainsFunc(r.components, func(c string) bool { return !n.inc.ackedIDs[c] })
 }
 
 // ackedLocked takes the acknowledgement of incident id by member by: with a
@@ -1041,12 +1518,17 @@ var returns = []events.Type{events.RebootUnplanned, events.RebootPlanned, events
 // goes out alone, and its end, if it comes, as a message of its own.
 const maxHold = 2 * settle
 
+// maxLinkHold is maxHold for an incident of link changes, whose events wait
+// linkSettle each.
+const maxLinkHold = 2 * linkSettle
+
 // heldLocked returns the incidents the sender holds back now: each one that
-// reports only the start of something (a silence, an internet or WAN loss),
-// was not sent yet, and has its end recorded and not yet settled, so that
-// both go out as one message (D5). Each is held at most maxHold from the
-// first moment it was, once (N2): ends that keep arriving and never join
-// cannot hold it longer, and they never hold any other incident.
+// reports only the start of something (a silence), or link changes, was not
+// sent yet, and has its end, or a record that may join it, recorded and not
+// yet settled, so that both go out as one message (D5). Each is held at most
+// maxHold (maxLinkHold) from the first moment it was, once (N2): ends that
+// keep arriving and never join cannot hold it longer, and they never hold
+// any other incident.
 func (n *Node) heldLocked(now clock.Stamp) []string {
 	var out []string
 	for _, r := range n.inc.recent {
@@ -1056,16 +1538,22 @@ func (n *Node) heldLocked(now clock.Stamp) []string {
 		if !r.held {
 			r.held, r.heldAt = true, now.Mono
 		}
-		if now.Mono-r.heldAt < maxHold {
+		hold := maxHold
+		if keptLink(r) {
+			hold = maxLinkHold
+		}
+		if now.Mono-r.heldAt < hold {
 			out = append(out, r.inc.ID)
 		}
 	}
 	return out
 }
 
-// endPendingLocked reports whether r reports only the start of something
-// (a silence, an internet or WAN loss), was not sent yet, and has its end
-// recorded and not yet settled.
+// endPendingLocked reports whether r, not sent yet, has a record that would
+// change its message recorded and not yet settled: for the start of a
+// silence, the member's return; for link changes, a return of a link it holds
+// down, or any link change of its routers stamped within events.LinkWindow of
+// one of theirs in r (absorbLocked).
 func (n *Node) endPendingLocked(r *incRec) bool {
 	has := func(i events.Incident, t events.Type) bool { return slices.Contains(i.Events, t) }
 	if r.paired || r.single || n.deliveredLocked(r.inc.ID) {
@@ -1076,10 +1564,18 @@ func (n *Node) endPendingLocked(r *incRec) bool {
 	case inc.Causes == 1 && has(inc, events.MemberSilent) && !slices.ContainsFunc(returns, func(t events.Type) bool { return has(inc, t) }):
 		x := inc.Members[0]
 		ends = func(e events.Event) bool { return e.Subject.String() == x && slices.Contains(returns, e.Type) }
-	case inc.Causes == 0 && has(inc, events.InternetLost) && !has(inc, events.InternetRestored):
-		ends = func(e events.Event) bool { return e.Type == events.InternetRestored }
-	case inc.Causes == 0 && has(inc, events.WanDown) && !has(inc, events.WanUp):
-		ends = func(e events.Event) bool { return e.Type == events.WanUp }
+	case keptLink(r):
+		open := linkEnds(r.events)
+		ends = func(e events.Event) bool {
+			for loss, back := range lossOf {
+				if e.Type == back && open[linkKey{loss, e.Witness}] {
+					return true
+				}
+			}
+			return linkChange(e.Type) && slices.ContainsFunc(r.events, func(f events.Event) bool {
+				return f.Witness == e.Witness && absDuration(f.At.Wall.Sub(e.At.Wall)) <= events.LinkWindow
+			})
+		}
 	default:
 		return false
 	}
@@ -1120,7 +1616,7 @@ func (n *Node) pairLocked(inc events.Incident, evs []events.Event) (events.Incid
 				!slices.ContainsFunc(returns, func(t events.Type) bool { return has(r.inc, t) }) &&
 				n.withinOwnSpanLocked(r.events, own)
 		}
-	case inc.Causes == 0 && slices.ContainsFunc(inc.Events, func(t events.Type) bool { return restoreAlone(inc, t) }):
+	case inc.Causes == 0 && (anyBack(linkEnds(evs)) || n.cappedChainLocked(evs) != nil):
 		return n.pairLinkLocked(inc, evs)
 	default:
 		return events.Incident{}, nil, nil, false
@@ -1145,49 +1641,43 @@ func (n *Node) pairLocked(inc events.Incident, evs []events.Event) (events.Incid
 	return events.Incident{}, nil, nil, false
 }
 
-// restoreAlone reports whether t is a restore of a link (the internet or a
-// WAN) whose loss inc does not hold: inc tells that restore without its start.
-func restoreAlone(inc events.Incident, t events.Type) bool {
-	for loss, restore := range lossOf {
-		if t == restore && !slices.Contains(inc.Events, loss) {
-			return true
-		}
-	}
-	return false
-}
-
-// pairLinkLocked merges inc, which holds restores of links (the internet, a
-// WAN) without their losses, with every loss still open here that a router
-// whose link of that kind came back recorded: a router's outage ends with its
-// own restore, never with another router's, and losses of routers or links
-// that came back together end in one message, from the first loss to the last
-// return. Lab runs: on 2026-10-29 two routers lost their WAN 88 s apart and
-// got it back 2 s apart, the restores closed only the later loss, and the
-// earlier one stayed open until its router's next WAN event, 11 h later; on
-// 2026-10-30 a router's WAN and internet came back in one incident, which
-// closed only the internet loss, and the WAN loss stayed open.
+// pairLinkLocked merges inc, the link changes evs, with every kept link
+// incident that holds down a link that a router's records in evs end with a
+// return of (linkEnds: its last record of that link there is a return): a
+// router's outage of a link ends with its own return, never with another
+// router's, and the losses of routers or links that came back together end in
+// one message, from the first loss to the last return. The return may follow
+// drops of its own in evs: a link that kept dropping (rule (f) of
+// events.CoalesceLinks) ends the outage it dropped in once it stays up. Lab
+// runs: on 2026-10-29 two routers lost their WAN 88 s apart and got it back
+// 2 s apart, the restores closed only the later loss, and the earlier one
+// stayed open until its router's next WAN event, 11 h later; on 2026-10-30 a
+// router's WAN and internet came back in one incident, which closed only the
+// internet loss, and the WAN loss stayed open; and in lab cell R1.4 a WAN that
+// dropped three more times left its first loss open. It also merges evs with
+// a capped incident whose chain they continue, whatever they end with: the
+// end of that chain tells it whole.
 func (n *Node) pairLinkLocked(inc events.Incident, evs []events.Event) (events.Incident, []string, []events.Event, bool) {
-	type link struct {
-		loss events.Type
-		who  ids.MemberID
-	}
-	back := map[link]bool{}
-	for _, e := range evs {
-		for loss, restore := range lossOf {
-			if e.Type == restore && restoreAlone(inc, restore) {
-				back[link{loss, e.Witness}] = true
-			}
+	back := map[linkKey]bool{}
+	for k, down := range linkEnds(evs) {
+		if !down {
+			back[k] = true
 		}
 	}
 	var rs []*incRec
 	for _, r := range n.inc.recent {
-		if r.paired || r.inc.Causes != 0 {
+		if !keptLink(r) {
 			continue
 		}
-		if slices.ContainsFunc(r.events, func(e events.Event) bool {
-			return back[link{e.Type, e.Witness}] && !slices.Contains(r.inc.Events, lossOf[e.Type])
-		}) {
-			rs = append(rs, r)
+		if r.capped && continuesChain(evs, r.events) {
+			rs = append(rs, r) // the end of a chain the ceiling cut
+			continue
+		}
+		for k, down := range linkEnds(r.events) {
+			if down && back[k] {
+				rs = append(rs, r)
+				break
+			}
 		}
 	}
 	if len(rs) == 0 {
@@ -1224,21 +1714,42 @@ func (n *Node) recordAcksLocked(now clock.Stamp) {
 			continue
 		}
 		todo := []string{id}
+		var older []string
 		if r := n.inc.byID[id]; r != nil {
 			todo = append(todo, r.components...)
+			// What a member of an older version made of its DNS events,
+			// chosen now: the acknowledgement of a merged incident counts
+			// its parts acknowledged here at once, and an older member,
+			// which never made the merged incident, needs each written.
+			for _, a := range olderIDs(r.events) {
+				if !n.inc.ackedIDs[a] && !n.inc.ackPending[a] && !slices.Contains(older, a) {
+					older = append(older, a)
+				}
+			}
 		}
 		for _, a := range todo {
 			if n.inc.ackedIDs[a] || n.inc.ackPending[a] {
 				continue
 			}
-			b, err := deliver.AckBodyRefs(a, n.ackRefsLocked(a))
-			if err != nil {
-				continue
+			n.recordAckLocked(a, now)
+		}
+		for _, a := range older {
+			if !n.inc.ackPending[a] {
+				n.recordAckLocked(a, now)
 			}
-			n.inc.ackPending[a] = true
-			n.recordRaw(b, now)
 		}
 	}
+}
+
+// recordAckLocked writes the acknowledgement of incident a, with the events
+// it told.
+func (n *Node) recordAckLocked(a string, now clock.Stamp) {
+	b, err := deliver.AckBodyRefs(a, n.ackRefsLocked(a))
+	if err != nil {
+		return
+	}
+	n.inc.ackPending[a] = true
+	n.recordRaw(b, now)
 }
 
 // render is the queue's render function: it is called without the
@@ -1251,6 +1762,13 @@ func (n *Node) render(inc events.Incident) string {
 
 func (n *Node) renderLocked(inc events.Incident) string {
 	f := deliver.Facts{Names: map[string]string{}, Changes: n.inc.facts[inc.ID]}
+	if r := n.inc.byID[inc.ID]; r != nil && !r.single && r.inc.Causes == 0 && linkOnly(r.events) {
+		// As it is kept: it may have taken late records since it was queued
+		// (absorbLocked).
+		inc = r.inc
+		f.Links = deliver.LinksOf(r.events, r.elided...)
+		f.Ongoing = r.capped && r.ongoing && !r.paired
+	}
 	if len(n.rosters) > 0 {
 		for _, m := range n.cur().Members {
 			f.Names[m.ID.String()] = m.Name

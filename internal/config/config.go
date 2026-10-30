@@ -13,12 +13,16 @@
 //		option silent_after '30'            # seconds, at least 3 x heartbeat
 //		list probe_target 'dns.google:443'  # IP, or host:port
 //		option icmp '0'
+//		option dns_probe '1'                # ask the uplink's DNS servers (default on)
+//		option dns_name 'openwrt.org'       # the name the DNS probe asks for
+//		list dns_server '192.0.2.53'        # IP or IP:port; default: the uplink's servers
 //		option sender '0'
 //		option ntfy_url 'https://ntfy.sh/topic'
 //		option allow_insecure_lan '0'       # plain http to a private IP literal
 //
-// peer_zone, peer and probe_target are lists and only lists, so each entry
-// is one zone, one peer or one target and never several words that the
+// peer_zone, peer, probe_target and dns_server are lists and only lists, so
+// each entry is one zone, one peer, one target or one server and never
+// several words that the
 // package's firewall rule builder (the firewall command of
 // /etc/init.d/rollcall) and the daemon could read differently. Any other
 // option or section is refused, so a typing mistake never passes unnoticed,
@@ -55,6 +59,8 @@ const (
 	MaxPeerZones    = 8
 	MaxPeers        = 32 // the roster's limit
 	MaxProbeTargets = 8
+	MaxDNSServers   = 8
+	DefaultDNSName  = "openwrt.org"
 	MaxSiteLen      = 64     // characters
 	maxSeconds      = 86_400 // heartbeat and silent_after: one day at most
 )
@@ -67,14 +73,20 @@ const (
 
 // Config is rollcall's configuration.
 type Config struct {
-	Site             string
-	PeerZones        []string
-	Peers            []netip.AddrPort
-	Port             int
-	Heartbeat        time.Duration
-	SilentAfter      time.Duration
-	ProbeTargets     []string
-	ICMP             bool
+	Site         string
+	PeerZones    []string
+	Peers        []netip.AddrPort
+	Port         int
+	Heartbeat    time.Duration
+	SilentAfter  time.Duration
+	ProbeTargets []string
+	ICMP         bool
+	// DNSProbeOff turns the DNS probe off (option dns_probe '0'). DNSName is
+	// the name it asks for, empty for DefaultDNSName; DNSServers the servers
+	// it asks, IP or IP:port, empty for those the uplink names.
+	DNSProbeOff      bool
+	DNSName          string
+	DNSServers       []string
 	Sender           bool
 	NtfyURL          string
 	AllowInsecureLAN bool
@@ -128,9 +140,9 @@ func parseFile(path string) ([]Section, error) {
 var (
 	scalarKeys = map[string]bool{
 		"site": true, "port": true, "heartbeat": true, "silent_after": true, "icmp": true,
-		"sender": true, "ntfy_url": true, "allow_insecure_lan": true,
+		"sender": true, "ntfy_url": true, "allow_insecure_lan": true, "dns_probe": true, "dns_name": true,
 	}
-	listKeys = map[string]bool{"peer_zone": true, "peer": true, "probe_target": true}
+	listKeys = map[string]bool{"peer_zone": true, "peer": true, "probe_target": true, "dns_server": true}
 )
 
 // fromSections builds a Config from the sections of /etc/config/rollcall.
@@ -179,6 +191,15 @@ func fromSections(secs []Section) (Config, error) {
 		SilentAfter:  DefaultSilentAfter,
 		ProbeTargets: words("probe_target"),
 		NtfyURL:      main.Options["ntfy_url"],
+		DNSName:      main.Options["dns_name"],
+		DNSServers:   words("dns_server"),
+	}
+	if v, ok := main.Options["dns_probe"]; ok {
+		on, err := parseBool(v)
+		if err != nil {
+			return Config{}, at("dns_probe: %v", err)
+		}
+		cfg.DNSProbeOff = !on
 	}
 	if cfg.PeerZones == nil {
 		cfg.PeerZones = []string{DefaultPeerZone}
@@ -492,6 +513,18 @@ func (c Config) Validate() error {
 		}
 	}
 
+	if c.DNSName != "" && !validHostname(c.DNSName) {
+		bad("dns_name %q is not a host name", c.DNSName)
+	}
+	if len(c.DNSServers) > MaxDNSServers {
+		bad("%d DNS servers; at most %d", len(c.DNSServers), MaxDNSServers)
+	}
+	for _, d := range c.DNSServers {
+		if err := checkDNSServer(d); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
 	if err := checkNtfy(c.NtfyURL, c.AllowInsecureLAN); err != nil {
 		errs = append(errs, err)
 	}
@@ -548,6 +581,31 @@ func checkProbeTarget(s string) error {
 	}
 	if !validHostname(host) {
 		return bad("does not name a valid host")
+	}
+	return nil
+}
+
+// checkDNSServer accepts an IP address or IP:port ([v6]:port) for the DNS
+// probe to ask. A link-local IPv6 address needs its zone (fe80::1%wan), as
+// an uplink's own server may be one.
+func checkDNSServer(s string) error {
+	bad := func(why string) error { return fmt.Errorf("dns_server %q %s", s, why) }
+	host := s
+	if h, ps, err := net.SplitHostPort(s); err == nil {
+		n, err := strconv.Atoi(ps)
+		if err != nil || n < 1 || n > 65535 {
+			return bad("needs a port from 1 to 65535")
+		}
+		host = h
+	}
+	a, err := netip.ParseAddr(host)
+	switch {
+	case err != nil:
+		return bad("is not an IP address or IP:port (host names are not supported)")
+	case a.IsUnspecified(), a.IsMulticast():
+		return bad("is not a unicast address")
+	case a.Is6() && a.IsLinkLocalUnicast() && a.Zone() == "":
+		return bad("is link-local and needs a zone (fe80::1%wan)")
 	}
 	return nil
 }
