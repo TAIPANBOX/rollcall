@@ -101,9 +101,10 @@ func WithSecrets(f func() []string) Option { return func(s *server) { s.secrets 
 // names and uids, never arguments or output.
 func WithLogf(f func(format string, args ...any)) Option { return func(s *server) { s.logf = f } }
 
-// WithInfof sets the logger for the line each command a caller runs leaves,
-// which is routine; the default is log.Printf. WithLogf's logger takes the
-// refusals and failures.
+// WithInfof sets the logger for the routine lines: the one each command a
+// caller runs leaves, and the socket keeping its owner when the daemon runs
+// as its own account, as it does under procd; the default is log.Printf.
+// WithLogf's logger takes the refusals and failures.
 func WithInfof(f func(format string, args ...any)) Option { return func(s *server) { s.infof = f } }
 
 // Options for tests: a fake credential lookup, a hook once the socket
@@ -255,7 +256,7 @@ func (s *server) secure(path string) error {
 		return fmt.Errorf("control: %w", err)
 	}
 	if euid := s.geteuid(); euid != 0 {
-		s.logf("control: not running as root (euid %d); socket %s keeps its owner", euid, path)
+		s.infof("control: not running as root (euid %d); socket %s keeps its owner", euid, path)
 		return nil
 	}
 	g, err := s.lookupGroup(SocketGroup)
