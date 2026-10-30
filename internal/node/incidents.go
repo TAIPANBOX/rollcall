@@ -1120,14 +1120,8 @@ func (n *Node) pairLocked(inc events.Incident, evs []events.Event) (events.Incid
 				!slices.ContainsFunc(returns, func(t events.Type) bool { return has(r.inc, t) }) &&
 				n.withinOwnSpanLocked(r.events, own)
 		}
-	case inc.Causes == 0 && has(inc, events.InternetRestored) && !has(inc, events.InternetLost):
-		match = func(r *incRec) bool {
-			return r.inc.Causes == 0 && has(r.inc, events.InternetLost) && !has(r.inc, events.InternetRestored)
-		}
-	case inc.Causes == 0 && has(inc, events.WanUp) && !has(inc, events.WanDown):
-		match = func(r *incRec) bool {
-			return r.inc.Causes == 0 && has(r.inc, events.WanDown) && !has(r.inc, events.WanUp)
-		}
+	case inc.Causes == 0 && slices.ContainsFunc(inc.Events, func(t events.Type) bool { return restoreAlone(inc, t) }):
+		return n.pairLinkLocked(inc, evs)
 	default:
 		return events.Incident{}, nil, nil, false
 	}
@@ -1149,6 +1143,77 @@ func (n *Node) pairLocked(inc events.Incident, evs []events.Event) (events.Incid
 		return merged[0], []string{r.inc.ID, inc.ID}, all, true
 	}
 	return events.Incident{}, nil, nil, false
+}
+
+// restoreAlone reports whether t is a restore of a link (the internet or a
+// WAN) whose loss inc does not hold: inc tells that restore without its start.
+func restoreAlone(inc events.Incident, t events.Type) bool {
+	for loss, restore := range lossOf {
+		if t == restore && !slices.Contains(inc.Events, loss) {
+			return true
+		}
+	}
+	return false
+}
+
+// pairLinkLocked merges inc, which holds restores of links (the internet, a
+// WAN) without their losses, with every loss still open here that a router
+// whose link of that kind came back recorded: a router's outage ends with its
+// own restore, never with another router's, and losses of routers or links
+// that came back together end in one message, from the first loss to the last
+// return. Lab runs: on 2026-10-29 two routers lost their WAN 88 s apart and
+// got it back 2 s apart, the restores closed only the later loss, and the
+// earlier one stayed open until its router's next WAN event, 11 h later; on
+// 2026-10-30 a router's WAN and internet came back in one incident, which
+// closed only the internet loss, and the WAN loss stayed open.
+func (n *Node) pairLinkLocked(inc events.Incident, evs []events.Event) (events.Incident, []string, []events.Event, bool) {
+	type link struct {
+		loss events.Type
+		who  ids.MemberID
+	}
+	back := map[link]bool{}
+	for _, e := range evs {
+		for loss, restore := range lossOf {
+			if e.Type == restore && restoreAlone(inc, restore) {
+				back[link{loss, e.Witness}] = true
+			}
+		}
+	}
+	var rs []*incRec
+	for _, r := range n.inc.recent {
+		if r.paired || r.inc.Causes != 0 {
+			continue
+		}
+		if slices.ContainsFunc(r.events, func(e events.Event) bool {
+			return back[link{e.Type, e.Witness}] && !slices.Contains(r.inc.Events, lossOf[e.Type])
+		}) {
+			rs = append(rs, r)
+		}
+	}
+	if len(rs) == 0 {
+		return events.Incident{}, nil, nil, false
+	}
+	all, first := slices.Clone(evs), inc.Start
+	var stands []string
+	for _, r := range rs {
+		all = append(all, r.events...)
+		stands = append(stands, r.inc.ID)
+		if r.inc.Start.Wall.Before(first.Wall) {
+			first = r.inc.Start
+		}
+	}
+	span := inc.End.Wall.Sub(first.Wall)
+	if span < 0 {
+		span = 0
+	}
+	merged := events.Coalesce(all, span+events.DefaultWindow)
+	if len(merged) != 1 {
+		return events.Incident{}, nil, nil, false
+	}
+	for _, r := range rs {
+		r.paired = true
+	}
+	return merged[0], append(stands, inc.ID), all, true
 }
 
 // recordAcksLocked writes the acknowledgement of every incident this node

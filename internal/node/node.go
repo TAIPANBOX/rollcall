@@ -170,7 +170,12 @@ type Node struct {
 	internetOK bool
 	telegramOK time.Time
 	telegram   string // the state of the last call on the channel
-	started    time.Time
+
+	// infof and problemf log what the node tells the chat: one line per
+	// incident sent, and one per new reason a send failed (SetLogf).
+	infof, problemf func(format string, args ...any)
+	sendProblem     string // the reason the last send failed; "" after a success
+	started         time.Time
 
 	secrets secretsFile
 	ring    *epoch.Ring
@@ -1279,6 +1284,15 @@ func (n *Node) heartbeat(now clock.Stamp) ([]byte, error) {
 
 // SetClockTrusted tells the node whether its wall clock is NTP-synced in
 // this boot.
+// SetLogf sets where the node logs its sends to the chat: info for each
+// incident sent, problem for a send that failed, once per reason until a
+// send succeeds again. Nil leaves that kind unlogged.
+func (n *Node) SetLogf(info, problem func(format string, args ...any)) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.infof, n.problemf = info, problem
+}
+
 func (n *Node) SetClockTrusted(ok bool) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -1409,7 +1423,9 @@ func (n *Node) deliver() {
 		if id != "" || err != nil {
 			n.mu.Lock()
 			n.channelResult(err)
+			say := n.sendLineLocked(id, err)
 			n.mu.Unlock()
+			say()
 		}
 	} else {
 		n.queue.Due(self, sender, now.Wall)
@@ -1419,6 +1435,28 @@ func (n *Node) deliver() {
 		n.recordAcksLocked(n.stamp())
 	}
 	n.mu.Unlock()
+}
+
+// sendLineLocked returns the logging of a send's outcome, to run outside the
+// lock: the incident told, under the tag its message carries, or the reason a
+// send failed, once until it changes or a send succeeds.
+func (n *Node) sendLineLocked(id string, err error) func() {
+	if err == nil {
+		n.sendProblem = ""
+		if f := n.infof; f != nil {
+			return func() { f("rollcalld: told the chat about incident %s", id[:min(len(id), 8)]) }
+		}
+		return func() {}
+	}
+	p := n.queue.Status().Problem
+	if p == n.sendProblem {
+		return func() {}
+	}
+	n.sendProblem = p
+	if f := n.problemf; f != nil {
+		return func() { f("rollcalld: could not tell the chat, the incidents stay queued: %s", p) }
+	}
+	return func() {}
 }
 
 // channelResult records the outcome of a call on the channel.

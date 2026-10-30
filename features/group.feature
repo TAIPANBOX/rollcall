@@ -69,3 +69,47 @@ Feature: Router group watches itself and reports incidents
     When it sends an event to the group
     Then the group ignores the event
     And no message reaches Telegram for it
+
+  # @measured 2026-10-30 on a lab router: every rollcalld line, routine ones included, was
+  # logged as daemon.err, and nothing in the log said which incidents had reached the chat.
+  @test:TestChatSendsAreLogged
+  Scenario: Every message to the chat leaves one line in the router's log
+    Given the sending router tells the chat about incidents
+    When a message reaches the chat
+    Then the router's log holds one line with that message's tag
+    When Telegram cannot be reached for a while
+    Then the log says so once, not once per attempt
+
+  @test:TestSetLogs
+  Scenario: Routine lines and problems are logged at different levels
+    Given rollcalld runs under procd
+    When it logs a routine line, such as the control command the ntp hook runs every 11 minutes
+    Then the line is logged as information
+    When it logs a problem
+    Then the line is logged as an error
+
+  # @measured 2026-10-29 on lab routers: two routers lost their WAN 88 s apart and got it back
+  # 2 s apart; the first router's loss stayed open, and its next WAN blip 11 h later was told as
+  # an outage of 11 h 29 min.
+  @test:TestOverlappingWanLossesBothClose
+  Scenario: Two routers lose their WAN at different moments and get it back together
+    Given two routers in the group lose their WAN a minute and a half apart
+    When both get it back within seconds of each other
+    Then the chat tells one outage from the first loss to the last return
+    And a later loss of either router is told with its own length
+
+  @test:TestRestoreEndsOnlyItsOwnRoutersLoss
+  Scenario: A router's return does not end another router's outage
+    Given one router has lost its WAN
+    When another router, whose WAN was never down, reports its WAN up
+    Then the outage of the first router stays open
+    And it ends only when the first router's own WAN comes back
+
+  # @measured 2026-10-30 on a lab router: its uplink port was down for 3 minutes; the return
+  # ended the internet outage only, and the WAN loss stayed open.
+  @test:TestWanAndInternetBackTogetherBothClose
+  Scenario: The WAN and the internet come back together
+    Given the sending router has lost its WAN and then its internet
+    When its WAN and its internet come back within seconds
+    Then both losses end
+    And a later loss of its WAN is told with its own length

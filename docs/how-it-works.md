@@ -41,6 +41,8 @@ the chat. Everything here describes the code of 1.0.0-rc1; what ran on routers i
   one message about the main router.
 - **The whole site**: every router loses the internet, or the power: one message naming them all.
 - **Start and end together**: an outage is held back while its end is about to join it.
+- **Each router's own outage**: a return ends only the loss of the router that came back; two routers
+  back within seconds give one message, from the first loss to the last return.
 - **Late records** of the same type about the same router are told already: absorbed.
 - **One ID**: the tag is the first 8 digits of the incident ID, which every router computes alike.
 
@@ -59,6 +61,8 @@ The two reboots of the lab run, as they happened:
 - **Acknowledged**: the sender signs "delivered" into its history; it spreads with the heartbeats.
 - **At least once**: after a split two routers may send one incident; the tag shows the copy.
 - **Paced**: oldest first, at most one message per second per chat.
+- **Logged**: each message sent leaves `told the chat about incident <tag>` in the log (daemon.info);
+  failed sends leave one daemon.err line per reason, not one per attempt.
 
 ## When nobody could reach Telegram
 

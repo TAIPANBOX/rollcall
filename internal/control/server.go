@@ -101,6 +101,11 @@ func WithSecrets(f func() []string) Option { return func(s *server) { s.secrets 
 // names and uids, never arguments or output.
 func WithLogf(f func(format string, args ...any)) Option { return func(s *server) { s.logf = f } }
 
+// WithInfof sets the logger for the line each command a caller runs leaves,
+// which is routine; the default is log.Printf. WithLogf's logger takes the
+// refusals and failures.
+func WithInfof(f func(format string, args ...any)) Option { return func(s *server) { s.infof = f } }
+
 // Options for tests: a fake credential lookup, a hook once the socket
 // listens, a hook between bind and chmod, a shorter read deadline, fewer
 // connection slots.
@@ -122,6 +127,7 @@ type server struct {
 	h           Handler
 	secrets     func() []string
 	logf        func(string, ...any)
+	infof       func(string, ...any)
 	cred        credFunc
 	ready       func()
 	afterBind   func(path string)
@@ -157,6 +163,7 @@ func Serve(ctx context.Context, path string, h Handler, opts ...Option) error {
 	s := &server{
 		h:           h,
 		logf:        log.Printf,
+		infof:       log.Printf,
 		cred:        peerCred,
 		geteuid:     os.Geteuid,
 		lookupGroup: user.LookupGroup,
@@ -332,7 +339,7 @@ func (s *server) handle(c *net.UnixConn) {
 		return
 	}
 	if req.Cmd != "status" {
-		s.logf("control: uid %d runs %s", uid, req.Cmd)
+		s.infof("control: uid %d runs %s", uid, req.Cmd)
 	}
 	out, err := s.h(req.Cmd, req.Args, uid)
 	if err != nil {
