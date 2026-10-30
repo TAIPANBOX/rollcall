@@ -1,11 +1,11 @@
 // Package probe checks whether a router can reach the internet and reports
 // when that changes.
 //
-// Three probes measure the link: DNS (one query for a fixed name through a
-// given server), TCP (a connection to host:443) and ICMP (an echo to an IPv4
-// address over a raw socket, which needs CAP_NET_RAW; the caller enables it
-// only where that is granted). Each probe takes a context and never runs
-// without a deadline.
+// Three probes measure the link: DNS (one query for a fixed name to a given
+// server, which counts any answer), TCP (a connection to host:443) and ICMP
+// (an echo to an IPv4 address over a raw socket, which needs CAP_NET_RAW; the
+// caller enables it only where that is granted). Each probe takes a context
+// and never runs without a deadline.
 //
 // An ICMP reply counts only when it comes from the probed address and
 // carries back the random payload of its request. The identifier and the
@@ -23,10 +23,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
 	"os"
+	"slices"
 	"strings"
 	"time"
 )
@@ -59,28 +61,157 @@ const (
 	icmpNonceSize = 16
 )
 
-// DNS resolves name as an A record through server and reports whether an
-// answer came back. server is a host or host:port; the port defaults to 53.
-// The query goes to server, not to the servers in resolv.conf.
+// ErrSkip is what a probe returns when it cannot judge the link this round:
+// Prober.Tick counts the round neither way, and a streak against the state
+// starts over.
+var ErrSkip = errors.New("probe: nothing to judge this round")
+
+// dnsRetry is how long DNS waits for an answer before it sends its query
+// again, within the probe's deadline: one lost packet does not fail a round.
+const dnsRetry = time.Second
+
+// DNS response codes the probe tells apart.
+const (
+	rcodeNoError  = 0
+	rcodeNXDomain = 3
+)
+
+// DNS asks server, over UDP, for the A record of name and reports whether
+// the server answered. Any answer counts, that the name does not exist
+// (NXDOMAIN) as much as an address: the probe asks whether the server
+// answers, not what. A reply with any other response code (SERVFAIL,
+// REFUSED), a refused port, and no reply before the deadline are failures.
+// A reply counts only when it carries the query's random ID and repeats its
+// question; the socket is connected to server, so the kernel drops what
+// another address sends. The query goes again every dnsRetry until the
+// deadline. server is an IP address or IP:port; the port defaults to 53.
+// The query goes to server alone: DNS never reads resolv.conf and starts no
+// lookup of its own.
 func DNS(ctx context.Context, server string, name string) error {
 	ctx, cancel := withDeadline(ctx)
 	defer cancel()
 	addr := hostPort(server, dnsPort)
-	r := &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, network, addr)
-		},
+	fail := func(format string, args ...any) error {
+		return fmt.Errorf("dns probe of %s via %s: %s", name, addr, fmt.Sprintf(format, args...))
 	}
-	addrs, err := r.LookupNetIP(ctx, "ip4", name)
+	query, err := newDNSQuery(name)
 	if err != nil {
-		return fmt.Errorf("dns probe of %s via %s: %w", name, addr, err)
+		return fail("%v", err)
 	}
-	if len(addrs) == 0 {
-		return fmt.Errorf("dns probe of %s via %s: no A record", name, addr)
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "udp", addr)
+	if err != nil {
+		return fail("%v", err)
 	}
-	return nil
+	defer conn.Close()
+	// Closing the socket unblocks a read when the context ends first.
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
+	deadline, _ := ctx.Deadline()
+	buf := make([]byte, 1500)
+	for {
+		if _, err := conn.Write(query); err != nil {
+			if ctx.Err() != nil {
+				return fail("no answer: %v", ctx.Err())
+			}
+			return fail("send: %v", err)
+		}
+		if err := conn.SetReadDeadline(earlier(time.Now().Add(dnsRetry), deadline)); err != nil {
+			return fail("set deadline: %v", err)
+		}
+		for {
+			n, err := conn.Read(buf)
+			if err != nil {
+				var ne net.Error
+				switch {
+				case ctx.Err() != nil || !time.Now().Before(deadline):
+					return fail("no answer: %v", context.DeadlineExceeded)
+				case errors.As(err, &ne) && ne.Timeout():
+				default:
+					return fail("%v", err) // a refused port, an unreachable network
+				}
+				break // send it again
+			}
+			switch rcode, ok := dnsReply(buf[:n], query); {
+			case !ok:
+				continue // not a reply to this query
+			case rcode == rcodeNoError, rcode == rcodeNXDomain:
+				return nil
+			default:
+				return fail("the server answered with response code %d", rcode)
+			}
+		}
+	}
+}
+
+func earlier(a, b time.Time) time.Time {
+	if b.Before(a) {
+		return b
+	}
+	return a
+}
+
+// newDNSQuery builds a query for the A record of name, class IN, recursion
+// desired, with a random ID. name is a host name of letters, digits and
+// inner hyphens, at most 253 bytes, an optional final dot.
+func newDNSQuery(name string) ([]byte, error) {
+	name = strings.TrimSuffix(name, ".")
+	if name == "" || len(name) > 253 {
+		return nil, fmt.Errorf("%q is not a host name", name)
+	}
+	q := make([]byte, 12, 12+len(name)+6)
+	if _, err := rand.Read(q[:2]); err != nil {
+		return nil, fmt.Errorf("random query ID: %w", err)
+	}
+	q[2] = 0x01                           // RD
+	binary.BigEndian.PutUint16(q[4:6], 1) // QDCOUNT
+	for _, label := range strings.Split(name, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return nil, fmt.Errorf("%q is not a host name", name)
+		}
+		for i := 0; i < len(label); i++ {
+			if c := label[i]; !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '-') {
+				return nil, fmt.Errorf("%q is not a host name", name)
+			}
+		}
+		q = append(q, byte(len(label)))
+		q = append(q, label...)
+	}
+	return append(q, 0, 0, 1, 0, 1), nil // root, QTYPE A, QCLASS IN
+}
+
+// dnsReply returns the response code of b when b is a reply to query: the
+// same ID, the response bit set, a standard query, and the same one question,
+// its name in any case (a server may change the case of letters).
+func dnsReply(b, query []byte) (rcode int, ok bool) {
+	if len(b) < len(query) || b[0] != query[0] || b[1] != query[1] || b[2]&0x80 == 0 || b[2]&0x78 != 0 ||
+		binary.BigEndian.Uint16(b[4:6]) != 1 || !bytes.EqualFold(b[12:len(query)], query[12:]) {
+		return 0, false
+	}
+	return int(b[3] & 0x0f), true
+}
+
+// ResolvConfServers returns the name servers a resolv.conf lists, each once,
+// in their order, at most max: the address of every nameserver line, which
+// may carry a zone (fe80::1%wan). It leaves out what is not an IP address,
+// and loopback and unspecified addresses: the router's own resolver, whose
+// cache would answer for a server that does not.
+func ResolvConfServers(b []byte, max int) []string {
+	var out []string
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 || f[0] != "nameserver" || len(out) >= max {
+			continue
+		}
+		a, err := netip.ParseAddr(f[1])
+		if err != nil || a.IsLoopback() || a.IsUnspecified() || a.IsMulticast() {
+			continue
+		}
+		if s := a.String(); !slices.Contains(out, s) {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // TCP connects to addr and closes the connection. addr is a host or
@@ -133,11 +264,12 @@ type Prober struct {
 	// RestoredAfter is the number of successes in a row that mean restored; zero means DefaultRestoredAfter.
 	RestoredAfter int
 
-	started bool
-	next    time.Time
-	down    bool
-	streak  int
-	since   time.Time
+	started  bool
+	next     time.Time
+	down     bool
+	streak   int
+	since    time.Time
+	answered bool
 }
 
 // Tick runs the probe when a period has passed since the last one, with now as
@@ -146,6 +278,7 @@ type Prober struct {
 // probe in the streak that caused the change: the first failure for a loss, the
 // first success for a restore. Tick returns zero values when it did not probe,
 // or when the probe changed nothing. Without a Probe it never reports anything.
+// A probe that returns ErrSkip changes nothing and ends any streak.
 func (p *Prober) Tick(now time.Time) (lost, restored bool, since time.Time) {
 	if p.Probe == nil || (p.started && now.Before(p.next)) {
 		return false, false, time.Time{}
@@ -155,11 +288,19 @@ func (p *Prober) Tick(now time.Time) (lost, restored bool, since time.Time) {
 	ctx, cancel := context.WithTimeout(context.Background(), p.timeout())
 	err := p.Probe(ctx)
 	cancel()
+	p.answered = err == nil
+	if errors.Is(err, ErrSkip) {
+		p.streak = 0
+		return false, false, time.Time{}
+	}
 	return p.record(err == nil, now)
 }
 
 // Down reports whether the link is currently considered lost.
 func (p *Prober) Down() bool { return p.down }
+
+// Answered reports whether the last probe got an answer.
+func (p *Prober) Answered() bool { return p.answered }
 
 // record folds one probe result into the state. A result that agrees with the
 // state ends any streak against it. A result that contradicts the state

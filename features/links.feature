@@ -1,0 +1,120 @@
+Feature: A router's own link changes reach the chat as few messages
+  Each router watches its own uplink: its WAN interface, the internet behind it, and the DNS
+  servers the uplink names. What one router's links do within half a minute is one message:
+  the start of an outage in one line, its end in one line, and a link that keeps dropping in
+  one line that counts the drops.
+
+  # @decided 2026-10-30: the link changes of one router (WAN, internet, DNS, lost or back) that
+  # follow each other within 30 s go out as one message: the losses that open an outage in one
+  # line, the returns that close it in one line, and a link that drops and returns again and
+  # again as one incident with the number of drops and the time it was down. The first alert of
+  # an outage comes about 30 s later in exchange. Silences, reboots and roster changes keep the
+  # 10 s window.
+  # @measured 2026-10-30, lab cell R1.4 on rc92 (e3f542e): beryl2's WAN flapped ten times, 5 s
+  # down and 5 s up; the chat got 6 messages in 2 minutes.
+  @test:TestFlappingWanToldAsOneOutage
+  Scenario: A router's WAN keeps dropping for two minutes
+    Given a router whose WAN goes down and comes back again and again for two minutes
+    And its internet probe finds the internet gone and back meanwhile
+    When the WAN stays up at last
+    Then the chat gets at most two messages about it
+    And the last one tells how many times the WAN went down and for how long in all
+
+  @test:TestFlapEndsTheOpenLoss
+  Scenario: A WAN told as down drops a few more times and stays up
+    Given a router's WAN went down and the chat was told
+    When the WAN comes back, drops twice more, and stays up
+    Then the chat gets one more message, the outage from the first loss with its drops
+    And a later drop of that WAN is told with its own length
+
+  # @measured 2026-10-30, lab cell O1 on rc92: beryl2's uplink was down for 2 h; the chat got 4
+  # messages, "WAN went down" and "internet lost" at the start, and two ends, because the WAN
+  # and the internet came back 11 s apart, outside the 10 s window.
+  @test:TestTwoHourUplinkLossTwoMessages
+  Scenario: A router's WAN and internet are down for two hours
+    Given a router loses its WAN, and its internet probe finds the internet gone 20 seconds later
+    When both come back two hours later, 11 seconds apart
+    Then the chat gets one message when the outage begins, naming the WAN and the internet
+    And one message when it ends, with its length
+
+  # @measured 2026-10-30, lab cell R1.5 on rc92: both uplinks were down for 2 minutes; the chat
+  # got 3 messages, the start in two and the end in one.
+  @test:TestBothUplinksDownTwoMessages
+  Scenario: Two routers lose their uplinks together
+    Given two routers lose their WAN and then their internet at the same moment
+    When both come back two minutes later
+    Then the chat gets two messages, the start and the end, each naming both routers
+
+  # @measured 2026-10-30, lab cells D3 and D4 on rc92: the internet behind one router was cut
+  # for 5 minutes; the chat got the loss and the outage with its length, 2 messages.
+  @test:TestInternetOnlyLossTwoMessages
+  Scenario: Only the internet is lost
+    Given a router keeps its WAN and loses the internet behind it for five minutes
+    Then the chat gets the start of the outage and its end, two messages as before
+
+  # @measured 2026-10-30, lab cells D1 and D2 on rc92: the uplink dropped DNS (TCP and UDP 53
+  # and 853) for 5 minutes while TCP to 1.1.1.1 and 8.8.8.8 worked; the router's resolver did
+  # not resolve gnu.org or python.org, and rollcall reported nothing.
+  @test:TestDNSCutToldAsItsOwnIncident
+  Scenario: The uplink's DNS servers stop answering while the internet works
+    Given a router whose uplink DNS servers stop answering for five minutes
+    And its internet probe still reaches the internet
+    Then the chat is told that DNS stopped answering
+    When DNS answers again
+    Then the chat gets one message with the length of the cut
+    And neither message says the internet was lost
+
+  @test:TestHostTellsDNSCut
+  Scenario: The router finds a DNS cut on its own
+    Given the router's internet probe reaches the internet
+    And the DNS servers its uplink names stop answering
+    When three rounds of the DNS probe fail in a row
+    Then the router records that DNS was lost, dated at the first failed round
+    When one round gets an answer again
+    Then the router records that DNS is back
+
+  @test:TestHostNoDNSLossWithoutInternet
+  Scenario: DNS fails because the whole internet is gone
+    Given a router loses its internet, and with it every DNS answer
+    Then the router records that the internet was lost
+    And it records nothing about DNS
+
+  @test:TestDNSProbeAnswerCounts
+  Scenario: Any answer from the uplink's DNS servers counts as DNS working
+    Given the DNS servers the uplink names
+    When one of them answers, even that the name does not exist
+    Then the round counts as DNS working
+    When every one of them fails, refuses or does not answer in time
+    Then the round counts as DNS failing
+
+  @test:TestDNSProbeOffWithoutServers
+  Scenario: Without DNS servers on the uplink the DNS probe judges nothing
+    Given the uplink names no DNS server and the configuration names none
+    Then a round of the DNS probe counts neither way
+    And the router's log says so once, not once per round
+
+  @test:TestLateLossJoinsTheStart
+  Scenario: A loss found late joins the start of its outage
+    Given a router's WAN went down
+    And its internet probe dates the internet loss within 30 seconds of it, but records it later
+    Then the chat gets one message for the start of the outage
+    And the end of the outage tells both links
+
+  @test:TestSilenceReportedSoon
+  Scenario: A silence keeps the 10 second window
+    Given a router loses power
+    Then the chat tells its silence within 45 seconds of the cut
+
+  @test:TestOlderMemberDNSIncidentsAcknowledged
+  Scenario: A router of an older version does not know DNS events
+    Given a group where a router of an older version holds DNS events as facts of their own
+    When a newer router tells the DNS cut and its end
+    Then every incident the older router made of them counts as told
+    And none is left for it to send later
+
+  @test:TestOlderSenderToldTheOutageInPieces
+  Scenario: The sender is a router of an older version
+    Given a group whose sender runs an older version, with the 10 second window
+    When a newer router's WAN keeps dropping and the sender tells it in six messages
+    Then the newer routers count their own incident of it told
+    And they keep nothing of it to send when they take over sending

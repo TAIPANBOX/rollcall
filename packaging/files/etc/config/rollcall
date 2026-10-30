@@ -7,6 +7,13 @@ config rollcall 'main'
 	option port '7432'
 	# ICMP internet probes need CAP_NET_RAW. Off by default; set to 1 to enable them.
 	option icmp '0'
+	# The DNS probe asks the uplink's DNS servers (from /tmp/resolv.conf.d/resolv.conf.auto) for
+	# a name every 10 s, and tells when they stop answering while the internet works. On by
+	# default; '0' turns it off. dns_name is the name it asks for; dns_server names the servers
+	# to ask instead of the uplink's.
+	# option dns_probe '1'
+	# option dns_name 'openwrt.org'
+	# list dns_server '192.0.2.53'
 	# Static peers, for routed or NAT-separated segments: IP, IP:port or [IPv6]:port (no host
 	# names). Empty means discovery only.
 	# list peer '192.0.2.10:7432'

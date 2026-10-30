@@ -753,3 +753,58 @@ func TestParseBool(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadDNSProbe(t *testing.T) {
+	rc := "config rollcall\n\toption dns_probe '0'\n\toption dns_name 'example.org'\n\tlist dns_server '192.0.2.53'\n\tlist dns_server '[2001:db8::53]:5353'\n"
+	cfg, _, err := Load(files(t, rc, fixtureFirewall, fixtureSystem, fixtureNetwork))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.DNSProbeOff || cfg.DNSName != "example.org" || !reflect.DeepEqual(cfg.DNSServers, []string{"192.0.2.53", "[2001:db8::53]:5353"}) {
+		t.Fatalf("dns options: off %v, name %q, servers %q", cfg.DNSProbeOff, cfg.DNSName, cfg.DNSServers)
+	}
+	def, _, err := Load(files(t, "config rollcall\n", fixtureFirewall, fixtureSystem, fixtureNetwork))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if def.DNSProbeOff || def.DNSName != "" || def.DNSServers != nil {
+		t.Fatalf("defaults: the DNS probe is on, asks DefaultDNSName of the uplink's servers; got %+v", def)
+	}
+	for _, c := range []struct{ rc, want string }{
+		{"config rollcall\n\toption dns_probe 'maybe'\n", "dns_probe"},
+		{"config rollcall\n\tlist dns_probe '1'\n", `"dns_probe" must be an option`},
+		{"config rollcall\n\toption dns_server '192.0.2.53'\n", `"dns_server" must be a list`},
+	} {
+		if _, _, err := Load(files(t, c.rc, fixtureFirewall, fixtureSystem, fixtureNetwork)); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%q: %v, want an error about %s", c.rc, err, c.want)
+		}
+	}
+}
+
+func TestValidateDNS(t *testing.T) {
+	for _, d := range []string{"192.0.2.53", "2001:db8::53", "192.0.2.53:5353", "[2001:db8::53]:53", "fe80::1%wan", "[fe80::1%wan]:53"} {
+		c := validConfig()
+		c.DNSServers = []string{d}
+		wantValid(t, c)
+	}
+	for _, d := range []string{"", "dns.google", "dns.google:53", "0.0.0.0", "224.0.0.251", "fe80::1", "192.0.2.53:0", "192.0.2.53:x", "[::]:53"} {
+		c := validConfig()
+		c.DNSServers = []string{d}
+		wantInvalid(t, c, "dns_server")
+	}
+	c := validConfig()
+	for i := 0; i <= MaxDNSServers; i++ {
+		c.DNSServers = append(c.DNSServers, "192.0.2.53")
+	}
+	wantInvalid(t, c, "DNS servers")
+	for _, n := range []string{"openwrt.org", "example.org.", "a-b.example"} {
+		c := validConfig()
+		c.DNSName = n
+		wantValid(t, c)
+	}
+	for _, n := range []string{"-a.example", "a_b.example", "has space", strings.Repeat("a", 64) + ".org"} {
+		c := validConfig()
+		c.DNSName = n
+		wantInvalid(t, c, "dns_name")
+	}
+}

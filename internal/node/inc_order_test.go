@@ -51,12 +51,15 @@ func memberIndex(r *roster.Roster, name string) int {
 // goes out in the order it happened: the internet loss first, then the
 // roster changes in the order of their roster versions. The chat once got
 // the announcements before the loss, in the order of their incident IDs.
+// The changes come once the loss waited out its 30 s as a link change: a
+// member added and never heard is silent from its addition, and a silence
+// within 10 s of the loss would be its cause (rule (a) of events.Coalesce).
 func TestHeldAnnouncementsInOrder(t *testing.T) {
 	g := newGroup(t, setup{n: 3, senders: map[int]int{0: 1}})
 	g.run(20 * sec)
 	g.chat.setDown(true)
 	g.nodes[2].LocalEvent(events.Event{Type: events.InternetLost})
-	g.run(2 * sec)
+	g.run(32 * sec)
 	g.publish(func(r *roster.Roster) { r.Members = append(r.Members, newMember(t, "r04")) })
 	g.run(2 * sec)
 	g.publish(func(r *roster.Roster) { r.Members = append(r.Members, newMember(t, "r05")) })
@@ -70,7 +73,7 @@ func TestHeldAnnouncementsInOrder(t *testing.T) {
 	g.publish(func(r *roster.Roster) { r.Members[1].Roles = append(r.Members[1].Roles, roster.RoleSender) })
 	g.run(15 * sec)
 	g.chat.setDown(false)
-	g.run(30 * sec)
+	g.run(60 * sec) // a ping must reach Telegram first; the cycle falls 31 s after
 	t.Logf("chat:\n%s", strings.Join(g.chat.all(), "\n"))
 	want := []string{"internet lost", "r04 added (by r01)", "r05 added (by r01)", "r04 is now the backup admin (by r01)", "r02 is now a sender (by r01)"}
 	var got []string

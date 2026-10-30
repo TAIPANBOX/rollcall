@@ -14,13 +14,17 @@ import (
 // will never join the silence. The sender holds that silence back for a
 // bounded time only, and never holds anything else: another router's
 // internet loss, queued meanwhile, goes out at once, and the silence after
-// it, while the flood still goes on.
+// it, while the flood still goes on. The loss is recorded 20 s after the
+// cut, so that, waiting the 30 s of a link change, it is queued while the
+// silence is held.
 func TestEndFloodHoldsOneIncidentBriefly(t *testing.T) {
 	g := newGroup(t, setup{n: 4, running: []bool{true, true, true, false}, senders: map[int]int{0: 1}})
 	w, x, liar := g.nodes[0], g.ids[1].ID, g.ids[3]
 	g.run(40 * sec)
 	g.stop(1)
-	g.run(32 * sec) // the silence of r02 is recorded, not settled yet
+	g.run(20 * sec)
+	g.nodes[2].LocalEvent(events.Event{Type: events.InternetLost})
+	g.run(12 * sec) // the silence of r02 is recorded, not settled yet
 	head := history.Head{}
 	for i := 0; i < 30; i++ {
 		at := AtOf(g.clk.stampNow())
@@ -28,9 +32,6 @@ func TestEndFloodHoldsOneIncidentBriefly(t *testing.T) {
 		e := forge(t, liar, head, EventBody{Subject: x, Type: events.MemberBack, At: at})[0]
 		head = history.Head{Seq: e.Seq, Hash: e.Hash()}
 		inject(w, e)
-		if i == 3 {
-			g.nodes[2].LocalEvent(events.Event{Type: events.InternetLost})
-		}
 		g.run(3 * sec)
 	}
 	ms := g.chat.all()

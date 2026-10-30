@@ -16,6 +16,12 @@ import (
 // within it of an incident's first event join that incident.
 const DefaultWindow = 10 * time.Second
 
+// LinkWindow is the chain of rule (f) of CoalesceLinks: the link changes of
+// one member that follow each other within it are one incident
+// (@decided 2026-10-30: the link changes of one router within 30 s go out as
+// one message, and a flapping link as one incident).
+const LinkWindow = 30 * time.Second
+
 // startSpread bounds, beyond the window, how far apart the starts of the
 // absences of several members with one cause may lie (rule (e) of
 // Coalesce): a member knows its last moment up from its state on flash,
@@ -99,7 +105,7 @@ func roleOf(e Event) role {
 			return roleFact // an absence of an unknown member names no cause
 		}
 		return roleAbsence
-	case WanDown, WanUp, InternetLost, InternetRestored, UplinkSwitched:
+	case WanDown, WanUp, InternetLost, InternetRestored, UplinkSwitched, DNSLost, DNSRestored:
 		return roleLink
 	case UnderFlood:
 		return roleFlood
@@ -127,8 +133,8 @@ func roleOf(e Event) role {
 //
 // Window. An incident takes an event only within window of the incident's
 // first event (inclusive), never by chaining from event to event, except by
-// the spans of rule (e). A negative window puts every event in an incident
-// of its own.
+// the spans of rule (e) and, in CoalesceLinks, the link chains of rule (f).
+// A negative window puts every event in an incident of its own.
 //
 // Cause. Events share a cause when one of these holds; anything else stays
 // apart:
@@ -177,6 +183,16 @@ func roleOf(e Event) role {
 //     member long before it (their starts lie apart), and absences that
 //     share no moment stay apart. These records are told as under (d): the
 //     incident tells each cause by its own account.
+//   - (f) Only in CoalesceLinks, with a chain of 0 or more: a link event
+//     of member W whose previous link event from W lies within chain before
+//     it, and went to an incident of link events alone (rule (b)), joins
+//     that incident, however long ago the incident's first event was. So
+//     the link changes of one router that follow each other within chain
+//     are one incident, and a link that keeps dropping is one incident
+//     (@decided 2026-10-30). Of that incident and one rules (a) and (b)
+//     give it, it joins the earlier. Other members' link events join such
+//     an incident only within window of its first event, or by a chain of
+//     their own; a chain ends once an absence joined its incident.
 //   - UnderFlood from any members groups into one site-wide flood.
 //   - Any other type (alarms, membership, roster changes, types of newer
 //     versions), and an absence whose subject is zero, groups only with the
@@ -194,11 +210,30 @@ func roleOf(e Event) role {
 // type length (uint32) | type, integers big-endian. Detail and Since are not
 // part of it; the ref already fixes the event.
 func Coalesce(evs []Event, window time.Duration) []Incident {
+	return coalesce(evs, window, -1)
+}
+
+// CoalesceLinks is Coalesce with rule (f): the link events of one member that
+// follow each other within chain are one incident. A negative chain, or a
+// negative window, chains nothing.
+func CoalesceLinks(evs []Event, window, chain time.Duration) []Incident {
+	return coalesce(evs, window, chain)
+}
+
+// lastLink is a member's latest link event placed so far (rule (f)): when,
+// and the group it went to.
+type lastLink struct {
+	at time.Time
+	g  *group
+}
+
+func coalesce(evs []Event, window, chain time.Duration) []Incident {
 	items := timeline(evs)
 	link := links(items, window)
 	var groups []*group
 	of := make([]*group, len(items)) // the group each placed item went to
 	open := 0                        // groups before this one have closed for good
+	last := map[ids.MemberID]lastLink{}
 	for i, it := range items {
 		if link[i] >= 0 {
 			continue // it goes with the own account it records (rule (e))
@@ -215,6 +250,11 @@ func Coalesce(evs []Event, window time.Duration) []Incident {
 				break
 			}
 		}
+		chained := chain >= 0 && window >= 0 && roleOf(it.ev) == roleLink && it.ev.Witness != (ids.MemberID{})
+		if l, ok := last[it.ev.Witness]; chained && ok && l.g.role == roleLink && it.at.Sub(l.at) <= chain &&
+			(g == nil || l.g.n < g.n) {
+			g = l.g // rule (f): the chain of its witness's link changes
+		}
 		if g == nil && window >= 0 {
 			for _, cand := range groups {
 				if cand.overlaps(it, window) {
@@ -224,11 +264,14 @@ func Coalesce(evs []Event, window time.Duration) []Incident {
 			}
 		}
 		if g == nil {
-			g = &group{role: roleOf(it.ev), subject: it.ev.Subject, typ: it.ev.Type}
+			g = &group{n: len(groups), role: roleOf(it.ev), subject: it.ev.Subject, typ: it.ev.Type}
 			groups = append(groups, g)
 		}
 		g.add(it)
 		of[i] = g
+		if chained {
+			last[it.ev.Witness] = lastLink{at: it.at, g: g}
+		}
 	}
 	for i, j := range link {
 		if j >= 0 {
@@ -422,6 +465,7 @@ func appendStamp(r []byte, s clock.Stamp) []byte {
 
 // group is an incident being built.
 type group struct {
+	n       int            // its place among the groups, in the order they opened
 	role    role           // roleAbsence once an absence has joined
 	causes  []ids.MemberID // roleAbsence: the absent members, in the order they joined
 	subject ids.MemberID   // roleFact: the subject of the fact

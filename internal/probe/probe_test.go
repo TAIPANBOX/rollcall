@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -180,6 +182,18 @@ type dnsQuery struct {
 // every other question with NXDOMAIN.
 func fakeDNS(t *testing.T, silent bool) (string, <-chan dnsQuery) {
 	t.Helper()
+	return fakeDNSWith(t, func(i int, query []byte, end int, q dnsQuery) [][]byte {
+		if silent {
+			return nil
+		}
+		return [][]byte{dnsAnswer(query, end, q)}
+	})
+}
+
+// fakeDNSWith starts a UDP responder that sends, to the i-th query (from 0),
+// the datagrams reply returns.
+func fakeDNSWith(t *testing.T, reply func(i int, query []byte, end int, q dnsQuery) [][]byte) (string, <-chan dnsQuery) {
+	t.Helper()
 	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -188,7 +202,7 @@ func fakeDNS(t *testing.T, silent bool) (string, <-chan dnsQuery) {
 	seen := make(chan dnsQuery, 16)
 	go func() {
 		buf := make([]byte, 512)
-		for {
+		for i := 0; ; i++ {
 			n, from, err := conn.ReadFrom(buf)
 			if err != nil {
 				return
@@ -201,13 +215,19 @@ func fakeDNS(t *testing.T, silent bool) (string, <-chan dnsQuery) {
 			case seen <- q:
 			default:
 			}
-			if silent {
-				continue
+			for _, b := range reply(i, slices.Clone(buf[:n]), end, q) {
+				conn.WriteTo(b, from)
 			}
-			conn.WriteTo(dnsAnswer(buf[:n], end, q), from)
 		}
 	}()
 	return conn.LocalAddr().String(), seen
+}
+
+// withRcode returns the reply resp with its response code set to rcode.
+func withRcode(resp []byte, rcode byte) []byte {
+	resp = slices.Clone(resp)
+	resp[3] = resp[3]&0xf0 | rcode
+	return resp
 }
 
 // parseDNSQuestion reads the single question of a query and returns it with the
@@ -281,17 +301,154 @@ func TestDNSProbeQueriesFixedNameAtServer(t *testing.T) {
 	}
 }
 
-func TestDNSProbeFailsWhenServerRefusesName(t *testing.T) {
+// TestDNSProbeAnswerCounts: any answer of the server counts, that the name
+// does not exist as much as an address; a server that fails or refuses the
+// query, a port that is closed, or no answer in time count as failures.
+func TestDNSProbeAnswerCounts(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	addr, _ := fakeDNS(t, false)
+	if err := DNS(ctx, addr, "openwrt.org"); err != nil {
+		t.Fatalf("an address in the answer: %v", err)
+	}
+	if err := DNS(ctx, addr, "nothing-here.invalid"); err != nil {
+		t.Fatalf("NXDOMAIN is an answer, yet the probe failed: %v", err)
+	}
+	for _, rc := range []byte{1, 2, 4, 5} { // FORMERR, SERVFAIL, NOTIMP, REFUSED
+		bad, _ := fakeDNSWith(t, func(_ int, query []byte, end int, q dnsQuery) [][]byte {
+			return [][]byte{withRcode(dnsAnswer(query, end, q), rc)}
+		})
+		if err := DNS(ctx, bad, "openwrt.org"); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("response code %d", rc)) {
+			t.Fatalf("response code %d: %v, want a failure that names it", rc, err)
+		}
+	}
+	silent, _ := fakeDNS(t, true)
+	short, stop := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer stop()
+	if err := DNS(short, silent, "openwrt.org"); err == nil {
+		t.Fatal("no answer, yet the probe passed")
+	}
+	// A port nobody listens on: the kernel refuses it at once.
+	l, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := l.LocalAddr().String()
+	l.Close()
+	start := time.Now()
+	if err := DNS(ctx, closed, "openwrt.org"); err == nil {
+		t.Fatal("a closed port, yet the probe passed")
+	}
+	if took := time.Since(start); took > time.Second {
+		t.Logf("a closed port took %s (no port unreachable on this system)", took)
+	}
+	for _, name := range []string{"not a name", "", "-a.example", "a..b", strings.Repeat("a", 254)} {
+		if err := DNS(ctx, addr, name); err == nil {
+			t.Fatalf("a query for %q, not a host name, was sent", name)
+		}
+	}
+	done, end := context.WithCancel(context.Background())
+	end()
+	if err := DNS(done, addr, "openwrt.org"); err == nil {
+		t.Fatal("a probe whose context ended passed")
+	}
+}
+
+// TestDNSProbeIgnoresForeignReplies: a reply with another ID, one that is
+// not a response, and one to another question are passed over, as a device
+// on the path that sprays replies would send them; the real answer after
+// them counts.
+func TestDNSProbeIgnoresForeignReplies(t *testing.T) {
+	addr, _ := fakeDNSWith(t, func(_ int, query []byte, end int, q dnsQuery) [][]byte {
+		good := dnsAnswer(query, end, q)
+		otherID := slices.Clone(good)
+		otherID[0] ^= 0xff
+		notResponse := slices.Clone(good)
+		notResponse[2] &^= 0x80
+		otherName := slices.Clone(good)
+		otherName[13] ^= 0x01 // a letter of the first label: another name
+		return [][]byte{otherID, notResponse, otherName, withRcode(good, 2)[:11], good}
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := DNS(ctx, addr, "openwrt.org"); err != nil {
-		t.Fatalf("positive control: DNS(openwrt.org) failed: %v", err)
+		t.Fatalf("the real answer came after foreign ones: %v", err)
 	}
-	if err := DNS(ctx, addr, "nothing-here.invalid"); err == nil {
-		t.Fatal("DNS of a name the server answers NXDOMAIN for returned no error")
+	// Only foreign ones: no answer.
+	foreign, _ := fakeDNSWith(t, func(_ int, query []byte, end int, q dnsQuery) [][]byte {
+		b := dnsAnswer(query, end, q)
+		b[1] ^= 0xff
+		return [][]byte{b}
+	})
+	short, stop := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer stop()
+	if err := DNS(short, foreign, "openwrt.org"); err == nil {
+		t.Fatal("only replies with another ID, yet the probe passed")
 	}
 }
+
+// TestDNSProbeSendsAgain: the first query is lost; the probe sends it again
+// within its deadline and counts the answer to the second.
+func TestDNSProbeSendsAgain(t *testing.T) {
+	addr, seen := fakeDNSWith(t, func(i int, query []byte, end int, q dnsQuery) [][]byte {
+		if i == 0 {
+			return nil
+		}
+		return [][]byte{dnsAnswer(query, end, q)}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := DNS(ctx, addr, "OpenWrt.org."); err != nil {
+		t.Fatalf("the second query got an answer: %v", err)
+	}
+	if n := len(seen); n != 2 {
+		t.Fatalf("the server saw %d queries, want 2", n)
+	}
+}
+
+// TestResolvConfServers: the nameserver lines, as netifd writes
+// /tmp/resolv.conf.d/resolv.conf.auto, each once, without the router's own
+// resolver and what is not an address.
+func TestResolvConfServers(t *testing.T) {
+	conf := "# Interface wan\nnameserver 192.168.70.1\nnameserver 192.168.70.1\nsearch lan\n" +
+		"# Interface wan6\nnameserver fe80::1%wan\nnameserver 2001:db8::53\nnameserver 127.0.0.1\n" +
+		"nameserver ::1\nnameserver 0.0.0.0\nnameserver dns.example\nnameserver\nnameserver 224.0.0.251\n"
+	got := ResolvConfServers([]byte(conf), 8)
+	want := []string{"192.168.70.1", "fe80::1%wan", "2001:db8::53"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("servers %q, want %q", got, want)
+	}
+	if got := ResolvConfServers([]byte(conf), 2); !slices.Equal(got, want[:2]) {
+		t.Fatalf("at most 2: %q", got)
+	}
+	if got := ResolvConfServers(nil, 8); len(got) != 0 {
+		t.Fatalf("an empty file gave %q", got)
+	}
+}
+
+// TestProberSkip: a round that judges nothing changes nothing and ends a
+// streak: two failures, a skipped round and two more failures are not three
+// in a row.
+func TestProberSkip(t *testing.T) {
+	results := []error{errDown, errDown, ErrSkip, errDown, errDown, errDown}
+	i := 0
+	p := &Prober{Probe: func(context.Context) error { err := results[i]; i++; return err }}
+	base := time.Date(2026, 10, 30, 14, 3, 42, 0, time.UTC)
+	var lostAt int = -1
+	for r := range results {
+		if lost, _, _ := p.Tick(base.Add(time.Duration(r) * DefaultPeriod)); lost {
+			lostAt = r
+		}
+		if r == 2 && p.Answered() {
+			t.Fatal("a skipped round counted as answered")
+		}
+	}
+	if lostAt != 5 {
+		t.Fatalf("lost at round %d, want 5: the skip ended the first streak", lostAt)
+	}
+}
+
+var errDown = errors.New("down")
 
 func TestDNSProbeHonoursDeadlineOnSilentServer(t *testing.T) {
 	answering, _ := fakeDNS(t, false)

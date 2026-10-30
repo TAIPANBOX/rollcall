@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -17,9 +18,16 @@ import (
 // # What the router itself sees
 //
 // Host runs beside the main loop, once a second: the internet probe
-// (probe.Prober, lost after 3 failures 10 s apart) and the default route
-// (host.RouteWatch). Each change becomes a LocalEvent of the node, stamped
-// with the time the condition started, not the time it was detected.
+// (probe.Prober, lost after 3 failures 10 s apart), the DNS probe and the
+// default route (host.RouteWatch). Each change becomes a LocalEvent of the
+// node, stamped with the time the condition started, not the time it was
+// detected.
+//
+// The DNS probe asks the DNS servers the uplink names (DNSProbe) in the same
+// rounds as the internet probe, right after it. It judges a round only when
+// the internet probe of that round got through: DNS lost is a loss of its own
+// only while the internet answers; when the internet is gone, the internet
+// loss tells it, and DNS records nothing (@decided 2026-10-30).
 
 // RouteWatcher is host.RouteWatch.
 type RouteWatcher interface {
@@ -30,10 +38,16 @@ type RouteWatcher interface {
 type Host struct {
 	D      *Daemon
 	Probe  *probe.Prober // nil: no internet probe
+	DNS    *probe.Prober // nil: no DNS probe; its probe asks Internet (DNSProbe)
 	Routes RouteWatcher  // nil: the default route is not watched
 }
 
-// Tick runs the probe when it is due and reads the default route.
+// Internet reports whether the internet probe's last round got an answer:
+// the gate of the DNS probe.
+func (h *Host) Internet() bool { return h.Probe != nil && h.Probe.Answered() }
+
+// Tick runs the probes when they are due, the internet probe first, and
+// reads the default route.
 func (h *Host) Tick(now time.Time) {
 	if h.Probe != nil {
 		switch lost, restored, since := h.Probe.Tick(now); {
@@ -41,6 +55,14 @@ func (h *Host) Tick(now time.Time) {
 			h.D.localEvent(events.InternetLost, since, nil)
 		case restored:
 			h.D.localEvent(events.InternetRestored, since, nil)
+		}
+	}
+	if h.DNS != nil {
+		switch lost, restored, since := h.DNS.Tick(now); {
+		case lost:
+			h.D.localEvent(events.DNSLost, since, nil)
+		case restored:
+			h.D.localEvent(events.DNSRestored, since, nil)
 		}
 	}
 	if h.Routes != nil {
@@ -84,6 +106,70 @@ func InternetProbe(targets []string, icmp bool, tcpProbe, icmpProbe func(ctx con
 			}
 		}
 		return last
+	}
+}
+
+// ResolvConfAuto is where netifd lists the DNS servers of the uplinks on
+// OpenWrt, and dnsmasq reads its upstream servers from: the DNS probe asks
+// those, past dnsmasq's cache. The jail mounts its directory read-only.
+const ResolvConfAuto = "/tmp/resolv.conf.d/resolv.conf.auto"
+
+// maxDNSServers bounds the servers one round of the DNS probe asks.
+const maxDNSServers = 8
+
+// UplinkDNSServers returns the servers of the DNS probe: fixed, when the
+// configuration names them, or else those path (ResolvConfAuto) lists now,
+// read again every round, since the uplink's DHCP may change them.
+func UplinkDNSServers(fixed []string, path string) func() []string {
+	return func() []string {
+		if len(fixed) > 0 {
+			return fixed
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		return probe.ResolvConfServers(b, maxDNSServers)
+	}
+}
+
+// DNSProbe returns the probe of the DNS prober: name asked of every server
+// that servers lists, at once; an answer from any of them passes (probe.DNS
+// counts any answer, NXDOMAIN too), and the round fails when none answers. A
+// round judges nothing (probe.ErrSkip) when internet says the internet probe
+// of the round did not get through, or when servers lists none: then the
+// probe is off, and note logs that once, and once again when servers are
+// listed again or the list changes.
+func DNSProbe(servers func() []string, name string, internet func() bool,
+	dns func(ctx context.Context, server, name string) error, note func(format string, args ...any)) func(context.Context) error {
+	var last []string
+	said := false
+	return func(ctx context.Context) error {
+		list := servers()
+		if !said || !slices.Equal(list, last) {
+			if len(list) == 0 {
+				note("rollcalld: the DNS probe is off: the uplink names no DNS server and the configuration none")
+			} else {
+				note("rollcalld: the DNS probe asks %s for %s", strings.Join(list, ", "), name)
+			}
+			last, said = slices.Clone(list), true
+		}
+		if len(list) == 0 || !internet() {
+			return probe.ErrSkip
+		}
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		res := make(chan error, len(list))
+		for _, s := range list {
+			go func() { res <- dns(ctx, s, name) }()
+		}
+		var err error
+		for range list {
+			if err = <-res; err == nil {
+				return nil
+			}
+		}
+		return err
 	}
 }
 
