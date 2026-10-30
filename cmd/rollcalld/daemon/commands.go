@@ -184,7 +184,7 @@ func (d *Daemon) notify(args []string) ([]byte, error) {
 		}
 		nd.GoingDown()
 		if err := d.writeShutdownMarker(); err != nil {
-			d.o.Logf("rollcalld: shutdown marker not written: %v", err)
+			d.o.Errorf("rollcalld: shutdown marker not written: %v", err)
 		}
 		return ok("The other routers were told that this router is going down.")
 	case len(args) == 1 && args[0] == "clock-synced":
@@ -598,7 +598,7 @@ func (d *Daemon) awaitBinding(ctx context.Context, stop context.CancelFunc, tg *
 	chat, err := tg.BindChat(ctx, code, bindWindow)
 	if err != nil {
 		if ctx.Err() == nil {
-			d.o.Logf("rollcalld: chat binding ended without a chat: %s", plain(err))
+			d.o.Errorf("rollcalld: chat binding ended without a chat: %s", plain(err))
 		}
 		return
 	}
@@ -612,7 +612,7 @@ func (d *Daemon) awaitBinding(ctx context.Context, stop context.CancelFunc, tg *
 		return
 	}
 	if err := nd.SetSecrets(pairing.Secrets{BotToken: token, ChatID: chat}, d.channelFor(token, chat)); err != nil {
-		d.o.Logf("rollcalld: the bound chat was not saved: %s", plain(err))
+		d.o.Errorf("rollcalld: the bound chat was not saved: %s", plain(err))
 		return
 	}
 	d.mu.Lock()

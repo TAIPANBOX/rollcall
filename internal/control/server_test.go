@@ -461,7 +461,7 @@ func TestControlConnectionLimit(t *testing.T) {
 func TestServeSocketFile(t *testing.T) {
 	path := filepath.Join(socketDir(t), "rollcall.sock")
 	logs := &logBuf{}
-	stop := start(t, path, (&recorder{}).handler("", nil), WithLogf(logs.logf))
+	stop := start(t, path, (&recorder{}).handler("", nil), WithLogf(logs.logf), WithInfof(logs.logf))
 	fi, err := os.Lstat(path)
 	if err != nil {
 		t.Fatalf("socket file: %v", err)

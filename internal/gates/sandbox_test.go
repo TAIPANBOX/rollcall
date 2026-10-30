@@ -203,7 +203,7 @@ func init() {
 			name: "confine_after_run", gate: "TestDaemonConfinesFirst",
 			plant: func(t *testing.T, dst string) {
 				editCopy(t, dst, daemonMainRel, func(s string) string {
-					return strings.Replace(s, "\tlog.SetFlags(0)\n", "\tlog.SetFlags(0)\n\t_ = run(context.Background(), f)\n", 1)
+					return strings.Replace(s, "\tlog.SetFlags(0)\n", "\tlog.SetFlags(0)\n\t_ = run(context.Background(), f, nil)\n", 1)
 				})
 			},
 			outcome: wantFail, expect: "main calls run before sandbox.Confine",
@@ -212,7 +212,7 @@ func init() {
 			name: "confine_failure_goes_on", gate: "TestDaemonConfinesFirst",
 			plant: func(t *testing.T, dst string) {
 				editCopy(t, dst, daemonMainRel, func(s string) string {
-					return strings.Replace(s, "\t\tos.Exit(1)\n\t} else if n > 0 {", "\t} else if n > 0 {", 1)
+					return strings.Replace(s, "\t\tos.Exit(1)\n\t} else {", "\t} else {", 1)
 				})
 			},
 			outcome: wantFail, expect: "its error branch has no os.Exit",

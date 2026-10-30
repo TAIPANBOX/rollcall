@@ -18,6 +18,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"maps"
 	"net"
@@ -85,18 +86,32 @@ func main() {
 	// filter. procd cannot install it: it applies a profile through LD_PRELOAD, which a static
 	// binary never loads. A daemon that cannot filter itself does not run (security spec 1.5,
 	// 4.10); off Linux, a developer build, there is nothing to install.
+	var problems *log.Logger
 	if n, err := sandbox.Confine(); err != nil {
+		// The standard logger still writes to stderr here: daemon.err.
 		log.Printf("rollcalld: refusing to run without its seccomp filter: %v", err)
 		os.Exit(1)
-	} else if n > 0 {
-		log.Printf("rollcalld: seccomp filter installed on every thread: %d system calls of linux/%s allowed, any other ends the process", n, runtime.GOARCH)
+	} else {
+		problems = setLogs(os.Stdout, os.Stderr)
+		if n > 0 {
+			log.Printf("rollcalld: seccomp filter installed on every thread: %d system calls of linux/%s allowed, any other ends the process", n, runtime.GOARCH)
+		}
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
-	if err := run(ctx, f); err != nil {
-		log.Printf("rollcalld: %v", err)
+	if err := run(ctx, f, problems); err != nil {
+		problems.Printf("rollcalld: %v", err)
 		os.Exit(1)
 	}
+}
+
+// setLogs points the standard logger at stdout, where procd logs a line as
+// daemon.info, and returns the logger for what went wrong, on stderr, which
+// procd logs as daemon.err.
+func setLogs(stdout, stderr io.Writer) *log.Logger {
+	log.SetFlags(0)
+	log.SetOutput(stdout)
+	return log.New(stderr, "", 0)
 }
 
 type flags struct {
@@ -121,7 +136,7 @@ func loadConfig(f flags) (config.Config, map[string][]string, error) {
 	return cfg, zones, nil
 }
 
-func run(ctx context.Context, f flags) error {
+func run(ctx context.Context, f flags, problems *log.Logger) error {
 	cfg, zones, err := loadConfig(f)
 	if err != nil {
 		return err
@@ -144,7 +159,7 @@ func run(ctx context.Context, f flags) error {
 
 	boot, err := host.BootID()
 	if err != nil {
-		log.Printf("rollcalld: no boot ID from the kernel, so a restart looks like a reboot to the peers: %v", err)
+		problems.Printf("rollcalld: no boot ID from the kernel, so a restart looks like a reboot to the peers: %v", err)
 		boot = ids.BootID{}
 	}
 	release, _ := host.OpenWrtVersion()
@@ -176,6 +191,7 @@ func run(ctx context.Context, f flags) error {
 		Discovery: func() map[string]error { return discoveryWith(transport.Discovery(devices), tr.Devices()) },
 		Sandbox:   func() node.SandboxStatus { s, _ := daemon.ReadSandbox("/"); return s },
 		Addrs:     func() []netip.Addr { return deviceAddrs(devices) },
+		Logf:      log.Printf, Errorf: problems.Printf,
 	})
 	if err != nil {
 		tr.Close()
@@ -194,7 +210,8 @@ func run(ctx context.Context, f flags) error {
 		}
 	})
 	wg.Go(func() {
-		if err := control.Serve(ctx, f.control, refreshOnIface(dd.Handle, tr.Refresh), control.WithSecrets(dd.Secrets)); err != nil {
+		if err := control.Serve(ctx, f.control, refreshOnIface(dd.Handle, tr.Refresh), control.WithSecrets(dd.Secrets),
+			control.WithLogf(problems.Printf), control.WithInfof(log.Printf)); err != nil {
 			errs <- err
 		}
 	})
@@ -219,7 +236,11 @@ loop:
 			}
 			devs = now
 			if f := tr.UnderFlood(); f != flooded {
-				log.Print(floodNote(flooded, f, tr.Counters()))
+				if f {
+					problems.Print(floodNote(flooded, f, tr.Counters()))
+				} else {
+					log.Print(floodNote(flooded, f, tr.Counters()))
+				}
 				flooded = f
 			}
 		}

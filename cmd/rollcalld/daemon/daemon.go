@@ -86,6 +86,10 @@ type Options struct {
 	Addrs func() []netip.Addr
 	// Logf logs; nil is log.Printf. Logs never carry a secret or a code.
 	Logf func(format string, args ...any)
+	// Errorf logs what went wrong, the lines an operator has to look at;
+	// nil is Logf. rollcalld points Logf at stdout and Errorf at stderr, which
+	// procd logs as daemon.info and daemon.err.
+	Errorf func(format string, args ...any)
 }
 
 // Daemon is one rollcalld.
@@ -135,6 +139,9 @@ func New(o Options) (*Daemon, error) {
 	if o.Logf == nil {
 		o.Logf = log.Printf
 	}
+	if o.Errorf == nil {
+		o.Errorf = o.Logf
+	}
 	if o.TelegramURL == "" {
 		o.TelegramURL = channel.TelegramBaseURL
 	}
@@ -182,7 +189,7 @@ func (d *Daemon) Close() {
 		return
 	}
 	if err := nd.Stop(); err != nil {
-		d.o.Logf("rollcalld: the state was not all written at shutdown: %v", err)
+		d.o.Errorf("rollcalld: the state was not all written at shutdown: %v", err)
 	}
 }
 
@@ -239,7 +246,7 @@ func (d *Daemon) buildLocked() {
 	if d.ran {
 		seq, err := identity.NextBootSeq(d.o.StateDir)
 		if err != nil {
-			d.o.Logf("rollcalld: no new boot sequence number, keeping the running node: %v", err)
+			d.o.Errorf("rollcalld: no new boot sequence number, keeping the running node: %v", err)
 			return
 		}
 		d.seq = seq
@@ -257,10 +264,11 @@ func (d *Daemon) buildLocked() {
 	if err == nil {
 		d.planned = false
 		nd.SetClockTrusted(d.trusted)
+		nd.SetLogf(d.o.Logf, d.o.Errorf)
 		return
 	}
 	if !d.waitingLocked() {
-		d.o.Logf("rollcalld: the node does not run: %v", err)
+		d.o.Errorf("rollcalld: the node does not run: %v", err)
 	}
 }
 
@@ -276,10 +284,10 @@ func (d *Daemon) unreadableLocked(err error) {
 	switch {
 	case !d.unreadable:
 		d.unreadable, d.unreadableSince, d.gaveUp = true, now, false
-		d.o.Logf("rollcalld: the state cannot be read yet, looking again for up to %s (init may still be handing it over): %v", transientFor, err)
+		d.o.Errorf("rollcalld: the state cannot be read yet, looking again for up to %s (init may still be handing it over): %v", transientFor, err)
 	case !d.gaveUp && now-d.unreadableSince >= transientFor:
 		d.gaveUp = true
-		d.o.Logf("rollcalld: the state could not be read for %s; looking no more until rollcalld restarts: %v", transientFor, err)
+		d.o.Errorf("rollcalld: the state could not be read for %s; looking no more until rollcalld restarts: %v", transientFor, err)
 	}
 }
 
