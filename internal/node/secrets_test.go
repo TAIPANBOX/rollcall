@@ -70,7 +70,7 @@ type secChannel struct {
 	pings int
 }
 
-func (c *secChannel) Send(context.Context, string) error { return nil }
+func (c *secChannel) Send(context.Context, string, bool) error { return nil }
 func (c *secChannel) Ping(context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

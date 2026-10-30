@@ -92,25 +92,25 @@ func wantErrTLS(t *testing.T, err error) {
 func TestTelegramTLSAlertIsErrTLS(t *testing.T) {
 	t.Run("an alert in the handshake", func(t *testing.T) {
 		srv := alertServer(t)
-		wantErrTLS(t, NewTelegram(srv.URL, canary, 42, nil).Send(context.Background(), "x"))
+		wantErrTLS(t, NewTelegram(srv.URL, canary, 42, nil).Send(context.Background(), "x", false))
 	})
 	t.Run("an alert after the handshake", func(t *testing.T) {
 		// TLS 1.3: the client finishes its side of the handshake before
 		// the server checks for a client certificate; the server's
 		// certificate_required alert arrives on the first read.
 		srv := quietTLS(t, &tls.Config{MinVersion: tls.VersionTLS13, ClientAuth: tls.RequireAnyClientCert})
-		wantErrTLS(t, NewTelegram(srv.URL, canary, 42, srv.Client()).Send(context.Background(), "x"))
+		wantErrTLS(t, NewTelegram(srv.URL, canary, 42, srv.Client()).Send(context.Background(), "x", false))
 	})
 	t.Run("an alert the peer sends raw", func(t *testing.T) {
 		// A fatal handshake_failure alert record, TLS 1.2 record version.
 		url := rawServer(t, []byte{0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x28})
-		wantErrTLS(t, NewTelegram(url, canary, 42, nil).Send(context.Background(), "x"))
+		wantErrTLS(t, NewTelegram(url, canary, 42, nil).Send(context.Background(), "x", false))
 	})
 	t.Run("our alert on a malformed handshake", func(t *testing.T) {
 		// A handshake record holding a message of an unknown type: Go
 		// answers with unexpected_message and reports a "local error".
 		url := rawServer(t, []byte{0x16, 0x03, 0x03, 0x00, 0x04, 0xfe, 0x00, 0x00, 0x00})
-		wantErrTLS(t, NewTelegram(url, canary, 42, nil).Send(context.Background(), "x"))
+		wantErrTLS(t, NewTelegram(url, canary, 42, nil).Send(context.Background(), "x", false))
 	})
 }
 
@@ -120,7 +120,7 @@ func TestNtfyTLSAlertIsErrTLS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewNtfy: %v", err)
 	}
-	wantErrTLS(t, n.Send(context.Background(), "x"))
+	wantErrTLS(t, n.Send(context.Background(), "x", false))
 	wantErrTLS(t, n.Ping(context.Background()))
 }
 

@@ -34,6 +34,7 @@ access points, mesh nodes. When one of them fails, the owner finds out late, fro
 - **Says what happened**: a planned reboot, a crash or power cut, an upgrade with old and new version, a lost link while up, the internet, WAN or the uplink's DNS down. [Kinds](docs/how-it-works.md#what-kind-of-incident-it-was)
 - **A flapping uplink is one message**: one router's link changes within 30 s are one line, at the start and at the end of an outage. [One incident](docs/how-it-works.md#one-incident-one-message)
 - **Tells you after a total outage**, with start, end and length. [After an outage](docs/how-it-works.md#when-nobody-could-reach-telegram)
+- **Quiet at night if you want**: within `option quiet_hours '23:00-07:00'` messages arrive at once, without a sound. [Quiet hours](docs/how-it-works.md#who-sends)
 - **No false alarm from one router's cut-off view**: others are asked before a router is called silent. [Asking first](docs/how-it-works.md#noticing-a-silent-router)
 - **Trusts no single router**: a signed roster, admin, backup and recovery code, keys bound to the roster, signed histories held by every router. [Security](docs/security.md)
 - **Its own sandbox**: its own seccomp filter, no capabilities, no root-only configuration read. [Sandbox](docs/security.md#the-sandbox)

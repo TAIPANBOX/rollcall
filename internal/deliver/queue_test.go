@@ -53,7 +53,7 @@ type fakeChannel struct {
 	in    chan struct{}
 }
 
-func (f *fakeChannel) Send(ctx context.Context, text string) error {
+func (f *fakeChannel) Send(ctx context.Context, text string, _ bool) error {
 	f.mu.Lock()
 	f.calls++
 	var err error
@@ -745,8 +745,8 @@ func TestPanicDoesNotWedgeTheQueue(t *testing.T) {
 
 type panicChannel struct{}
 
-func (panicChannel) Send(context.Context, string) error { panic("send") }
-func (panicChannel) Ping(context.Context) error         { return nil }
+func (panicChannel) Send(context.Context, string, bool) error { panic("send") }
+func (panicChannel) Ping(context.Context) error               { return nil }
 
 // TestClockStepsBack: a wall clock that steps backwards never makes a wait
 // endless and never lets a send through early. A step back counts as no time

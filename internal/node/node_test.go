@@ -188,9 +188,10 @@ func (c *chat) setDown(down bool) {
 }
 
 type chatMsg struct {
-	by   string
-	text string
-	at   time.Duration
+	by     string
+	text   string
+	at     time.Duration
+	silent bool // sent within the quiet hours
 }
 
 type fakeChannel struct {
@@ -198,7 +199,7 @@ type fakeChannel struct {
 	by string
 }
 
-func (f *fakeChannel) Send(_ context.Context, text string) error {
+func (f *fakeChannel) Send(_ context.Context, text string, silent bool) error {
 	f.c.mu.Lock()
 	defer f.c.mu.Unlock()
 	if f.c.down {
@@ -208,7 +209,7 @@ func (f *fakeChannel) Send(_ context.Context, text string) error {
 		f.c.limited--
 		return &deliver.RateLimitError{RetryAfter: f.c.limitWait}
 	}
-	f.c.msgs = append(f.c.msgs, chatMsg{by: f.by, text: text, at: f.c.clk.Mono()})
+	f.c.msgs = append(f.c.msgs, chatMsg{by: f.by, text: text, at: f.c.clk.Mono(), silent: silent})
 	return nil
 }
 

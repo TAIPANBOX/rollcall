@@ -19,6 +19,7 @@
 //		option sender '0'
 //		option ntfy_url 'https://ntfy.sh/topic'
 //		option allow_insecure_lan '0'       # plain http to a private IP literal
+//		option quiet_hours '23:00-07:00'    # local time; messages sent in it make no sound
 //
 // peer_zone, peer, probe_target and dns_server are lists and only lists, so
 // each entry is one zone, one peer, one target or one server and never
@@ -46,6 +47,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/TAIPANBOX/rollcall/internal/quiet"
 )
 
 // Defaults and limits.
@@ -92,6 +95,10 @@ type Config struct {
 	AllowInsecureLAN bool
 	TZ               string // IANA zone name, for example Europe/Kyiv
 	TZSource         string // TZSystem or TZDefault
+	// QuietHours is the span of the day, in TZ, in which the messages the
+	// sender sends make no sound (option quiet_hours, HH:MM-HH:MM); the zero
+	// value, the default, is none.
+	QuietHours quiet.Hours
 
 	// zones maps every firewall zone to its network devices. Load fills
 	// it; a Config built by hand has none, so Validate finds every peer
@@ -141,6 +148,7 @@ var (
 	scalarKeys = map[string]bool{
 		"site": true, "port": true, "heartbeat": true, "silent_after": true, "icmp": true,
 		"sender": true, "ntfy_url": true, "allow_insecure_lan": true, "dns_probe": true, "dns_name": true,
+		"quiet_hours": true,
 	}
 	listKeys = map[string]bool{"peer_zone": true, "peer": true, "probe_target": true, "dns_server": true}
 )
@@ -200,6 +208,13 @@ func fromSections(secs []Section) (Config, error) {
 			return Config{}, at("dns_probe: %v", err)
 		}
 		cfg.DNSProbeOff = !on
+	}
+	if v, ok := main.Options["quiet_hours"]; ok {
+		h, err := quiet.Parse(v)
+		if err != nil {
+			return Config{}, at("quiet_hours %v", err)
+		}
+		cfg.QuietHours = h
 	}
 	if cfg.PeerZones == nil {
 		cfg.PeerZones = []string{DefaultPeerZone}
