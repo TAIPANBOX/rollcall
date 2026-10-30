@@ -10,6 +10,9 @@ Feature: A router's own link changes reach the chat as few messages
   # again as one incident with the number of drops and the time it was down. The first alert of
   # an outage comes about 30 s later in exchange. Silences, reboots and roster changes keep the
   # 10 s window.
+  # @decided 2026-10-30, on the measured price: for two messages an outage, the first alert of a
+  # WAN cut comes about 40 to 45 s later than before, of an internet loss alone about 20 s later,
+  # since the internet probe records its loss about 20 s after the WAN went down.
   # @measured 2026-10-30, lab cell R1.4 on rc92 (e3f542e): beryl2's WAN flapped ten times, 5 s
   # down and 5 s up; the chat got 6 messages in 2 minutes.
   @test:TestFlappingWanToldAsOneOutage
@@ -19,6 +22,23 @@ Feature: A router's own link changes reach the chat as few messages
     When the WAN stays up at last
     Then the chat gets at most two messages about it
     And the last one tells how many times the WAN went down and for how long in all
+
+  # A review of the 30 s window, 2026-10-30: a WAN that never stops dropping, 5 s down and 5 s up
+  # for 10 minutes, gave one message at its end only, 10 minutes after it began.
+  @test:TestEndlessFlapToldWhileItFlaps
+  Scenario: A router's WAN never stops dropping
+    Given a router whose WAN goes down for 5 seconds and up for 5 seconds, again and again
+    And its internet probe finds the internet gone meanwhile
+    Then the chat is told within 90 seconds of the first drop, while the WAN still flaps
+    When the WAN stays up at last, ten minutes later, and the internet is back
+    Then the chat gets one more message: the whole outage, with every drop counted
+
+  @test:TestEndAfterAFlappingStartIsTold
+  Scenario: The end of an outage whose start flapped
+    Given a router's WAN drops, comes back for a few seconds, drops again and stays down
+    And the chat was told the start with its two drops
+    When the WAN comes back minutes later
+    Then the chat gets the end of the outage with its length and both drops
 
   @test:TestFlapEndsTheOpenLoss
   Scenario: A WAN told as down drops a few more times and stays up

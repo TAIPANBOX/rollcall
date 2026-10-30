@@ -46,11 +46,13 @@ the chat. Everything here describes the code of 1.0.0-rc1; what ran on routers i
 - **One router's link changes, 30 s apart at most, one message** (`@decided 2026-10-30`): its WAN,
   internet and DNS losses at the start of an outage in one line ("WAN and internet went down at
   14:34"), the returns at its end in one line, and a link that keeps dropping in one line with
-  the count ("WAN went down 3 times, 1 min 7 s in all"). The first alert comes later for it: in
-  the replayed lab cells 52 to 57 s after the first record, against 12 s (WAN) and 37 s
-  (internet alone) with a 10 s window, since the internet probe finds a loss 20 s after the WAN
-  and the chain then waits its 30 s. A loss its probe records later still joins the outage it
-  belongs to.
+  the count ("WAN went down 3 times, 1 min 7 s in all"). The first alert comes later for it
+  (`@decided 2026-10-30`): about 40 to 45 s later for a WAN cut and about 20 s later for an
+  internet loss alone, since the internet probe records its loss about 20 s after the WAN went
+  down and the chain then waits its 30 s (replayed lab cells: 52 to 57 s after the first
+  record, against 12 s and 37 s with a 10 s window). A loss its probe records later still joins the outage it
+  belongs to. A link that never stops dropping is told at the latest 60 s after its first record,
+  while it still flaps; its end then tells the whole outage with every drop.
 - **A cause and its effects**: the main router reboots and the access points lose the internet:
   one message about the main router.
 - **The whole site**: every router loses the internet, or the power: one message naming them all.

@@ -186,12 +186,24 @@ var linkKinds = []struct {
 	{events.DNSLost, events.DNSRestored, wordNameDNS},
 }
 
+// Elided is what a kept incident no longer holds of one router's link to
+// keep its size bounded: Drops drops that ended, down for Gone in all, all
+// of them between the router's first and last records of the link it holds.
+// Kind is the link's loss, Witness the router's hex ID.
+type Elided struct {
+	Kind    events.Type
+	Witness string
+	Drops   int
+	Gone    time.Duration
+}
+
 // LinksOf sums up the losses and returns of links among evs: one Link per
 // kind that occurs, in the order WAN, internet, DNS. Each router's records
 // of a kind are read in the order of their stamps: a loss while the link was
 // up, or as its first record, opens a drop, a loss while it was down repeats
-// that drop, and a return ends it. Every other event is passed over.
-func LinksOf(evs []events.Event) []Link {
+// that drop, and a return ends it. Every other event is passed over. The
+// drops elided add to their router's count and time down.
+func LinksOf(evs []events.Event, elided ...Elided) []Link {
 	var out []Link
 	for _, k := range linkKinds {
 		per := map[string][]events.Event{}
@@ -234,6 +246,11 @@ func LinksOf(evs []events.Event) []Link {
 				if down {
 					d, _ := clock.Duration(since, e.At)
 					gone, down = gone+d, false
+				}
+			}
+			for _, x := range elided {
+				if x.Kind == k.loss && x.Witness == w {
+					drops, gone = drops+x.Drops, gone+x.Gone
 				}
 			}
 			l.Down = l.Down || down

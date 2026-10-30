@@ -1,14 +1,18 @@
 package node
 
 import (
+	"encoding/json"
 	"fmt"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/TAIPANBOX/rollcall/internal/clock"
+	"github.com/TAIPANBOX/rollcall/internal/deliver"
 	"github.com/TAIPANBOX/rollcall/internal/events"
+	"github.com/TAIPANBOX/rollcall/internal/ids"
 )
 
 // The wire names of the DNS events, written out: a router of an older
@@ -64,6 +68,17 @@ func replayCell(t *testing.T, steps []cellStep) (*group, []string) {
 	return g, msgs
 }
 
+// firstMessageAfter returns how long after the first record of a replay,
+// whose last step was at last seconds, the chat got its first message.
+func firstMessageAfter(g *group, last int) time.Duration {
+	g.chat.mu.Lock()
+	defer g.chat.mu.Unlock()
+	if len(g.chat.msgs) == 0 {
+		return -1
+	}
+	return g.chat.msgs[0].at - (g.clk.Mono() - 10*time.Minute - time.Duration(last)*sec)
+}
+
 // TestFlappingWanToldAsOneOutage replays lab cell R1.4 (2026-10-30 12:05:01
 // to 12:06:50, beryl2): the WAN went down, the internet probe dated its loss
 // 2 s later, the WAN came back and went down three more times 2 s each, and
@@ -92,9 +107,14 @@ func TestFlappingWanToldAsOneOutage(t *testing.T) {
 // and the internet 11 s after it. rc92 sent 4 messages.
 func TestTwoHourUplinkLossTwoMessages(t *testing.T) {
 	D, U, L, R := events.WanDown, events.WanUp, events.InternetLost, events.InternetRestored
-	_, msgs := replayCell(t, []cellStep{{0, 0, 2, D}, {20, 20, 2, L}, {7210, 0, 2, U}, {7221, 0, 2, R}})
+	g, msgs := replayCell(t, []cellStep{{0, 0, 2, D}, {20, 20, 2, L}, {7210, 0, 2, U}, {7221, 0, 2, R}})
 	if len(msgs) != 2 {
 		t.Fatalf("%d messages, want 2: the start and the end", len(msgs))
+	}
+	// The decided price: the internet loss is recorded 20 s after the WAN
+	// loss, and the chain waits its 30 s after it.
+	if d := firstMessageAfter(g, 7221); d < 0 || d > 60*sec {
+		t.Fatalf("the start reached the chat %s after the first record, want within 60 s", d)
 	}
 	if !strings.Contains(msgs[0], "WAN and internet went down at 09:01") {
 		t.Fatalf("first message %q; want the start of the outage naming the WAN and the internet", msgs[0])
@@ -110,12 +130,15 @@ func TestTwoHourUplinkLossTwoMessages(t *testing.T) {
 // after the cut, the internet 9 s after the WAN. rc92 sent 3 messages.
 func TestBothUplinksDownTwoMessages(t *testing.T) {
 	D, U, L, R := events.WanDown, events.WanUp, events.InternetLost, events.InternetRestored
-	_, msgs := replayCell(t, []cellStep{
+	g, msgs := replayCell(t, []cellStep{
 		{0, 0, 0, D}, {0, 0, 2, D}, {22, 20, 0, L}, {23, 20, 2, L},
 		{136, 0, 0, U}, {137, 0, 2, U}, {145, 0, 0, R}, {146, 0, 2, R},
 	})
 	if len(msgs) != 2 {
 		t.Fatalf("%d messages, want 2: the start and the end", len(msgs))
+	}
+	if d := firstMessageAfter(g, 146); d < 0 || d > 60*sec {
+		t.Fatalf("the start reached the chat %s after the first record, want within 60 s", d)
 	}
 	for i, want := range []string{"WAN and internet went down at 09:01", "WAN and internet were down from 09:01 to 09:03"} {
 		// The witnesses are named in the order of their IDs, which each run
@@ -295,5 +318,132 @@ func TestFlapEndsTheOpenLoss(t *testing.T) {
 	g.run(2 * time.Minute)
 	if later := g.chat.messages("WAN was down"); len(later) != 2 || !strings.Contains(later[1], "(16 s)") {
 		t.Fatalf("after a later 16 s blip: %q; want it told with its own length", later)
+	}
+}
+
+// TestEndlessFlapToldWhileItFlaps: beryl2's WAN goes down for 5 s and up for
+// 5 s, again and again, for 10 minutes, with its internet loss dated as in
+// lab cell R1.4; then the WAN stays up and the internet comes back. Every
+// record chains to the one before it, so the chain never waits out its 30 s:
+// at bb22451 the chat heard nothing for those 10 minutes and then one line,
+// "WAN went down 61 times". The chain is told once it has waited at most
+// maxLinkHold after its first record, and its end tells the whole outage:
+// two messages. Also when only the WAN flaps, and the first message found it
+// up for a moment.
+func TestEndlessFlapToldWhileItFlaps(t *testing.T) {
+	D, U, L, R := events.WanDown, events.WanUp, events.InternetLost, events.InternetRestored
+	for _, c := range []struct {
+		name     string
+		internet bool
+		last     int // the last drop starts here; the WAN is back 5 s later for good
+		want     string
+	}{
+		{"with the internet lost", true, 600, "WAN and internet were down from 09:01 to 09:11 (10 min 15 s). WAN went down 61 times, 5 min 5 s in all"},
+		{"the WAN alone", false, 600, "WAN was down from 09:01 to 09:11 (10 min 5 s). WAN went down 61 times, 5 min 5 s in all"},
+		// The last return is taken in at a ceiling (600 s) and nothing
+		// follows it: the chain is ended once it is quiet.
+		{"the WAN alone, its last drop taken at a ceiling", false, 590, "WAN was down from 09:01 to 09:11 (9 min 55 s). WAN went down 60 times, 5 min in all"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			steps := []cellStep{{0, 0, 2, D}}
+			for s := 5; s < c.last; s += 10 {
+				steps = append(steps, cellStep{s, 0, 2, U}, cellStep{s + 5, 0, 2, D})
+				if s == 15 && c.internet {
+					steps = append(steps, cellStep{22, 20, 2, L})
+				}
+			}
+			steps = append(steps, cellStep{c.last + 5, 0, 2, U})
+			if c.internet {
+				steps = append(steps, cellStep{c.last + 15, 0, 2, R})
+			}
+			last := steps[len(steps)-1].at
+			g, msgs := replayCell(t, steps)
+			if d := firstMessageAfter(g, last); d < 0 || d > 90*sec {
+				t.Fatalf("the first message came %s after the first record, want within 90 s: the chat was silent while the WAN flapped", d)
+			}
+			if len(msgs) != 2 {
+				t.Fatalf("%d messages, want 2: the flapping told within 90 s, and the whole outage at its end", len(msgs))
+			}
+			if !strings.Contains(msgs[1], c.want) {
+				t.Fatalf("the last message %q; want %q", msgs[1], c.want)
+			}
+		})
+	}
+}
+
+// TestCompactLinks: a chain of 61 drops is kept as its first and last
+// records with the middle drops counted, and the message reads the same
+// counts, first loss, last return and last record from what is kept.
+func TestCompactLinks(t *testing.T) {
+	w := ids.MemberID{3}
+	at := func(s int) clock.Stamp {
+		return clock.Stamp{Wall: tStart.Add(time.Duration(s) * sec), Mono: time.Duration(s) * sec, Trusted: true, Boot: bootN(2, 1)}
+	}
+	ev := func(n, s int, typ events.Type) events.Event {
+		return events.Event{Type: typ, Subject: w, Witness: w, At: at(s), Ref: ids.Hash{byte(n), byte(n >> 8), 31: 1}}
+	}
+	var evs []events.Event
+	n := 0
+	for s := 0; s < 610; s += 10 {
+		evs = append(evs, ev(n, s, events.WanDown), ev(n+1, s+5, events.WanUp))
+		n += 2
+	}
+	evs = append(evs, ev(n, 2, events.InternetLost), ev(n+1, 615, events.InternetRestored))
+	kept, elided := compactLinks(evs, maxLinkEvents)
+	if len(kept) > 8 || len(elided) != 1 || elided[0].Drops != 59 || elided[0].Gone != 59*5*sec {
+		t.Fatalf("kept %d events, elided %+v; want the first and last drops kept, 59 counted", len(kept), elided)
+	}
+	if got, want := deliver.LinksOf(kept, elided...), deliver.LinksOf(evs); !reflect.DeepEqual(got, want) {
+		t.Fatalf("summary of what is kept %+v\nwant %+v", got, want)
+	}
+	if !reflect.DeepEqual(linkEnds(kept), linkEnds(evs)) {
+		t.Fatal("the last records changed")
+	}
+	if k, e := compactLinks(evs[:10], maxLinkEvents); len(k) != 10 || e != nil {
+		t.Fatal("a short chain was compacted")
+	}
+}
+
+// TestCappedChainKeptAcrossARestart: midway through an endless flap, what
+// the node writes to flash keeps the capped incident with the drops it no
+// longer holds, and the strict decoder reads them back.
+func TestCappedChainKeptAcrossARestart(t *testing.T) {
+	g := newGroup(t, setup{n: 3, senders: map[int]int{0: 1, 1: 2}})
+	g.run(90 * sec)
+	c := g.nodes[2]
+	for s := 0; s < 480; s += 10 {
+		c.LocalEvent(events.Event{Type: events.WanDown})
+		g.run(5 * sec)
+		c.LocalEvent(events.Event{Type: events.WanUp})
+		g.run(5 * sec)
+	}
+	a := g.nodes[0]
+	b, err := json.Marshal(with(a, func() stateFile { return a.stateLocked() }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f stateFile
+	if err := decodeJSON(b, &f, maxStateFile); err != nil {
+		t.Fatalf("the state file does not read back: %v", err)
+	}
+	for _, s := range f.Recent {
+		if s.Capped && len(s.Elided) == 1 && s.Elided[0].Drops > 0 && len(s.Events) <= maxLinkEvents+2 {
+			return
+		}
+	}
+	t.Fatalf("no capped incident with elided drops among %d kept, %d bytes", len(f.Recent), len(b))
+}
+
+// TestEndAfterAFlappingStartIsTold: the WAN drops, comes back for 5 s and
+// drops again, and stays down; the start is told with its two drops. When the
+// WAN comes back minutes later, its end is told: the acknowledgement of the
+// start named a WAN loss and a WAN return already, yet it told the start, not
+// the whole outage the end merges.
+func TestEndAfterAFlappingStartIsTold(t *testing.T) {
+	D, U := events.WanDown, events.WanUp
+	_, msgs := replayCell(t, []cellStep{{0, 0, 2, D}, {5, 0, 2, U}, {10, 0, 2, D}, {300, 0, 2, U}})
+	if len(msgs) != 2 || !strings.Contains(msgs[0], "WAN went down at 09:01. WAN went down 2 times") ||
+		!strings.Contains(msgs[1], "WAN was down from 09:01 to 09:06 (5 min). WAN went down 2 times, 4 min 55 s in all") {
+		t.Fatalf("chat %q; want the start with its 2 drops, then the whole outage", msgs)
 	}
 }
