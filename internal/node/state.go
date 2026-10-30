@@ -88,9 +88,10 @@ type incState struct {
 	Changes    []deliver.Change `json:"changes"`
 	// Capped and Elided: a link incident the ceiling made while its chain
 	// went on, and the drops its events no longer hold (incidents.go).
-	Capped bool             `json:"capped,omitempty"`
-	Untold bool             `json:"untold,omitempty"`
-	Elided []deliver.Elided `json:"elided,omitempty"`
+	Capped  bool             `json:"capped,omitempty"`
+	Untold  bool             `json:"untold,omitempty"`
+	Ongoing bool             `json:"ongoing,omitempty"`
+	Elided  []deliver.Elided `json:"elided,omitempty"`
 }
 
 type peerState struct {
@@ -120,7 +121,7 @@ func (n *Node) stateLocked() stateFile {
 	for _, r := range n.inc.recent {
 		f.Recent = append(f.Recent, incState{Inc: r.inc, Events: r.events, Components: r.components,
 			Paired: r.paired, Single: r.single, QueuedAt: r.queuedAt, Changes: n.inc.facts[r.inc.ID],
-			Capped: r.capped, Untold: r.untold, Elided: r.elided})
+			Capped: r.capped, Untold: r.untold, Ongoing: r.ongoing, Elided: r.elided})
 	}
 	for _, m := range n.cur().Members {
 		p := n.peers[m.ID]
@@ -190,7 +191,7 @@ func (n *Node) restoreIncidentLocked(s incState, now clock.Stamp) {
 	// start when it held an own account that gave it.
 	s.Inc.Began = s.Inc.Began || ownStart(s.Events) || slices.Contains(s.Inc.Events, events.MemberSilent)
 	r := &incRec{inc: s.Inc, events: s.Events, components: s.Components, paired: s.Paired, single: s.Single, queuedAt: s.QueuedAt,
-		capped: s.Capped, untold: s.Untold, elided: s.Elided}
+		capped: s.Capped, untold: s.Untold, ongoing: s.Ongoing, elided: s.Elided}
 	n.inc.recent = append(n.inc.recent, r)
 	if over := len(n.inc.recent) - keepIncidents; over > 0 {
 		for _, old := range n.inc.recent[:over] {

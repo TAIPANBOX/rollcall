@@ -57,6 +57,9 @@ const (
 	wordLinksBack    = "%s came back at %s"
 	wordLinkWasDown  = "%s was down from %s to %s (%s)"
 	wordLinksPartly  = "%s came back at %s on %s, still down on %s"
+	wordFlapping     = "%s keeps dropping since %s: down %d times so far"
+	wordFlappingDown = "%s went down at %s and keeps dropping: down %d times so far"
+	wordOn           = "%s on %s"
 	wordLinkJoin     = "; "
 	wordDrops        = "%s went down %d times"
 	wordDropsOn      = "%s went down %d times on %s"
@@ -147,6 +150,11 @@ type Facts struct {
 	// it (LinksOf over its events). Without it a link incident is told from
 	// its types, Start and End alone.
 	Links []Link
+	// Ongoing says that the chain of link changes the incident tells had not
+	// gone quiet when it was made (the node's ceiling): a link of it that
+	// dropped more than once is told as one that keeps dropping, not as one
+	// that was down.
+	Ongoing bool
 }
 
 // Link is what an incident of link changes holds of one kind of link: the
@@ -447,8 +455,9 @@ func (m *message) absence(kind events.Type, known bool, who string, inc events.I
 }
 
 // links tells an incident of link changes from its summary ls (LinksOf): in
-// one sentence the links that went down and came back, the links still down,
-// and the links that came back without their loss in the incident; then a
+// one sentence the links that keep dropping (Facts.Ongoing), the links that
+// went down and came back, the links still down, and the links that came
+// back without their loss in the incident; then a
 // sentence for each link one router saw go down more than once, with the
 // count and, when every drop ended, how long they lasted in all; then, when
 // only DNS failed, that only name lookups did.
@@ -458,9 +467,11 @@ func (m *message) absence(kind events.Type, known bool, who string, inc events.I
 // corrected clocks. A mixed incident, or links that went down further apart
 // than events.LinkWindow, tells each link at its own moments.
 func (m *message) links(inc events.Incident, ls []Link) (string, []string) {
-	var was, down, back, partly []Link
+	var was, down, back, partly, flapping []Link
 	for _, l := range ls {
 		switch {
+		case m.f.Ongoing && l.Drops > 1:
+			flapping = append(flapping, l)
 		case l.Down && len(l.Up) > 0:
 			partly = append(partly, l)
 		case l.Down:
@@ -472,13 +483,24 @@ func (m *message) links(inc events.Incident, ls []Link) (string, []string) {
 		}
 	}
 	states := 0
-	for _, s := range [][]Link{was, down, back, partly} {
+	for _, s := range [][]Link{was, down, back, partly, flapping} {
 		if len(s) > 0 {
 			states++
 		}
 	}
 	one := states == 1
 	var parts []string
+	for _, l := range flapping {
+		name := linkName(l.Kind)
+		if len(inc.Witnesses) > 1 {
+			name = fmt.Sprintf(wordOn, name, m.name(l.Of))
+		}
+		if slices.Contains(l.Still, l.Of) { // the router that keeps dropping it is down for now
+			parts = append(parts, fmt.Sprintf(wordFlappingDown, name, m.at(l.From.Wall), l.Drops))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf(wordFlapping, name, m.at(l.From.Wall), l.Drops)+fmt.Sprintf(wordDropsAll, durationText(l.Gone)))
+	}
 	if len(was) > 0 {
 		parts = append(parts, m.linksWere(inc, was, one))
 	}
@@ -505,8 +527,8 @@ func (m *message) links(inc events.Incident, ls []Link) (string, []string) {
 		if l.Kind != events.DNSLost {
 			dnsOnly = false
 		}
-		if l.Drops < 2 {
-			continue
+		if l.Drops < 2 || slices.ContainsFunc(flapping, func(f Link) bool { return f.Kind == l.Kind }) {
+			continue // a flapping link is counted in the first sentence
 		}
 		name := capitalized(linkName(l.Kind))
 		s := fmt.Sprintf(wordDrops, name, l.Drops)

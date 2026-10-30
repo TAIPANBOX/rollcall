@@ -2,6 +2,8 @@ package node
 
 import (
 	"cmp"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"maps"
 	"slices"
@@ -123,6 +125,10 @@ type incRec struct {
 	// after its message was made: its end is still to be told
 	// (endChainsLocked).
 	untold bool
+	// ongoing is set on a capped incident that a chain began, not a return
+	// that ends an outage told before: its message says the link keeps
+	// dropping, so its end is told whatever joins it (endChainsLocked).
+	ongoing bool
 	// elided is what compactLinks took out of events to bound them: drops
 	// that ended, per router and link, which the message still counts.
 	elided []deliver.Elided
@@ -619,13 +625,13 @@ func (n *Node) incidentsLocked(now clock.Stamp) {
 		}
 		if r := n.absorbLocked(inc, evs); r != nil {
 			if capped {
-				n.capLocked(r, first)
+				n.capLocked(r, first, false) // told already, as a start
 			}
 			continue
 		}
 		n.queueLocked(inc, evs, nil, now)
 		if capped {
-			n.capLocked(n.inc.byID[inc.ID], first)
+			n.capLocked(n.inc.byID[inc.ID], first, true)
 		}
 	}
 }
@@ -655,25 +661,35 @@ func continuesChain(evs, kept []events.Event) bool {
 
 // capLocked marks r capped, made by the ceiling while its chain went on, and
 // counts it held since first, when its first event was seen: the ceiling
-// bounds its wait, and heldLocked holds it no longer.
-func (n *Node) capLocked(r *incRec, first time.Duration) {
+// bounds its wait, and heldLocked holds it no longer. ongoing says that its
+// chain began with it, so its message tells a link that keeps dropping.
+func (n *Node) capLocked(r *incRec, first time.Duration, ongoing bool) {
 	if r == nil {
 		return
 	}
-	r.capped, r.untold, r.held, r.heldAt = true, false, true, first
+	r.capped, r.ongoing, r.untold, r.held, r.heldAt = true, ongoing, false, true, first
 	n.flusher.Mark()
 }
 
-// endChainsLocked tells the end of each capped chain whose last records
-// joined it at a ceiling and that went quiet then: no link change of its
-// routers within events.LinkWindow of its records waits to be taken, and the
-// last of them was seen linkSettle ago. Its end is then no incident of its
-// own, which would merge with it (pairLinkLocked), so the end is the capped
-// incident again, with everything its chain recorded, under a new ID, in
-// place of the capped one.
+// chainEndID is the ID of the end of the capped incident id when its chain
+// went quiet: derived from id, the same on every member that capped it, and
+// another than id even when nothing joined the chain after it.
+func chainEndID(id string) string {
+	h := sha256.Sum256([]byte("rollcall/v1 chain end\x00" + id))
+	return hex.EncodeToString(h[:8])
+}
+
+// endChainsLocked tells the end of each capped chain that went quiet with
+// no incident of its own to end it: whose last records joined it at a
+// ceiling, or whose message said its link keeps dropping (ongoing), and
+// nothing came after. Quiet means that no link change of its routers within
+// events.LinkWindow of its records waits to be taken, and the last of them
+// was seen linkSettle ago. The end is the capped incident again, with
+// everything its chain recorded, under the ID chainEndID gives, in place of
+// the capped one.
 func (n *Node) endChainsLocked(now clock.Stamp) {
 	for _, r := range slices.Clone(n.inc.recent) {
-		if !r.capped || !r.untold || !keptLink(r) {
+		if !r.capped || !r.untold && !r.ongoing || !keptLink(r) {
 			continue
 		}
 		last := time.Duration(0)
@@ -686,12 +702,14 @@ func (n *Node) endChainsLocked(now clock.Stamp) {
 			continue
 		}
 		merged := events.Coalesce(r.events, spanOf(r.events)+events.DefaultWindow)
-		if len(merged) != 1 || merged[0].ID == r.inc.ID {
+		end := chainEndID(r.inc.ID)
+		if len(merged) != 1 || n.inc.byID[end] != nil {
 			continue
 		}
+		merged[0].ID = end
 		r.paired = true
 		n.queueLocked(merged[0], r.events, []string{r.inc.ID}, now)
-		n.inc.byID[merged[0].ID].elided = slices.Clone(r.elided)
+		n.inc.byID[end].elided = slices.Clone(r.elided)
 		if !n.deliveredLocked(r.inc.ID) {
 			n.queue.Ack(r.inc.ID, n.id.ID) // not sent yet: the end tells it all
 		}
@@ -740,7 +758,7 @@ func (n *Node) keepChainLocked(id string, parts []string, capped bool, first tim
 		n.joinLocked(r, nil)
 	}
 	if capped {
-		n.capLocked(r, first)
+		n.capLocked(r, first, false) // a return that ends an outage told before
 	}
 }
 
@@ -1203,7 +1221,20 @@ func (n *Node) inPiecesLocked(r *incRec) bool {
 	if r.single || !linkOnly(r.events) || len(n.inc.ackNotes) == 0 {
 		return false
 	}
-	return !slices.ContainsFunc(r.events, func(e events.Event) bool { return n.inc.named[e.Ref] == 0 })
+	if len(r.components) == 0 {
+		return !slices.ContainsFunc(r.events, func(e events.Event) bool { return n.inc.named[e.Ref] == 0 })
+	}
+	// A merged incident: the acknowledgements of its own parts told them,
+	// not it (coveredLocked), so they name nothing here.
+	named := map[ids.Hash]bool{}
+	for _, note := range n.inc.ackNotes {
+		if !slices.Contains(r.components, note.id) {
+			for _, h := range note.refs {
+				named[h] = true
+			}
+		}
+	}
+	return !slices.ContainsFunc(r.events, func(e events.Event) bool { return !named[e.Ref] })
 }
 
 // name counts refs as named by one more kept acknowledgement (by d = 1), or
@@ -1736,6 +1767,7 @@ func (n *Node) renderLocked(inc events.Incident) string {
 		// (absorbLocked).
 		inc = r.inc
 		f.Links = deliver.LinksOf(r.events, r.elided...)
+		f.Ongoing = r.capped && r.ongoing && !r.paired
 	}
 	if len(n.rosters) > 0 {
 		for _, m := range n.cur().Members {

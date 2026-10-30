@@ -142,6 +142,37 @@ func TestRenderLinks(t *testing.T) {
 	}
 }
 
+// TestRenderLinksOngoing: while the chain of a link that keeps dropping has
+// not gone quiet, the link is told as one that keeps dropping, up or down at
+// that moment; the other links as before.
+func TestRenderLinksOngoing(t *testing.T) {
+	D, U, L := events.WanDown, events.WanUp, events.InternetLost
+	o := officeID
+	flap := []events.Event{linkEv(1, D, o, local(12, 5, 0)), linkEv(2, U, o, local(12, 5, 5)),
+		linkEv(3, D, o, local(12, 5, 10)), linkEv(4, U, o, local(12, 5, 15))}
+	cases := []struct {
+		name string
+		evs  []events.Event
+		want string
+	}{
+		{"up for now", flap, "Home: WAN keeps dropping since 12:05: down 2 times so far, 10 s in all. Seen by ap-office."},
+		{"down for now", append(slices.Clone(flap), linkEv(5, D, o, local(12, 5, 20))),
+			"Home: WAN went down at 12:05 and keeps dropping: down 3 times so far. Seen by ap-office."},
+		{"with the internet lost", append(slices.Clone(flap), linkEv(5, L, o, local(12, 5, 2))),
+			"Home: WAN keeps dropping since 12:05: down 2 times so far, 10 s in all; internet lost at 12:05. Seen by ap-office."},
+		{"one drop is no flapping", flap[:2], "Home: WAN was down from 12:05 to 12:05 (5 s). Seen by ap-office."},
+		{"several routers", append(slices.Clone(flap), linkEv(5, D, gwID, local(12, 5, 3))),
+			"Home: WAN on ap-office keeps dropping since 12:05: down 2 times so far, 10 s in all. Seen by gateway, ap-office."},
+	}
+	for _, c := range cases {
+		inc, f := linkIncident(t, c.evs...)
+		f.Ongoing = true
+		if got := Render(inc, "Home", cet, f); got != c.want {
+			t.Errorf("%s:\n got %q\nwant %q", c.name, got, c.want)
+		}
+	}
+}
+
 // TestRenderDNSWithoutSummary: without a summary in the facts, a DNS
 // incident is told from its types, as the WAN and the internet are.
 func TestRenderDNSWithoutSummary(t *testing.T) {

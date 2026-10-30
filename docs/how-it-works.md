@@ -52,7 +52,8 @@ the chat. Everything here describes the code of 1.0.0-rc1; what ran on routers i
   down and the chain then waits its 30 s (replayed lab cells: 52 to 57 s after the first
   record, against 12 s and 37 s with a 10 s window). A loss its probe records later still joins the outage it
   belongs to. A link that never stops dropping is told at the latest 60 s after its first record,
-  while it still flaps; its end then tells the whole outage with every drop.
+  while it still flaps ("WAN keeps dropping since 09:01: down 6 times so far"); its end then tells
+  the whole outage with every drop.
 - **A cause and its effects**: the main router reboots and the access points lose the internet:
   one message about the main router.
 - **The whole site**: every router loses the internet, or the power: one message naming them all.

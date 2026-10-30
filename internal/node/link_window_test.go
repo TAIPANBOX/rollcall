@@ -364,10 +364,28 @@ func TestEndlessFlapToldWhileItFlaps(t *testing.T) {
 			if len(msgs) != 2 {
 				t.Fatalf("%d messages, want 2: the flapping told within 90 s, and the whole outage at its end", len(msgs))
 			}
+			// While it flaps, the message says so; it does not read as over.
+			if !strings.Contains(msgs[0], "WAN keeps dropping since 09:01: down 6 times so far") || strings.Contains(msgs[0], "was down from") {
+				t.Fatalf("the first message %q; want the WAN told as one that keeps dropping, not as one that was down", msgs[0])
+			}
 			if !strings.Contains(msgs[1], c.want) {
 				t.Fatalf("the last message %q; want %q", msgs[1], c.want)
 			}
 		})
+	}
+}
+
+// TestShortFlapCutByTheCeilingIsEnded: the WAN drops four times in 35 s and
+// stays up. The ceiling tells it at 60 s, still dropping as far as it can
+// know, before its chain is quiet at 65 s; nothing follows, and its end is
+// told even so: the chat's last word is not that it keeps dropping.
+func TestShortFlapCutByTheCeilingIsEnded(t *testing.T) {
+	D, U := events.WanDown, events.WanUp
+	_, msgs := replayCell(t, []cellStep{{0, 0, 2, D}, {5, 0, 2, U}, {10, 0, 2, D}, {15, 0, 2, U},
+		{20, 0, 2, D}, {25, 0, 2, U}, {30, 0, 2, D}, {35, 0, 2, U}})
+	if len(msgs) != 2 || !strings.Contains(msgs[0], "WAN keeps dropping since 09:01: down 4 times so far, 20 s in all") ||
+		!strings.Contains(msgs[1], "WAN was down from 09:01 to 09:02 (35 s). WAN went down 4 times, 20 s in all") {
+		t.Fatalf("chat %q; want the flapping, then its end", msgs)
 	}
 }
 

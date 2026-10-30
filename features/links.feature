@@ -30,8 +30,15 @@ Feature: A router's own link changes reach the chat as few messages
     Given a router whose WAN goes down for 5 seconds and up for 5 seconds, again and again
     And its internet probe finds the internet gone meanwhile
     Then the chat is told within 90 seconds of the first drop, while the WAN still flaps
+    And that message says the WAN keeps dropping, not that it was down
     When the WAN stays up at last, ten minutes later, and the internet is back
     Then the chat gets one more message: the whole outage, with every drop counted
+
+  @test:TestShortFlapCutByTheCeilingIsEnded
+  Scenario: A flap told while it lasts ends soon after
+    Given a router's WAN drops four times in half a minute and stays up
+    And the chat was told it keeps dropping before its chain was quiet
+    Then the chat also gets its end, with the drops counted
 
   @test:TestEndAfterAFlappingStartIsTold
   Scenario: The end of an outage whose start flapped
