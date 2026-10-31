@@ -595,12 +595,12 @@ func (n *Node) incidentsLocked(now clock.Stamp) {
 		if inc.End.Trusted && now.Trusted && now.Wall.Sub(inc.End.Wall) > maxIncidentAge {
 			continue
 		}
-		if capped {
-			if r := n.cappedChainLocked(evs); r != nil {
-				n.joinLocked(r, evs) // the chain goes on: its end will tell it
-				r.untold = true
-				continue
-			}
+		// The chain goes on, or went quiet with no end to tell: its end, or
+		// the return that ends the outage, will tell it.
+		if r := n.cappedChainLocked(evs); r != nil && (capped || n.chainStaysDownLocked(r, evs)) {
+			n.joinLocked(r, evs)
+			r.untold = true
+			continue
 		}
 		if m, parts, mev, ok := n.pairLocked(inc, evs); ok {
 			n.queueLocked(m, mev, parts, now)
@@ -649,6 +649,19 @@ func (n *Node) cappedChainLocked(evs []events.Event) *incRec {
 	return nil
 }
 
+// chainStaysDownLocked reports whether evs, records that continue r's capped
+// chain and are quiet, bring back no link of the chain (endedLinks), and end
+// no outage but the chain's (linkStartsLocked takes r alone): the outage goes
+// on, and they join r, as the records a ceiling takes do, for the return that
+// ends it to tell. Merged with r into an incident of their own, they told the
+// outage begun a second time: lab cell V3 (2026-10-31, rc96), where the WAN
+// flapped 9 times and stayed down, and an internet loss recorded 20 s late
+// went out as "WAN and internet went down at 04:39. WAN went down 4 times"
+// between the flapping and the end.
+func (n *Node) chainStaysDownLocked(r *incRec, evs []events.Event) bool {
+	return len(n.linkStartsLocked(evs)) == 1 && !anyBack(endedLinks(append(slices.Clone(r.events), evs...)))
+}
+
 // continuesChain reports whether a record of evs lies within
 // events.LinkWindow of a record of the same router in kept.
 func continuesChain(evs, kept []events.Event) bool {
@@ -688,18 +701,22 @@ func chainEndID(id string) string {
 // everything its chain recorded, under the ID chainEndID gives, in place of
 // the capped one.
 //
-// A chain that went quiet with every link it records still down, and nothing
-// recorded since its message, has nothing to tell: its message told it, and
-// the return that ends the outage will pair with it. Its records settled past
-// the ceiling and no more: lab cell V-R1.5-rc94 (2026-10-31), where two
+// A chain that went quiet with no link it records back (endedLinks) has no
+// end to tell, whatever joined it since its message: the outage goes on, and
+// the return that ends it will pair with the chain and tell everything it
+// recorded. With nothing joined, lab cell V-R1.5-rc94 (2026-10-31), where two
 // internet probes recorded their losses 20 and 30 s after the cut, told the
-// start twice, 3 s apart.
+// start twice, 3 s apart. With drops joined, lab cell V3 (2026-10-31), a WAN
+// that flapped and stayed down was told as down between the flapping and the
+// end; in its replay, the sender's copy of a late internet loss came after the
+// chain went quiet with the WAN down and the internet back from a moment
+// before the last drop, and that moment was told as an end.
 func (n *Node) endChainsLocked(now clock.Stamp) {
 	for _, r := range slices.Clone(n.inc.recent) {
 		if !r.capped || !r.untold && !r.ongoing || !keptLink(r) {
 			continue
 		}
-		if !r.untold && !anyBack(linkEnds(r.events)) {
+		if !anyBack(endedLinks(r.events)) {
 			continue
 		}
 		last := time.Duration(0)
@@ -883,6 +900,34 @@ func linkEnds(evs []events.Event) map[linkKey]bool {
 	return out
 }
 
+// endedLinks returns linkEnds of evs, with a link other than the WAN taken
+// as down while its router's WAN went down after the link's last return: the
+// probe of that link had not judged it since the WAN went down (an internet
+// loss is recorded about 20 s later), and its return is no end of the outage.
+// A return after the WAN went down, as through another uplink, is one.
+func endedLinks(evs []events.Event) map[linkKey]bool {
+	ends := linkEnds(evs)
+	for k, down := range ends {
+		wan := linkKey{events.WanDown, k.who}
+		if !down && k != wan && ends[wan] && stampOrder(lastDrop(evs, wan), lastOf(evs, k.who, lossOf[k.loss])) > 0 {
+			ends[k] = true
+		}
+	}
+	return ends
+}
+
+// lastOf returns the last record of type typ by who in evs, in the order of
+// the stamps; evs hold one.
+func lastOf(evs []events.Event, who ids.MemberID, typ events.Type) events.Event {
+	var last events.Event
+	for _, e := range evs {
+		if e.Type == typ && e.Witness == who && (last.Type == "" || stampOrder(e, last) > 0) {
+			last = e
+		}
+	}
+	return last
+}
+
 // openLinksLocked returns linkEnds of r's events, with a link that r ends
 // down taken as up when another kept incident holds a later return of it by
 // the same router: r's drop is not the router's last record of that link,
@@ -915,13 +960,7 @@ func (n *Node) openLinksLocked(r *incRec) map[linkKey]bool {
 // lastDrop returns the last drop of link k in evs, in the order of the
 // stamps; evs hold one.
 func lastDrop(evs []events.Event, k linkKey) events.Event {
-	var last events.Event
-	for _, e := range evs {
-		if e.Type == k.loss && e.Witness == k.who && (last.Type == "" || stampOrder(e, last) > 0) {
-			last = e
-		}
-	}
-	return last
+	return lastOf(evs, k.who, k.loss)
 }
 
 // stampOrder orders two records by their stamps, as linkEnds does.
@@ -1737,31 +1776,11 @@ func (n *Node) pairLocked(inc events.Incident, evs []events.Event) (events.Incid
 // router's WAN and internet came back in one incident, which closed only the
 // internet loss, and the WAN loss stayed open; and in lab cell R1.4 a WAN that
 // dropped three more times left its first loss open. It also merges evs with
-// a capped incident whose chain they continue, whatever they end with: the
-// end of that chain tells it whole.
+// a capped incident whose chain they continue: the end of that chain tells it
+// whole. Records that continue it and bring none of its links back joined it
+// before (chainStaysDownLocked), as they end nothing.
 func (n *Node) pairLinkLocked(inc events.Incident, evs []events.Event) (events.Incident, []string, []events.Event, bool) {
-	back := map[linkKey]bool{}
-	for k, down := range linkEnds(evs) {
-		if !down {
-			back[k] = true
-		}
-	}
-	var rs []*incRec
-	for _, r := range n.inc.recent {
-		if !keptLink(r) {
-			continue
-		}
-		if r.capped && continuesChain(evs, r.events) {
-			rs = append(rs, r) // the end of a chain the ceiling cut
-			continue
-		}
-		for k, down := range n.openLinksLocked(r) {
-			if down && back[k] {
-				rs = append(rs, r)
-				break
-			}
-		}
-	}
+	rs := n.linkStartsLocked(evs)
 	if len(rs) == 0 {
 		return events.Incident{}, nil, nil, false
 	}
@@ -1786,6 +1805,35 @@ func (n *Node) pairLinkLocked(inc events.Incident, evs []events.Event) (events.I
 		r.paired = true
 	}
 	return merged[0], append(stands, inc.ID), all, true
+}
+
+// linkStartsLocked returns the kept link incidents that pairLinkLocked merges
+// the link changes evs with: each capped one whose chain they continue, and
+// each that holds down a link a router's records in evs end with a return of.
+func (n *Node) linkStartsLocked(evs []events.Event) []*incRec {
+	back := map[linkKey]bool{}
+	for k, down := range linkEnds(evs) {
+		if !down {
+			back[k] = true
+		}
+	}
+	var rs []*incRec
+	for _, r := range n.inc.recent {
+		if !keptLink(r) {
+			continue
+		}
+		if r.capped && continuesChain(evs, r.events) {
+			rs = append(rs, r) // the end of a chain the ceiling cut
+			continue
+		}
+		for k, down := range n.openLinksLocked(r) {
+			if down && back[k] {
+				rs = append(rs, r)
+				break
+			}
+		}
+	}
+	return rs
 }
 
 // recordAcksLocked writes the acknowledgement of every incident this node

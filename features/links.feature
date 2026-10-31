@@ -175,5 +175,33 @@ Feature: A router's own link changes reach the chat as few messages
     Given a router's WAN goes down and up every 5 seconds for 90 or 110 seconds
     And then it stays down
     When its WAN comes back at 5 minutes after the first drop
-    Then the chat is told the WAN keeps dropping, then that it is down with its drops
+    Then the chat is told the WAN keeps dropping
     And then that it was down for 5 minutes, with every drop counted
+
+  # Lab cell V3 on rc96, 2026-10-31: the WAN flapped nine times and stayed down for 3.5 min. Between
+  # the flapping and the end the chat got "WAN and internet went down at 04:39. WAN went down 4 times.
+  # Internet went down 2 times": three messages for one outage.
+  @test:TestFlapIntoOutageTwoMessages @test:TestOverrunReturnInAQuietTailIsNoEnd @test:TestEndedLinks
+  Scenario: A flap that turns into an outage is two messages
+    Given a router's WAN is cut and restored every 5 seconds, nine times
+    And 5 seconds after the last restore it is cut for three and a half minutes
+    And its internet probe records the last internet loss 20 seconds late
+    When the WAN comes back
+    Then the chat gets two messages, that the WAN keeps dropping and the end of the outage
+    And the end counts every drop of the WAN and of the internet
+
+  @test:TestFlapUpWithTheInternetStillDownIsTold
+  Scenario: A flap that ends with the WAN up and the internet still down
+    Given a router's WAN keeps dropping and its internet is lost
+    When the WAN stays up and the internet stays down for minutes
+    Then the chat is told the WAN keeps dropping
+    And then that the WAN is back and the internet still lost
+    And then the end of the outage when the internet comes back
+
+  @test:TestChainGoneDownKeepsAnotherRoutersEnd @test:TestFlapTailKeepsAnotherRoutersEnd
+  Scenario: A flap that stays down does not hide another router's return
+    Given one router's WAN is down and told
+    And another router's WAN keeps dropping and then stays down
+    When the first router's WAN comes back 2 seconds after the second one's last drop
+    Then the chat is told the first router is back and the second still down
+    And then the end of the second router's outage

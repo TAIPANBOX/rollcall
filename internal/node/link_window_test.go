@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -494,26 +495,25 @@ func TestLateLossesPastTheCeilingOneStart(t *testing.T) {
 
 // TestEndOfAFlapThatStayedDownIsTold: beryl2's WAN goes down for 5 s and up
 // for 5 s, then stays down, and comes back at 300 s. The ceiling tells the
-// flapping, the quiet chain tells the WAN down with its drops, and the return
-// ends the outage. That end merges the chain's down message, which merged the
-// capped incident in turn: when the chain went quiet with its last drop (90
-// s), its down message is the capped incident paired with that drop; when its
-// last drops joined it at a ceiling (110 s), the end of the chain, under an ID
-// of its own, stands for it. Either way the acknowledgement of the capped
-// incident, which names a WAN loss and a WAN return, counted the end told: it
-// was not the acknowledgement of a part of the end, only of a part of a part.
-// At 98a14b1 the chat never heard that the WAN came back (a replay of the
-// forge night campaign, 2026-10-31; not seen on a router).
+// flapping, and the return ends the outage with every drop; the chain that went
+// quiet with the WAN down tells nothing between them. Its last drop joins the
+// capped incident either when it went quiet on its own (90 s) or at a ceiling
+// (110 s), and the end merges the capped incident, whose acknowledgement names
+// a WAN loss and a WAN return: it is the acknowledgement of a part of the end,
+// and does not count the end told. At 98a14b1 the chat never heard that the
+// WAN came back (a replay of the forge night campaign, 2026-10-31; not seen on
+// a router); at 8473828 it heard the WAN down with its drops between the
+// flapping and the end, as in lab cell V3 (TestFlapIntoOutageTwoMessages).
 func TestEndOfAFlapThatStayedDownIsTold(t *testing.T) {
 	D, U := events.WanDown, events.WanUp
 	for _, c := range []struct {
-		name       string
-		flap       int // the WAN goes down here and stays down until 300 s
-		down, last string
+		name string
+		flap int // the WAN goes down here and stays down until 300 s
+		last string
 	}{
-		{"its last drop taken when the chain went quiet", 90, "WAN went down at 09:01. WAN went down 10 times",
+		{"its last drop taken when the chain went quiet", 90,
 			"WAN was down from 09:01 to 09:06 (5 min). WAN went down 10 times, 4 min 15 s in all"},
-		{"its last drops joined at a ceiling", 110, "WAN went down at 09:01. WAN went down 12 times",
+		{"its last drops joined at a ceiling", 110,
 			"WAN was down from 09:01 to 09:06 (5 min). WAN went down 12 times, 4 min 5 s in all"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -523,14 +523,67 @@ func TestEndOfAFlapThatStayedDownIsTold(t *testing.T) {
 			}
 			steps = append(steps, cellStep{c.flap, 0, 2, D}, cellStep{300, 0, 2, U})
 			_, msgs := replayCell(t, steps)
-			if len(msgs) != 3 || !strings.Contains(msgs[0], "WAN keeps dropping since 09:01: down 6 times so far") ||
-				!strings.Contains(msgs[1], c.down) {
-				t.Fatalf("chat %q; want the flapping, the WAN down after it, then the end of the outage", msgs)
+			if len(msgs) != 2 || !strings.Contains(msgs[0], "WAN keeps dropping since 09:01: down 6 times so far") {
+				t.Fatalf("chat %q; want the flapping, then the end of the outage", msgs)
 			}
-			if !strings.Contains(msgs[2], c.last) {
-				t.Fatalf("the last message %q; want %q, from the first loss to the return", msgs[2], c.last)
+			if !strings.Contains(msgs[1], c.last) {
+				t.Fatalf("the last message %q; want %q, from the first loss to the return", msgs[1], c.last)
 			}
 		})
+	}
+}
+
+// TestChainGoneDownKeepsAnotherRoutersEnd: beryl1's WAN goes down and its
+// start is told; beryl2's WAN flaps from 15 s and is told by the ceiling, then
+// stays down from 80 s, and beryl1's WAN comes back 2 s later. The two records
+// are one incident (the 10 s window), which continues beryl2's chain with its
+// WAN down and also ends beryl1's outage: it does not join the chain silently,
+// as a drop of beryl2 alone does, or beryl1's return would go untold and
+// beryl2's return would be told as one without a start. The chat gets what it
+// got before: beryl1 back with beryl2 still down, then beryl2's outage.
+func TestChainGoneDownKeepsAnotherRoutersEnd(t *testing.T) {
+	D, U := events.WanDown, events.WanUp
+	steps := []cellStep{{0, 0, 1, D}}
+	for s := 15; s < 70; s += 10 {
+		steps = append(steps, cellStep{s, 0, 2, D}, cellStep{s + 5, 0, 2, U})
+	}
+	steps = append(steps, cellStep{80, 0, 2, D}, cellStep{82, 0, 1, U}, cellStep{300, 0, 2, U})
+	_, msgs := replayCell(t, steps)
+	if len(msgs) != 4 || !strings.Contains(msgs[2], "WAN came back at 09:02 on r02, still down on r03") ||
+		!strings.Contains(msgs[3], "WAN was down from 09:01 to 09:06 (5 min)") {
+		t.Fatalf("chat %q; want beryl1's start, beryl2's flapping, beryl1 back with beryl2 still down, then beryl2's outage", msgs)
+	}
+}
+
+// TestFlapIntoOutageTwoMessages replays lab cell V3 on rc96 (2026-10-31
+// 04:39:30 to 04:45:00, beryl2), with the records flint2 kept: the WAN was
+// cut and restored every 5 s nine times, and 5 s after the last restore cut
+// for 3.5 min. netifd reported 9 drops and 3 returns of the flap, and the
+// internet probe a loss and a return within it, then a loss dated 7 s after
+// the last drop and recorded 20 s later. The ceiling told the flapping at
+// 04:40:36; at 04:42:10 that late loss, quiet, merged with the capped chain
+// and told "WAN and internet went down at 04:39. WAN went down 4 times.
+// Internet went down 2 times", as a message of its own; the return told the
+// outage at 04:45:33. Three messages for one outage: the chain went quiet
+// with every link down, and what it recorded after its message is the
+// return's to tell.
+func TestFlapIntoOutageTwoMessages(t *testing.T) {
+	D, U, L, R := events.WanDown, events.WanUp, events.InternetLost, events.InternetRestored
+	_, msgs := replayCell(t, []cellStep{
+		{0, 0, 2, D}, {10, 0, 2, U}, {11, 0, 2, D}, {21, 0, 2, D}, {22, 21, 2, L}, {30, 0, 2, U},
+		{32, 0, 2, D}, {43, 0, 2, D}, {64, 0, 2, D}, {74, 0, 2, D}, {84, 0, 2, D}, {96, 0, 2, U},
+		{97, 0, 2, R}, {100, 0, 2, D}, {127, 20, 2, L}, {322, 0, 2, U}, {329, 0, 2, R},
+	})
+	if len(msgs) != 2 {
+		t.Fatalf("%d messages, want 2: the flapping, then the end of the outage", len(msgs))
+	}
+	if !strings.Contains(msgs[0], "keeps dropping") {
+		t.Fatalf("the first message %q; want the WAN told as one that keeps dropping", msgs[0])
+	}
+	// The lab's end read 5 min 16 s for the WAN; whole seconds make it 15.
+	want := "WAN and internet were down from 09:01 to 09:06 (5 min 29 s). WAN went down 4 times, 5 min 15 s in all. Internet went down 2 times, 5 min 18 s in all"
+	if !strings.Contains(msgs[1], want) {
+		t.Fatalf("the last message %q; want %q, every drop counted", msgs[1], want)
 	}
 }
 
@@ -588,5 +641,130 @@ func TestPartOfTakesPartsOfParts(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("partOfLocked did not end on parts that name each other")
+	}
+}
+
+// TestFlapUpWithTheInternetStillDownIsTold: beryl2's WAN flaps with its
+// internet lost, as in lab cell R1.4, then stays up while the internet stays
+// down until 400 s. The chain goes quiet with the WAN back for good: that is an
+// end the chat is told, the WAN's drops and the internet still lost, as it is
+// told of an outage that did not flap; then the internet's return ends the
+// outage. So when the WAN's last return settles on its own, after the ceiling,
+// and pairs with the chain, and when a ceiling takes it and the chain is ended
+// once quiet (endChainsLocked). Only a return that a later drop of its router's
+// WAN overtook is no end (endedLinks).
+func TestFlapUpWithTheInternetStillDownIsTold(t *testing.T) {
+	D, U, L, R := events.WanDown, events.WanUp, events.InternetLost, events.InternetRestored
+	for _, c := range []struct {
+		name       string
+		up         int // the WAN's last return, for good
+		mid, whole string
+	}{
+		{"its last return settling on its own", 60,
+			"WAN was down from 09:01 to 09:02 (1 min); internet lost at 09:01. WAN went down 6 times, 30 s in all",
+			"WAN and internet were down from 09:01 to 09:08 (6 min 40 s). WAN went down 6 times, 30 s in all"},
+		{"its last return taken at a ceiling", 110,
+			"WAN was down from 09:01 to 09:03 (1 min 50 s); internet lost at 09:01. WAN went down 11 times, 55 s in all",
+			"WAN and internet were down from 09:01 to 09:08 (6 min 40 s). WAN went down 11 times, 55 s in all"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			steps := []cellStep{{0, 0, 2, D}, {5, 0, 2, U}, {10, 0, 2, D}, {15, 0, 2, U}, {22, 20, 2, L}}
+			for s := 25; s < c.up; s += 10 {
+				steps = append(steps, cellStep{s, 0, 2, D}, cellStep{s + 5, 0, 2, U})
+			}
+			steps = append(steps, cellStep{400, 0, 2, R})
+			_, msgs := replayCell(t, steps)
+			if len(msgs) != 3 || !strings.Contains(msgs[0], "keeps dropping") || !strings.Contains(msgs[1], c.mid) ||
+				!strings.Contains(msgs[2], c.whole) {
+				t.Fatalf("chat %q; want the flapping, the WAN back with the internet still lost, then the outage", msgs)
+			}
+		})
+	}
+}
+
+// TestOverrunReturnInAQuietTailIsNoEnd: beryl2's WAN flaps with its internet
+// lost; past the ceiling the WAN comes back for 3 s and the internet with it,
+// then the WAN goes down for good, and the internet probe's loss comes 31 s
+// later, after those records settled. As this member saw them, they bring the
+// internet back, but the WAN's drop overtook that return: they join the capped
+// chain and tell nothing (endedLinks), and the return at 300 s ends the
+// outage. Judged by the last records alone, they were told as "WAN went down"
+// between the flapping and the end, the late loss joining that message. The
+// sender in the replay of lab cell V3 saw the same, past a ceiling instead.
+func TestOverrunReturnInAQuietTailIsNoEnd(t *testing.T) {
+	D, U, L, R := events.WanDown, events.WanUp, events.InternetLost, events.InternetRestored
+	steps := []cellStep{{0, 0, 2, D}, {21, 20, 2, L}}
+	for s := 5; s < 80; s += 10 {
+		steps = append(steps, cellStep{s, 0, 2, U}, cellStep{s + 5, 0, 2, D})
+	}
+	steps = append(steps, cellStep{85, 0, 2, U}, cellStep{86, 0, 2, R}, cellStep{88, 0, 2, D},
+		cellStep{119, 30, 2, L}, cellStep{300, 0, 2, U}, cellStep{310, 0, 2, R})
+	slices.SortStableFunc(steps, func(a, b cellStep) int { return a.at - b.at })
+	_, msgs := replayCell(t, steps)
+	if len(msgs) != 2 || !strings.Contains(msgs[0], "keeps dropping") ||
+		!strings.Contains(msgs[1], "WAN and internet were down from 09:01 to 09:06 (5 min 10 s)") {
+		t.Fatalf("chat %q; want the flapping, then the end of the outage", msgs)
+	}
+}
+
+// TestEndedLinks: a link's return counts as an end unless its router's WAN
+// went down after it; the WAN's own records, a return after the WAN went
+// down, and another router's WAN are taken as they are.
+func TestEndedLinks(t *testing.T) {
+	a, b := ids.MemberID{1}, ids.MemberID{2}
+	n := 0
+	ev := func(who ids.MemberID, s int, typ events.Type) events.Event {
+		n++
+		return events.Event{Type: typ, Witness: who, Subject: who, Ref: ids.Hash{byte(n)},
+			At: clock.Stamp{Wall: tStart.Add(time.Duration(s) * sec), Mono: time.Duration(s) * sec, Trusted: true}}
+	}
+	D, U, L, R := events.WanDown, events.WanUp, events.InternetLost, events.InternetRestored
+	for _, c := range []struct {
+		name string
+		evs  []events.Event
+		want map[linkKey]bool // down
+	}{
+		{"the internet back before the WAN dropped", []events.Event{ev(a, 0, D), ev(a, 1, L), ev(a, 10, U), ev(a, 12, R), ev(a, 14, D)},
+			map[linkKey]bool{{D, a}: true, {L, a}: true}},
+		{"the internet back after the WAN dropped", []events.Event{ev(a, 0, D), ev(a, 1, L), ev(a, 20, R)},
+			map[linkKey]bool{{D, a}: true, {L, a}: false}},
+		{"the internet back with the WAN up", []events.Event{ev(a, 0, D), ev(a, 1, L), ev(a, 10, U), ev(a, 12, R)},
+			map[linkKey]bool{{D, a}: false, {L, a}: false}},
+		{"the internet back before a WAN drop that ended", []events.Event{ev(a, 0, L), ev(a, 5, R), ev(a, 8, D), ev(a, 10, U)},
+			map[linkKey]bool{{D, a}: false, {L, a}: false}},
+		{"DNS back before the WAN dropped", []events.Event{ev(a, 0, dnsLost), ev(a, 5, dnsRestored), ev(a, 8, D)},
+			map[linkKey]bool{{D, a}: true, {dnsLost, a}: true}},
+		{"another router's WAN dropped", []events.Event{ev(a, 1, L), ev(a, 12, R), ev(b, 0, L), ev(b, 5, R), ev(b, 14, D)},
+			map[linkKey]bool{{L, a}: false, {L, b}: true, {D, b}: true}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := endedLinks(c.evs); !reflect.DeepEqual(got, c.want) {
+				t.Errorf("got %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestFlapTailKeepsAnotherRoutersEnd: beryl1's internet is lost and told;
+// beryl2's WAN flaps and is told by the ceiling, then stays down at 140 s, and
+// within 4 s beryl1's internet comes back and beryl1's WAN goes down. The
+// three records are one incident, which brings no link back once beryl1's WAN
+// drop overtakes its internet's return (endedLinks), and continues beryl2's
+// chain: yet it ends beryl1's internet outage, which another kept incident
+// holds, so it does not join the chain silently (chainStaysDownLocked). The
+// chat is told beryl1's internet outage with its length, as before.
+func TestFlapTailKeepsAnotherRoutersEnd(t *testing.T) {
+	D, U, L, R := events.WanDown, events.WanUp, events.InternetLost, events.InternetRestored
+	steps := []cellStep{{22, 20, 1, L}}
+	for s := 70; s < 130; s += 10 {
+		steps = append(steps, cellStep{s, 0, 2, D}, cellStep{s + 5, 0, 2, U})
+	}
+	steps = append(steps, cellStep{140, 0, 2, D}, cellStep{142, 0, 1, R}, cellStep{144, 0, 1, D},
+		cellStep{300, 0, 2, U}, cellStep{310, 0, 1, U}, cellStep{340, 0, 1, R})
+	_, msgs := replayCell(t, steps)
+	if !slices.ContainsFunc(msgs, func(m string) bool {
+		return strings.Contains(m, "internet was down from 09:01 to 09:03 (2 min 20 s)")
+	}) {
+		t.Fatalf("chat %q; want beryl1's internet outage told with its length", msgs)
 	}
 }
