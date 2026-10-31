@@ -1,6 +1,8 @@
 Feature: Quiet hours: messages sent at night make no sound
   The owner may set quiet hours in /etc/config/rollcall. A message sent within them reaches the
-  chat at once, like any other, with the same text, but the phone neither rings nor vibrates.
+  chat at once, like any other, with the same text, but without a sound. Telegram promises no more
+  than that: whether the phone still vibrates is up to the phone and its Telegram app. ntfy's low
+  priority neither sounds nor vibrates.
   Nothing waits for the morning and nothing is lost: only the sound is off.
 
   # @decided 2026-10-30: the owner wants to see in the chat what happened at night, without the

@@ -873,6 +873,55 @@ func linkEnds(evs []events.Event) map[linkKey]bool {
 	return out
 }
 
+// openLinksLocked returns linkEnds of r's events, with a link that r ends
+// down taken as up when another kept incident holds a later return of it by
+// the same router: r's drop is not the router's last record of that link,
+// and the outage it began has ended. An older build kept a flap in pieces, a
+// return and the drop after it, while the return that ended the flap lay in
+// another piece; lab, 2026-10-30: rc93 restored three such pieces of the
+// 12:06 flap on flint2, and ten hours later told the end of the next outage
+// as "WAN was down from 12:06 to 22:09 (10 h 3 min)".
+func (n *Node) openLinksLocked(r *incRec) map[linkKey]bool {
+	ends := linkEnds(r.events)
+	for k, down := range ends {
+		if !down {
+			continue
+		}
+		// r's own returns of the link lie before its last drop, as r ends
+		// down: only another incident can hold a later one.
+		last := lastDrop(r.events, k)
+		for _, o := range n.inc.recent {
+			if slices.ContainsFunc(o.events, func(e events.Event) bool {
+				return e.Type == lossOf[k.loss] && e.Witness == k.who && stampOrder(e, last) > 0
+			}) {
+				ends[k] = false
+				break
+			}
+		}
+	}
+	return ends
+}
+
+// lastDrop returns the last drop of link k in evs, in the order of the
+// stamps; evs hold one.
+func lastDrop(evs []events.Event, k linkKey) events.Event {
+	var last events.Event
+	for _, e := range evs {
+		if e.Type == k.loss && e.Witness == k.who && (last.Type == "" || stampOrder(e, last) > 0) {
+			last = e
+		}
+	}
+	return last
+}
+
+// stampOrder orders two records by their stamps, as linkEnds does.
+func stampOrder(a, b events.Event) int {
+	if c := a.At.Wall.Compare(b.At.Wall); c != 0 {
+		return c
+	}
+	return cmp.Compare(a.At.Mono, b.At.Mono)
+}
+
 // anyDown reports whether ends holds a link that is down, anyBack whether
 // it holds one that came back.
 func anyDown(ends map[linkKey]bool) bool {
@@ -926,7 +975,7 @@ func (n *Node) absorbLocked(inc events.Incident, evs []events.Event) *incRec {
 		if !keptLink(r) {
 			continue
 		}
-		open := linkEnds(r.events)
+		open := n.openLinksLocked(r)
 		if !continuesOutage(ends, open) && !n.lateRecordsLocked(evs, r, open) {
 			continue
 		}
@@ -1673,7 +1722,7 @@ func (n *Node) pairLinkLocked(inc events.Incident, evs []events.Event) (events.I
 			rs = append(rs, r) // the end of a chain the ceiling cut
 			continue
 		}
-		for k, down := range linkEnds(r.events) {
+		for k, down := range n.openLinksLocked(r) {
 			if down && back[k] {
 				rs = append(rs, r)
 				break

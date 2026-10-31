@@ -82,8 +82,9 @@ The two reboots of the lab run, as they happened:
 - **Logged**: each message sent leaves `told the chat about incident <tag>` in the log (daemon.info);
   failed sends leave one daemon.err line per reason, not one per attempt.
 - **Quiet hours**: with `option quiet_hours '23:00-07:00'` a message sent within that span makes no
-  sound. It reaches the chat at once, with the same text; Telegram gets `disable_notification`,
-  ntfy priority 2 (low: no sound, no vibration). The router's time zone decides, the one the
+  sound. It reaches the chat at once, with the same text; Telegram gets `disable_notification`
+  (no sound; whether the phone still vibrates is up to the phone and its Telegram app), ntfy
+  priority 2 (low: no sound, no vibration). The router's time zone decides, the one the
   messages show, and so does the moment of sending: an incident of 22:58 sent at 23:00 is quiet.
   The start is included and the end is not, so 23:00:00 is quiet and 07:00:00 rings. Nothing waits
   for the morning. Off unless set; a value that is not `HH:MM-HH:MM` stops the daemon with the
