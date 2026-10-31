@@ -687,9 +687,19 @@ func chainEndID(id string) string {
 // was seen linkSettle ago. The end is the capped incident again, with
 // everything its chain recorded, under the ID chainEndID gives, in place of
 // the capped one.
+//
+// A chain that went quiet with every link it records still down, and nothing
+// recorded since its message, has nothing to tell: its message told it, and
+// the return that ends the outage will pair with it. Its records settled past
+// the ceiling and no more: lab cell V-R1.5-rc94 (2026-10-31), where two
+// internet probes recorded their losses 20 and 30 s after the cut, told the
+// start twice, 3 s apart.
 func (n *Node) endChainsLocked(now clock.Stamp) {
 	for _, r := range slices.Clone(n.inc.recent) {
 		if !r.capped || !r.untold && !r.ongoing || !keptLink(r) {
+			continue
+		}
+		if !r.untold && !anyBack(linkEnds(r.events)) {
 			continue
 		}
 		last := time.Duration(0)

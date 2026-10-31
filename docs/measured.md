@@ -268,6 +268,12 @@ and after each cell. Senders: `flint2`, then `beryl1`. Times are London time.
   the kept incidents (`TestOlderPiecesOfAFlapDoNotStretchALaterOutage`,
   `TestOpenLinksTakeLaterReturns`). No such piece was left in the state files of the three routers
   afterwards.
+- **The rerun on rc94** (`647cfcb`, cell R1.5 on 2026-10-31 at 02:40): the end said "WAN and internet
+  were down from 02:40 to 02:43 (2 min 30 s)", nothing reaching back. But the start went out twice,
+  3 s apart: both internet probes recorded their losses 20 to 30 s after the cut, the chain settled
+  past the 60 s ceiling, the ceiling made the start, and the chain then went quiet with both links
+  still down and was told again as its own end. Fixed: such a chain has nothing to tell until the
+  return (`TestLateLossesPastTheCeilingOneStart`).
 
 ## CI
 
