@@ -285,6 +285,13 @@ and after each cell. Senders: `flint2`, then `beryl1`. Times are London time.
   no message, and a chain with no link back tells no end of its own, an internet return older than
   its router's last WAN drop counting as none (`TestFlapIntoOutageTwoMessages`, a replay of the
   records flint2 kept).
+- **The rerun on rc97** (`042a97b`, cells V4 on 2026-10-31 at 06:01 and 06:11): the same flap into
+  an outage gave 2 messages, the flapping at 06:02:29, 66 s after the first cut, and at 06:07:29,
+  50 s after the WAN came back, "WAN and internet were down from 06:01 to 06:06 (5 min 29 s). WAN went
+  down 4 times, 5 min 11 s in all. Internet went down 2 times, 5 min 18 s in all". The records had
+  the shape of V3: the internet back 3 s before the last drop, and its loss recorded late, which
+  joined the capped chain with no message. Both uplinks down for 2 min 13 s (R1.5): 2 messages, the
+  start from beryl1 at 06:12:45 and the end from flint2 at 06:14:52, "2 min 28 s".
 
 ## CI
 
