@@ -292,8 +292,12 @@ Run `39990683889`, the push of commit `4186091` on 2026-10-23. Every job passed:
 
 Also on every push: the **simulator sweep**, 200 seeds, each a site of 3 to 5 routers put through
 random faults (power cuts, reboots, upgrades, partitions, internet and Telegram outages, packet loss
-and delay), with its invariants checked afterwards. 1000 seeds, run twice on a development branch,
-were all clean.
+and delay), with its invariants checked afterwards. 1000 seeds, run twice on a development branch
+on 2026-10-23, were all clean then. On `98a14b1`, 2026-10-31, 998 of 1000 were clean: in seeds 241
+and 698 one router sent the update of a corrected absence twice, 1 s apart ("r03 rebooted
+unexpectedly, back at 09:05."), as the claims about it reached it in two reconciliations (I30); the
+200 seeds of CI do not reach either. With that fixed, on `4fed9b0`, 1000 seeds, run twice, were all
+clean (`ROLLCALL_SEEDS=1000 go test ./internal/sim/`, 5 min 1 s and 4 min 20 s).
 
 **Gates**: 19 under `internal/gates`. `TestGatesHaveTeeth` plants, for each one, the fault it exists
 for and requires the gate to fail, or requires it to pass on clean input. On `524f26a`, 2026-10-24,
