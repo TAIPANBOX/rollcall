@@ -17,3 +17,7 @@ config rollcall 'main'
 	# Static peers, for routed or NAT-separated segments: IP, IP:port or [IPv6]:port (no host
 	# names). Empty means discovery only.
 	# list peer '192.0.2.10:7432'
+	# Quiet hours, HH:MM-HH:MM in the router's time zone (system zonename), across midnight
+	# allowed: a message sent within them reaches the chat at once, with no sound. The start is
+	# included, the end is not. Off unless set.
+	# option quiet_hours '23:00-07:00'

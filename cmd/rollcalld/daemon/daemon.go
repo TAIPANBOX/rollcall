@@ -254,7 +254,7 @@ func (d *Daemon) buildLocked() {
 	d.loadSecretsLocked()
 	c := d.o.Config
 	cfg := node.Config{
-		Site: c.Site, Heartbeat: c.Heartbeat, SilentAfter: c.SilentAfter, Sender: c.Sender, TZ: d.loc,
+		Site: c.Site, Heartbeat: c.Heartbeat, SilentAfter: c.SilentAfter, Sender: c.Sender, TZ: d.loc, Quiet: c.QuietHours,
 		Boot: d.o.Boot, BootSeq: d.seq, IdentityDir: d.o.StateDir, Planned: d.planned,
 		Peers: c.Peers, Versions: d.o.Versions,
 	}

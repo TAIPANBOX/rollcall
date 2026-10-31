@@ -90,7 +90,7 @@ func TestNtfySendPostsTextWithBearerToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewNtfy: %v", err)
 	}
-	if err := n.Send(context.Background(), "Home: router silent"); err != nil {
+	if err := n.Send(context.Background(), "Home: router silent", false); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	got := reqs.all()
@@ -135,7 +135,7 @@ func TestNtfyRefusedTokenIsNotBlocked(t *testing.T) {
 	for _, code := range []int{403, 401} {
 		srv, _ := serve(t, status(code, `{"code":40101,"http":401,"error":"unauthorized"}`))
 		n, _ := NewNtfy(srv.URL+"/alerts", canary, true, srv.Client())
-		err := n.Send(context.Background(), "x")
+		err := n.Send(context.Background(), "x", false)
 		if !errors.Is(err, errNtfyRefused) || errors.Is(err, deliver.ErrBlocked) {
 			t.Fatalf("HTTP %d: err = %v, want the token refused and not deliver.ErrBlocked", code, err)
 		}
@@ -161,7 +161,7 @@ func TestNtfyPingDoesNotProveTheToken(t *testing.T) {
 	if err := n.Ping(context.Background()); err != nil {
 		t.Fatalf("Ping with a refused token: %v, want nil (the health endpoint does not check it)", err)
 	}
-	if err := n.Send(context.Background(), "x"); !errors.Is(err, errNtfyRefused) {
+	if err := n.Send(context.Background(), "x", false); !errors.Is(err, errNtfyRefused) {
 		t.Fatalf("Send with a refused token: err = %v, want the token refused", err)
 	}
 	if got := reqs.all(); got[0].header.Get("Authorization") != "" {
@@ -175,7 +175,7 @@ func TestNtfyRateLimitHonoursRetryAfterHeader(t *testing.T) {
 		w.WriteHeader(429)
 	})
 	n, _ := NewNtfy(srv.URL+"/alerts", canary, true, srv.Client())
-	err := n.Send(context.Background(), "x")
+	err := n.Send(context.Background(), "x", false)
 	var rl *deliver.RateLimitError
 	if !errors.As(err, &rl) || rl.RetryAfter != 9*time.Second {
 		t.Fatalf("err = %v, want a rate limit error with RetryAfter 9s", err)
@@ -192,7 +192,7 @@ func TestNtfyTLSFailureIsErrTLS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewNtfy: %v", err)
 	}
-	err = n.Send(context.Background(), "x")
+	err = n.Send(context.Background(), "x", false)
 	if !errors.Is(err, deliver.ErrTLS) {
 		t.Fatalf("err = %v, want deliver.ErrTLS", err)
 	}
@@ -202,7 +202,7 @@ func TestNtfyTLSFailureIsErrTLS(t *testing.T) {
 func TestNtfyOtherStatusIsPlain(t *testing.T) {
 	srv, _ := serve(t, status(500, "internal"))
 	n, _ := NewNtfy(srv.URL+"/alerts", canary, true, srv.Client())
-	err := n.Send(context.Background(), "x")
+	err := n.Send(context.Background(), "x", false)
 	if err == nil || !strings.Contains(err.Error(), "500") {
 		t.Fatalf("err = %v, want a plain error with the status code 500", err)
 	}
@@ -221,7 +221,7 @@ func TestNtfyDefaultClientRefusesRedirectToOtherHost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewNtfy: %v", err)
 	}
-	if err := n.Send(context.Background(), "x"); !errors.Is(err, errRedirectRefused) {
+	if err := n.Send(context.Background(), "x", false); !errors.Is(err, errRedirectRefused) {
 		t.Fatalf("err = %v, want the guarded client to refuse the redirect", err)
 	}
 }
@@ -257,7 +257,7 @@ func TestCanaryNeverInNtfyErrors(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewNtfy: %v", err)
 			}
-			sendErr := n.Send(context.Background(), "x")
+			sendErr := n.Send(context.Background(), "x", false)
 			if sendErr == nil {
 				t.Fatal("Send err = nil, want an error")
 			}

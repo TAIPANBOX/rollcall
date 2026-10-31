@@ -61,23 +61,29 @@ func NewTelegram(baseURL, token string, chatID int64, hc *http.Client) *Telegram
 }
 
 // tgSend is the body of sendMessage. It has no parse_mode field on purpose:
-// the message is plain text.
+// the message is plain text. DisableNotification comes last and only when
+// set, so a message outside the quiet hours is the very request it was before
+// they existed.
 type tgSend struct {
-	ChatID             int64         `json:"chat_id"`
-	Text               string        `json:"text"`
-	LinkPreviewOptions tgLinkPreview `json:"link_preview_options"`
+	ChatID              int64         `json:"chat_id"`
+	Text                string        `json:"text"`
+	LinkPreviewOptions  tgLinkPreview `json:"link_preview_options"`
+	DisableNotification bool          `json:"disable_notification,omitempty"`
 }
 
 type tgLinkPreview struct {
 	IsDisabled bool `json:"is_disabled"`
 }
 
-// Send posts text to the chat as plain text, with link previews off.
-func (t *Telegram) Send(ctx context.Context, text string) error {
+// Send posts text to the chat as plain text, with link previews off. silent
+// sets disable_notification, which the Bot API documents as a message the
+// user is notified of with no sound: it shows in the chat at once.
+func (t *Telegram) Send(ctx context.Context, text string, silent bool) error {
 	return t.call(ctx, "sendMessage", tgSend{
-		ChatID:             t.chatID,
-		Text:               text,
-		LinkPreviewOptions: tgLinkPreview{IsDisabled: true},
+		ChatID:              t.chatID,
+		Text:                text,
+		LinkPreviewOptions:  tgLinkPreview{IsDisabled: true},
+		DisableNotification: silent,
 	}, nil)
 }
 

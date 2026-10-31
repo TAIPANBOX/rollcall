@@ -48,7 +48,7 @@ func TestTelegramProductionBaseURL(t *testing.T) {
 func TestTelegramSendHasNoParseMode(t *testing.T) {
 	srv, reqs := serve(t, okFn)
 	tg := NewTelegram(srv.URL, canary, 42, srv.Client())
-	if err := tg.Send(context.Background(), "hello <b>there</b>"); err != nil {
+	if err := tg.Send(context.Background(), "hello <b>there</b>", false); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	got := reqs.all()
@@ -96,7 +96,7 @@ func TestTelegramPingCallsGetMe(t *testing.T) {
 
 func TestTelegramBlockedIsErrBlocked(t *testing.T) {
 	srv, _ := serve(t, status(403, `{"ok":false,"error_code":403,"description":"Forbidden: bot was blocked by the user"}`))
-	err := NewTelegram(srv.URL, canary, 42, srv.Client()).Send(context.Background(), "x")
+	err := NewTelegram(srv.URL, canary, 42, srv.Client()).Send(context.Background(), "x", false)
 	if !errors.Is(err, deliver.ErrBlocked) {
 		t.Fatalf("err = %v, want deliver.ErrBlocked", err)
 	}
@@ -106,7 +106,7 @@ func TestTelegramBlockedIsErrBlocked(t *testing.T) {
 func TestTelegramRateLimitCarriesRetryAfter(t *testing.T) {
 	body := `{"ok":false,"error_code":429,"description":"Too Many Requests: retry after 7","parameters":{"retry_after":7}}`
 	srv, _ := serve(t, status(429, body))
-	err := NewTelegram(srv.URL, canary, 42, srv.Client()).Send(context.Background(), "x")
+	err := NewTelegram(srv.URL, canary, 42, srv.Client()).Send(context.Background(), "x", false)
 	var rl *deliver.RateLimitError
 	if !errors.As(err, &rl) {
 		t.Fatalf("err = %v, want a *deliver.RateLimitError", err)
@@ -122,7 +122,7 @@ func TestTelegramRateLimitCarriesRetryAfter(t *testing.T) {
 
 func TestTelegramOtherStatusIsPlain(t *testing.T) {
 	srv, _ := serve(t, status(500, "internal"))
-	err := NewTelegram(srv.URL, canary, 42, srv.Client()).Send(context.Background(), "x")
+	err := NewTelegram(srv.URL, canary, 42, srv.Client()).Send(context.Background(), "x", false)
 	if err == nil {
 		t.Fatal("err = nil, want an error for HTTP 500")
 	}
@@ -139,7 +139,7 @@ func TestTelegramTLSFailureIsErrTLS(t *testing.T) {
 	srv, _ := serveTLS(t, okFn)
 	// nil client: the default guarded client verifies certificates, and the
 	// test server's certificate is not trusted.
-	err := NewTelegram(srv.URL, canary, 42, nil).Send(context.Background(), "x")
+	err := NewTelegram(srv.URL, canary, 42, nil).Send(context.Background(), "x", false)
 	if !errors.Is(err, deliver.ErrTLS) {
 		t.Fatalf("err = %v, want deliver.ErrTLS", err)
 	}
@@ -170,7 +170,7 @@ func TestCanaryNeverInTelegramErrors(t *testing.T) {
 	ctx := context.Background()
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			sendErr := c.tg.Send(ctx, "x")
+			sendErr := c.tg.Send(ctx, "x", false)
 			pingErr := c.tg.Ping(ctx)
 			if sendErr == nil || pingErr == nil {
 				t.Fatalf("Send err = %v, Ping err = %v; want both to fail", sendErr, pingErr)
@@ -349,7 +349,7 @@ func TestTelegramRefusesOversizedAnswer(t *testing.T) {
 	srv, _ := serve(t, func(_ int, w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, strings.Repeat("x", maxResponse+10))
 	})
-	if err := NewTelegram(srv.URL, canary, 42, srv.Client()).Send(context.Background(), "x"); err == nil {
+	if err := NewTelegram(srv.URL, canary, 42, srv.Client()).Send(context.Background(), "x", false); err == nil {
 		t.Fatal("an answer over the size limit was accepted")
 	}
 }

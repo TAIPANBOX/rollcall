@@ -215,7 +215,7 @@ func (c clockOf) Mono() time.Duration { return c.r.mono() }
 
 type channel struct{ r *router }
 
-func (c *channel) Send(_ context.Context, text string) error {
+func (c *channel) Send(_ context.Context, text string, _ bool) error {
 	s := c.r.s
 	if !s.reachesTelegram(c.r) {
 		return errNoInternet

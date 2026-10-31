@@ -57,6 +57,16 @@
 // back an incident whose end is about to join it, so both go out as one
 // message, and bounds that hold itself. Every other incident stays due.
 //
+// # Quiet hours
+//
+// The caller may give the queue its quiet hours (SetQuiet): a message whose
+// send starts at a now within them goes to the channel as silent, which asks
+// the chat for no sound and no vibration. The moment of the attempt decides,
+// so an incident that began before the quiet hours and is sent within them is
+// silent, and a retry decides again. Nothing else changes: the same messages
+// go out at the same moments, with the same text, pacing, retries and
+// acknowledgements.
+//
 // # Time
 //
 // Every method takes now from the caller and never reads the clock. A now
@@ -87,13 +97,15 @@ import (
 )
 
 // Channel is where messages go: Telegram, later ntfy. Send delivers one
-// plain-text message; Ping checks that the channel answers (Telegram's getMe)
-// and sends nothing. A Channel reports the failures the queue acts on with
-// the errors of this package, wrapped or not: ErrBlocked, ErrRateLimited (as
-// a *RateLimitError when it knows how long to wait) and ErrTLS. Its errors
-// never contain a secret, since Status shows them.
+// plain-text message, and with silent set asks the chat to show it without a
+// sound or vibration (the quiet hours), the message itself unchanged; Ping
+// checks that the channel answers (Telegram's getMe) and sends nothing. A
+// Channel reports the failures the queue acts on with the errors of this
+// package, wrapped or not: ErrBlocked, ErrRateLimited (as a *RateLimitError
+// when it knows how long to wait) and ErrTLS. Its errors never contain a
+// secret, since Status shows them.
 type Channel interface {
-	Send(ctx context.Context, text string) error
+	Send(ctx context.Context, text string, silent bool) error
 	Ping(ctx context.Context) error
 }
 
@@ -208,6 +220,8 @@ type Queue struct {
 	inflight bool
 
 	unrecorded []sent
+
+	quiet func(now time.Time) bool // the quiet hours (SetQuiet); nil for none
 }
 
 // NewQueue returns an empty queue.
@@ -268,6 +282,16 @@ func (q *Queue) Ack(id string, by ids.MemberID) {
 	q.unrecorded = slices.DeleteFunc(q.unrecorded, func(s sent) bool { return s.id == id && s.by == by })
 }
 
+// SetQuiet gives the queue its quiet hours: quiet reports whether a message
+// whose send starts at now goes out silently. Deliver asks it at every
+// attempt, with the queue's lock held, so it must not call the queue. A nil
+// quiet, the default, sends every message with sound.
+func (q *Queue) SetQuiet(quiet func(now time.Time) bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.quiet = quiet
+}
+
 // Hold holds back the incidents named in ids, and only them: until the next
 // Hold, Due and Deliver pass over them as if they were not due, and every
 // other incident is due as before. A nil or empty ids holds nothing back.
@@ -312,7 +336,8 @@ func (q *Queue) Due(self, sender ids.MemberID, now time.Time) []events.Incident 
 // Deliver sends the oldest incident Due returns through ch, if the pacing
 // allows an attempt at now, and returns its ID, or "" if it sent nothing.
 // The text is render(incident), cleaned, cut to fit and tagged with the
-// incident ID's first 8 digits. render is called without the queue's lock
+// incident ID's first 8 digits; the send is silent when now is within the
+// quiet hours (SetQuiet). render is called without the queue's lock
 // held, so it may call the queue.
 //
 // On success the incident leaves the queue and appears in Unrecorded. On
@@ -343,6 +368,7 @@ func (q *Queue) Deliver(ctx context.Context, ch Channel, self, sender ids.Member
 		return "", nil
 	}
 	q.inflight, q.tried, q.last, q.wait = true, true, now, q.least()
+	silent := q.quiet != nil && q.quiet(now)
 	q.mu.Unlock()
 
 	settled := false
@@ -353,7 +379,7 @@ func (q *Queue) Deliver(ctx context.Context, ch Channel, self, sender ids.Member
 			q.mu.Unlock()
 		}
 	}()
-	err := ch.Send(ctx, tag(render(inc), inc.ID))
+	err := ch.Send(ctx, tag(render(inc), inc.ID), silent)
 	settled = true
 
 	q.mu.Lock()

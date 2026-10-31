@@ -95,8 +95,16 @@ func isLANAddress(host string) bool {
 	return false
 }
 
-// Send publishes text as the body of one message to the topic.
-func (n *Ntfy) Send(ctx context.Context, text string) error {
+// ntfyQuietPriority is the priority of a silent message: 2, low, which ntfy
+// documents as no vibration and no sound, the notification kept in the list
+// (1, min, also makes no sound but folds it under "Other notifications").
+const ntfyQuietPriority = "2"
+
+// Send publishes text as the body of one message to the topic. silent adds
+// X-Priority: ntfyQuietPriority; without it the request carries no priority
+// header, so the server's default priority (3), which rings, applies as
+// before.
+func (n *Ntfy) Send(ctx context.Context, text string, silent bool) error {
 	const op = "ntfy publish"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, n.topic, strings.NewReader(text))
 	if err != nil {
@@ -105,6 +113,9 @@ func (n *Ntfy) Send(ctx context.Context, text string) error {
 	req.Header.Set("Content-Type", "text/plain; charset=utf-8")
 	if n.token != "" {
 		req.Header.Set("Authorization", "Bearer "+n.token)
+	}
+	if silent {
+		req.Header.Set("X-Priority", ntfyQuietPriority)
 	}
 	return n.do(op, req)
 }

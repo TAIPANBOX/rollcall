@@ -23,6 +23,7 @@ import (
 	"github.com/TAIPANBOX/rollcall/internal/identity"
 	"github.com/TAIPANBOX/rollcall/internal/ids"
 	"github.com/TAIPANBOX/rollcall/internal/member"
+	"github.com/TAIPANBOX/rollcall/internal/quiet"
 	"github.com/TAIPANBOX/rollcall/internal/roster"
 	"github.com/TAIPANBOX/rollcall/internal/store"
 	"github.com/TAIPANBOX/rollcall/internal/wire"
@@ -69,6 +70,10 @@ type Config struct {
 	Sender                 bool          // this router is configured to send to the chat
 	Priority               int
 	TZ                     *time.Location
+	// Quiet are the quiet hours, kept on the wall clock of TZ, the zone the
+	// messages show their times in: a message whose send starts within them
+	// goes out silently (deliver.Queue.SetQuiet). The zero value is none.
+	Quiet quiet.Hours
 
 	// Boot is this boot's ID, from /proc/sys/kernel/random/boot_id; zero
 	// makes New draw one, and then the node cannot tell a reboot from a
@@ -422,6 +427,9 @@ func (n *Node) start() error {
 	n.flusher = n.st.NewFlusher(n.writeHistory)
 	n.alive = n.st.NewFlusher(n.writeAlive)
 	n.queue = deliver.NewQueue()
+	if h, tz := n.cfg.Quiet, n.cfg.TZ; h.On() {
+		n.queue.SetQuiet(func(now time.Time) bool { return h.Contains(now, tz) })
+	}
 	n.loadAlive()
 	n.loadHistory(now)
 	n.loadConfirmLocked()
