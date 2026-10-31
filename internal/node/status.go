@@ -25,7 +25,8 @@ import (
 // marked "update" in its Detail, which every member makes into the same
 // incident of its own, so the chat gets one update; a correction that
 // changes nothing told records none, and neither does one whose class this
-// router's own record of the absence already told (boot.go), nor one of a
+// router's own record of the absence already told (boot.go), its account of
+// the return or an update recorded for that absence before, nor one of a
 // link loss that only silence claims missed, which the claimants' own record
 // of its return tells (toldByReturnLocked). A claim proven false raises one
 // alarm (witness.go). Nobody is expelled.

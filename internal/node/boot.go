@@ -2,6 +2,7 @@ package node
 
 import (
 	"encoding/json"
+	"slices"
 
 	"github.com/TAIPANBOX/rollcall/internal/clock"
 	"github.com/TAIPANBOX/rollcall/internal/events"
@@ -213,19 +214,28 @@ func (n *Node) sinceLocked(prev bootBefore) At {
 
 // toldOwnLocked reports whether this router's own record of the absence a
 // correction places already tells the class it corrects to: the incident
-// then told it, and an update would say it a second time.
+// then told it, and an update would say it a second time. The record is its
+// own account of the return, or an update it recorded for that absence
+// before, signed or still waiting for flash: the claims about one absence
+// reach it at different times, from different members, and each
+// reconciliation that finds new ones corrects them in an entry of its own,
+// while the chat is told the class once (sim seeds 698 and 241, 2026-10-31).
 func (n *Node) toldOwnLocked(c Correction) bool {
+	tells := func(b EventBody) bool {
+		return b.Subject == n.id.ID && string(b.Type) == c.Class && b.Last == c.From && b.Back == c.To
+	}
 	for _, e := range n.log.Range(n.id.ID, 1, n.log.Head(n.id.ID).Seq) {
 		if e.Kind != history.KindEvent {
 			continue
 		}
-		b, err := DecodeEvent(e)
-		if err == nil && b.Subject == n.id.ID && b.Detail["update"] == "" && string(b.Type) == c.Class &&
-			b.Last == c.From && b.Back == c.To {
+		if b, err := DecodeEvent(e); err == nil && tells(b) {
 			return true
 		}
 	}
-	return false
+	return slices.ContainsFunc(n.writes, func(w ownWrite) bool {
+		b, ok := w.body.(EventBody)
+		return ok && tells(b)
+	})
 }
 
 // ownStart reports whether evs hold a member's own account of its return
