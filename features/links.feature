@@ -167,3 +167,13 @@ Feature: A router's own link changes reach the chat as few messages
     And their internet probes record the losses 20 and 30 seconds after the cut
     When both links come back after two and a half minutes
     Then the chat gets two messages, the start and the end of the outage
+
+  # A replay of the forge night campaign, 2026-10-31, not seen on a router: a WAN that kept dropping
+  # for 90 s and then stayed down had its flapping and its down state told, and its return never.
+  @test:TestEndOfAFlapThatStayedDownIsTold
+  Scenario: The return after a flap that stayed down is told
+    Given a router's WAN goes down and up every 5 seconds for 90 or 110 seconds
+    And then it stays down
+    When its WAN comes back at 5 minutes after the first drop
+    Then the chat is told the WAN keeps dropping, then that it is down with its drops
+    And then that it was down for 5 minutes, with every drop counted

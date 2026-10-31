@@ -1325,7 +1325,7 @@ func (n *Node) coverLocked() {
 // coveredLocked reports whether note's message told what r tells, as the
 // doc above says.
 func (n *Node) coveredLocked(r *incRec, note ackNote) bool {
-	if r.single || len(r.events) == 0 || r.inc.ID == note.id || slices.Contains(r.components, note.id) {
+	if r.single || len(r.events) == 0 || r.inc.ID == note.id || n.partOfLocked(r, note.id) {
 		// The acknowledgement of a part of r told that part, not r.
 		return false
 	}
@@ -1360,6 +1360,29 @@ func (n *Node) coveredLocked(r *incRec, note ackNote) bool {
 		}
 	}
 	return shared
+}
+
+// partOfLocked reports whether incident id is a part of r: one r merged, or
+// a part of one of those, as far as this member keeps them. A return of a link
+// that a capped chain left down merges the chain's message, which merged the
+// capped incident in turn; the capped incident's acknowledgement names a loss
+// and a return of the link, and told the flapping, not the outage the return
+// ends. It looks at keepIncidents parts at most, so components that name each
+// other, as a damaged state file may hold, end the walk too.
+func (n *Node) partOfLocked(r *incRec, id string) bool {
+	if len(r.components) == 0 {
+		return false
+	}
+	parts := slices.Clone(r.components)
+	for i := 0; i < len(parts) && i < keepIncidents; i++ {
+		if parts[i] == id {
+			return true
+		}
+		if p := n.inc.byID[parts[i]]; p != nil {
+			parts = append(parts, p.components...)
+		}
+	}
+	return false
 }
 
 // twin reports whether e and f tell the same thing: one type about one

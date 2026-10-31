@@ -491,3 +491,102 @@ func TestLateLossesPastTheCeilingOneStart(t *testing.T) {
 		t.Fatalf("chat %q; want the start, then the outage with its length", msgs)
 	}
 }
+
+// TestEndOfAFlapThatStayedDownIsTold: beryl2's WAN goes down for 5 s and up
+// for 5 s, then stays down, and comes back at 300 s. The ceiling tells the
+// flapping, the quiet chain tells the WAN down with its drops, and the return
+// ends the outage. That end merges the chain's down message, which merged the
+// capped incident in turn: when the chain went quiet with its last drop (90
+// s), its down message is the capped incident paired with that drop; when its
+// last drops joined it at a ceiling (110 s), the end of the chain, under an ID
+// of its own, stands for it. Either way the acknowledgement of the capped
+// incident, which names a WAN loss and a WAN return, counted the end told: it
+// was not the acknowledgement of a part of the end, only of a part of a part.
+// At 98a14b1 the chat never heard that the WAN came back (a replay of the
+// forge night campaign, 2026-10-31; not seen on a router).
+func TestEndOfAFlapThatStayedDownIsTold(t *testing.T) {
+	D, U := events.WanDown, events.WanUp
+	for _, c := range []struct {
+		name       string
+		flap       int // the WAN goes down here and stays down until 300 s
+		down, last string
+	}{
+		{"its last drop taken when the chain went quiet", 90, "WAN went down at 09:01. WAN went down 10 times",
+			"WAN was down from 09:01 to 09:06 (5 min). WAN went down 10 times, 4 min 15 s in all"},
+		{"its last drops joined at a ceiling", 110, "WAN went down at 09:01. WAN went down 12 times",
+			"WAN was down from 09:01 to 09:06 (5 min). WAN went down 12 times, 4 min 5 s in all"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var steps []cellStep
+			for s := 0; s < c.flap; s += 10 {
+				steps = append(steps, cellStep{s, 0, 2, D}, cellStep{s + 5, 0, 2, U})
+			}
+			steps = append(steps, cellStep{c.flap, 0, 2, D}, cellStep{300, 0, 2, U})
+			_, msgs := replayCell(t, steps)
+			if len(msgs) != 3 || !strings.Contains(msgs[0], "WAN keeps dropping since 09:01: down 6 times so far") ||
+				!strings.Contains(msgs[1], c.down) {
+				t.Fatalf("chat %q; want the flapping, the WAN down after it, then the end of the outage", msgs)
+			}
+			if !strings.Contains(msgs[2], c.last) {
+				t.Fatalf("the last message %q; want %q, from the first loss to the return", msgs[2], c.last)
+			}
+		})
+	}
+}
+
+// TestPartOfTakesPartsOfParts pins what partOfLocked takes for a part of an
+// incident: what it merged, what those merged in turn, and nothing else; that
+// only the acknowledgement of such a part is kept from telling the merged
+// incident, while one of the same outage under another ID, as a member that
+// merged it otherwise makes, still tells it; and that it ends on parts that
+// name each other, as a damaged state file may hold.
+func TestPartOfTakesPartsOfParts(t *testing.T) {
+	var n Node
+	n.inc.init()
+	keep := func(id string, parts ...string) *incRec {
+		r := &incRec{inc: events.Incident{ID: id}, components: parts}
+		n.inc.byID[id] = r
+		return r
+	}
+	keep("capped")
+	keep("down", "capped", "piece")
+	end := keep("end", "down", "return")
+	for _, c := range []struct {
+		id   string
+		part bool
+	}{{"down", true}, {"return", true}, {"capped", true}, {"piece", true}, {"end", false}, {"other", false}} {
+		if got := n.partOfLocked(end, c.id); got != c.part {
+			t.Errorf("%s a part of the end: %v, want %v", c.id, got, c.part)
+		}
+	}
+	w := ids.MemberID{3}
+	var refs []ids.Hash
+	for i, typ := range []events.Type{events.WanDown, events.WanUp} {
+		e := events.Event{Type: typ, Subject: w, Witness: w, Ref: ids.Hash{byte(i + 1)}}
+		n.inc.evs[e.Ref] = &evRec{ev: e}
+		end.events, refs = append(end.events, e), append(refs, e.Ref)
+	}
+	for _, c := range []struct {
+		id   string
+		told bool
+	}{{"capped", false}, {"piece", false}, {"down", false}, {"another", true}} {
+		if got := n.coveredLocked(end, ackNote{id: c.id, refs: refs}); got != c.told {
+			t.Errorf("the acknowledgement of %s tells the end: %v, want %v", c.id, got, c.told)
+		}
+	}
+	if n.partOfLocked(n.inc.byID["capped"], "end") {
+		t.Error("an incident with no parts has a part")
+	}
+	a := keep("a", "b")
+	keep("b", "a")
+	done := make(chan bool, 1)
+	go func() { done <- n.partOfLocked(a, "other") }()
+	select {
+	case got := <-done:
+		if got {
+			t.Error("parts that name each other made another incident a part")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("partOfLocked did not end on parts that name each other")
+	}
+}
