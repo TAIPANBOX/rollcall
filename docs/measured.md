@@ -274,6 +274,17 @@ and after each cell. Senders: `flint2`, then `beryl1`. Times are London time.
   past the 60 s ceiling, the ceiling made the start, and the chain then went quiet with both links
   still down and was told again as its own end. Fixed: such a chain has nothing to tell until the
   return (`TestLateLossesPastTheCeilingOneStart`).
+- **The flap into an outage on rc96** (`8473828`, cells V3 on 2026-10-31 at 04:39): beryl2's WAN
+  cut and restored every 5 s nine times, then 5 s later cut for 3.5 min. The end said "WAN and
+  internet were down from 04:39 to 04:45 (5 min 29 s). WAN went down 4 times, 5 min 16 s in all.
+  Internet went down 2 times, 5 min 18 s in all". But three messages went out: the flapping at
+  04:40:36, "WAN and internet went down at 04:39. WAN went down 4 times. Internet went down 2 times"
+  at 04:42:10, and the end at 04:45:33. The internet probe recorded its last loss 20 s late, and once
+  it settled it merged with the capped chain into a message of its own, though it brought nothing
+  back. Fixed: records that continue a capped chain and bring none of its links back join it with
+  no message, and a chain with no link back tells no end of its own, an internet return older than
+  its router's last WAN drop counting as none (`TestFlapIntoOutageTwoMessages`, a replay of the
+  records flint2 kept).
 
 ## CI
 
