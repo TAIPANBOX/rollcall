@@ -465,3 +465,29 @@ func TestEndAfterAFlappingStartIsTold(t *testing.T) {
 		t.Fatalf("chat %q; want the start with its 2 drops, then the whole outage", msgs)
 	}
 }
+
+// TestLateLossesPastTheCeilingOneStart replays lab cell V-R1.5-rc94
+// (2026-10-31 02:40:50 to 02:43:03, rc94): flint2 and beryl2 lost their WAN
+// at once; flint2's internet probe recorded its loss about 20 s later, dated
+// at the cut, and beryl2's about 30 s after the cut, dated 10 s after it. The
+// last record settled past the ceiling, so the start was made by it, and 3 s
+// later the chain went quiet with both links still down and nothing joined:
+// rc94 told the start a second time, "WAN and internet went down at 02:40"
+// at 02:41:55 and 02:41:58. A quiet chain whose links are all still down,
+// with nothing recorded since its message, has nothing new to tell: the
+// return ends it.
+func TestLateLossesPastTheCeilingOneStart(t *testing.T) {
+	D, U, L, R := events.WanDown, events.WanUp, events.InternetLost, events.InternetRestored
+	g, msgs := replayCell(t, []cellStep{{0, 0, 2, D}, {0, 0, 0, D}, {20, 20, 0, L}, {31, 20, 2, L},
+		{136, 0, 0, U}, {137, 0, 0, R}, {143, 0, 2, U}, {150, 0, 2, R}})
+	if len(msgs) != 2 {
+		t.Fatalf("%d messages, want 2: the start and the end", len(msgs))
+	}
+	if d := firstMessageAfter(g, 150); d < 0 || d > 65*sec {
+		t.Fatalf("the start reached the chat %s after the first record, want within the ceiling", d)
+	}
+	if !strings.Contains(msgs[0], "WAN and internet went down at 09:01") ||
+		!strings.Contains(msgs[1], "WAN and internet were down from 09:01 to 09:04 (2 min 30 s)") {
+		t.Fatalf("chat %q; want the start, then the outage with its length", msgs)
+	}
+}

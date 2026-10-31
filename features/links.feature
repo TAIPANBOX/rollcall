@@ -157,3 +157,13 @@ Feature: A router's own link changes reach the chat as few messages
     When its WAN and internet go down an hour later and come back after 2 min 26 s
     Then the chat gets two messages, the start and the end of that outage
     And the end tells 2 min 26 s, not an outage reaching back to the flap
+
+  # Lab cell V-R1.5-rc94, 2026-10-31: both uplinks down; the internet probes recorded their losses
+  # 20 and 30 s after the cut, so the 60 s ceiling made the start, and the chain went quiet 3 s later
+  # with both links still down: the start went out twice, 3 s apart.
+  @test:TestLateLossesPastTheCeilingOneStart
+  Scenario: Losses recorded late do not tell the start twice
+    Given two routers lose their WAN at once
+    And their internet probes record the losses 20 and 30 seconds after the cut
+    When both links come back after two and a half minutes
+    Then the chat gets two messages, the start and the end of the outage
