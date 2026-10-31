@@ -145,3 +145,15 @@ Feature: A router's own link changes reach the chat as few messages
     When a newer router's WAN keeps dropping and the sender tells it in six messages
     Then the newer routers count their own incident of it told
     And they keep nothing of it to send when they take over sending
+
+  # Lab night of 2026-10-30 on rc93: a router upgraded from rc92 had kept a WAN flap of the day in
+  # pieces, a return and the drop after it, while the return that ended the flap lay in another
+  # piece; ten hours later the end of a 2 min outage was told as "WAN was down from 12:06 to 22:09
+  # (10 h 3 min)".
+  @test:TestOlderPiecesOfAFlapDoNotStretchALaterOutage @test:TestOpenLinksTakeLaterReturns
+  Scenario: An outage after an upgrade is told with its own length
+    Given a router kept an earlier flap of its WAN in pieces, each a return and the drop after it
+    And the return that ended the flap is kept in another piece
+    When its WAN and internet go down an hour later and come back after 2 min 26 s
+    Then the chat gets two messages, the start and the end of that outage
+    And the end tells 2 min 26 s, not an outage reaching back to the flap

@@ -221,6 +221,54 @@ home: r2 rebooted as planned at 05:12, back after 25 s, confirmed by 2 of 2. Tim
   and not when nothing had changed. On 1.0.0-rc1, after changing `peer_zone`, `port` or `peer`, run
   `/etc/init.d/rollcall reload` instead of a restart.
 
+## Faults on a test uplink, 2026-10-30
+
+The same three routers, each now behind a WAN of its own: `flint2` and `beryl2` take their uplink
+from a fourth router kept as a test uplink, which cuts, flaps, delays or drops their traffic on
+command; `beryl1` stays on the home uplink. A host on the LAN ran the cells one after another,
+sampled the routers every 15 to 30 s, and kept their logs and `rollcall status --json` from before
+and after each cell. Senders: `flint2`, then `beryl1`. Times are London time.
+
+**rc92 (`e3f542e`), 17 cells in the day.**
+
+- **Degraded links**: 300 ms of delay with 50 ms of jitter, 10 % and 30 % loss, 256 kbit/s, and a
+  mix like a mobile link, 5 minutes each on both uplinks. No incident, no message, no change of
+  sender.
+- **All traffic dropped with the link up, or the internet cut behind the uplink**: the incident
+  opened 4 to 8 s in, its message came 37 to 60 s after the cut, and the end 16 to 30 s after the
+  return.
+- **Both uplinks down for 2 minutes, and the sender's internet cut**: `beryl1` took over sending
+  within 30 to 60 s and gave it back 30 to 90 s after the return.
+- **A two-hour WAN loss**: "2 h" in both closing messages.
+- **Found**: one outage gave 3 to 6 messages (a WAN that flapped ten times: 6), and a DNS cut on
+  the uplink, with TCP still passing, gave none. Both were fixed in
+  [#7](https://github.com/TAIPANBOX/rollcall/pull/7): one router's link changes within 30 s are one
+  incident, and a DNS probe asks the uplink's servers.
+
+**rc93 (`a82de7c`, #7 with the quiet hours of #8), 14 cells at night.**
+
+- **One outage, two messages**: the WAN that flapped ten times 2 (6 on rc92), both uplinks down 2
+  (3 on rc92), a WAN lost for 20 minutes 2.
+- **A DNS cut of 5 minutes**, on either uplink: "DNS stopped answering at ..." 55 to 70 s in, and
+  "DNS was down from ... (5 min 14 s to 5 min 17 s). Only name lookups failed." 37 to 42 s after the
+  return.
+- **10 % and 30 % loss**: no incident but one, 32 s of DNS loss on `flint2`'s uplink at 30 %, when
+  three rounds in a row got no answer from its resolver.
+- **`rollcall restart` while the internet was cut**: one incident, two messages, "Times are
+  approximate"; the restarted daemon's second record of the loss joined it.
+- **Quiet hours** `22:00-08:00`: all 19 messages of the night went out within them, with
+  `disable_notification`. The phone of the chat showed them without a sound, and vibrated:
+  Telegram promises a notification without a sound and leaves vibration to the phone and its app.
+- **Found: a later outage stretched back to pieces rc92 had kept.** The end of the both-uplinks cell
+  was told as "WAN was down from 12:06 to 22:09 (10 h 3 min) ... WAN went down 3 times on beryl2,
+  10 h 3 min in all", for an outage of 2 min 13 s. rc92 had kept the day's flap in pieces, three of
+  them a return and the drop after it, and the return that ended the flap in another piece; rc93
+  restored them from its state file and took their drops for an outage still open. Fixed: a kept
+  incident holds an outage open only while its drop is the router's last record of that link among
+  the kept incidents (`TestOlderPiecesOfAFlapDoNotStretchALaterOutage`,
+  `TestOpenLinksTakeLaterReturns`). No such piece was left in the state files of the three routers
+  afterwards.
+
 ## CI
 
 Run `39990683889`, the push of commit `4186091` on 2026-10-23. Every job passed:

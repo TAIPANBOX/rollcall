@@ -98,7 +98,8 @@ import (
 
 // Channel is where messages go: Telegram, later ntfy. Send delivers one
 // plain-text message, and with silent set asks the chat to show it without a
-// sound or vibration (the quiet hours), the message itself unchanged; Ping
+// sound (the quiet hours; Telegram leaves vibration to the phone), the message
+// itself unchanged; Ping
 // checks that the channel answers (Telegram's getMe) and sends nothing. A
 // Channel reports the failures the queue acts on with the errors of this
 // package, wrapped or not: ErrBlocked, ErrRateLimited (as a *RateLimitError
