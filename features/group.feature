@@ -113,3 +113,16 @@ Feature: Router group watches itself and reports incidents
     When its WAN and its internet come back within seconds
     Then both losses end
     And a later loss of its WAN is told with its own length
+
+  # @measured 2026-10-31 by the simulator sweep, ROLLCALL_SEEDS=1000 on 98a14b1: seeds 241 and 698
+  # each sent one router's update ("r03 rebooted unexpectedly, back at 09:05.") twice, 1 s apart,
+  # from one sender and without a partition. The claims about one absence reached the router in two
+  # reconciliations, and each correction recorded an update of its own.
+  @test:TestOneUpdatePerAbsence
+  Scenario: A router corrects what was said about one absence and the chat hears it once
+    Given a router lost power twice while another router last heard it before the first cut
+    And that router told the group the first router had gone silent
+    When the first router comes back, corrects that claim and the chat gets its update
+    And another claim about the same absence reaches it later
+    Then it corrects that claim too
+    And the chat does not get the update a second time
