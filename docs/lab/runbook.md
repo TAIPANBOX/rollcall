@@ -410,7 +410,7 @@ lab_ssh beryl1 'cat /etc/rollcall/hook-probe'
 Expected, and what each result means:
 
 - A line `hook ran <UTC time>`: a hook under `/lib/upgrade/` ran, and it ran before the configuration backup. Q2 is **yes**.
-- No file: **not observed**. The hook may have run after the backup, or it may not run at all. The test cannot separate those two, so do not record it as "no hook".
+- No file: no hook ran before the configuration backup. Record exactly that.
 
 Clean up the probe after recording the result:
 
