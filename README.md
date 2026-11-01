@@ -18,8 +18,13 @@ your Telegram chat, once per incident.
 
 ![Three routers exchange heartbeats; one goes silent and comes back; the sender tells the chat in one line](docs/hero.svg)
 
-**Release candidate [1.0.0-rc1](https://github.com/TAIPANBOX/rollcall/releases/tag/v1.0.0-rc1)**, from
-a signed apk feed for OpenWrt 25.12. The final 1.0.0 follows a longer run on routers.
+**Release candidate [1.0.0-rc1](https://github.com/TAIPANBOX/rollcall/releases/tag/v1.0.0-rc1)**
+of 2026-10-23, from a signed apk feed for OpenWrt 25.12, with packages for seven architectures.
+
+This page describes `main`, which is ahead of rc1. Three items below are marked **(main)**: the
+uplink's DNS cut as an incident, one router's link changes within 30 s as one message, and quiet
+hours. The lab routers run internal builds of `main` (rc97 on 2026-10-31); the feed carries rc1
+until the next release.
 
 ## The problem
 
@@ -31,10 +36,10 @@ access points, mesh nodes. When one of them fails, the owner finds out late, fro
 - **Runs on the routers themselves**: no server, no cloud service besides the chat. [How](docs/how-it-works.md)
 - **The router still online tells you**, and another takes over when the sender is down. [Who sends](docs/how-it-works.md#who-sends)
 - **One message per incident**: start and end merged, late records absorbed, acknowledgements spread with the heartbeats. [One incident](docs/how-it-works.md#one-incident-one-message)
-- **Says what happened**: a planned reboot, a crash or power cut, an upgrade with old and new version, a lost link while up, the internet, WAN or the uplink's DNS down. [Kinds](docs/how-it-works.md#what-kind-of-incident-it-was)
-- **A flapping uplink is one message**: one router's link changes within 30 s are one line, at the start and at the end of an outage. [One incident](docs/how-it-works.md#one-incident-one-message)
+- **Says what happened**: a planned reboot, a crash or power cut, an upgrade with old and new version, a lost link while up, the internet or WAN down, and the uplink's DNS down **(main)**. [Kinds](docs/how-it-works.md#what-kind-of-incident-it-was)
+- **A flapping uplink is one message** **(main)**: one router's link changes within 30 s are one line, at the start and at the end of an outage. [One incident](docs/how-it-works.md#one-incident-one-message)
 - **Tells you after a total outage**, with start, end and length. [After an outage](docs/how-it-works.md#when-nobody-could-reach-telegram)
-- **Quiet at night if you want**: within `option quiet_hours '23:00-07:00'` messages arrive at once, without a sound. [Quiet hours](docs/how-it-works.md#who-sends)
+- **Quiet at night if you want** **(main)**: within `option quiet_hours '23:00-07:00'` messages arrive at once, without a sound. [Quiet hours](docs/how-it-works.md#who-sends)
 - **No false alarm from one router's cut-off view**: others are asked before a router is called silent. [Asking first](docs/how-it-works.md#noticing-a-silent-router)
 - **Trusts no single router**: a signed roster, admin, backup and recovery code, keys bound to the roster, signed histories held by every router. [Security](docs/security.md)
 - **Its own sandbox**: its own seccomp filter, no capabilities, no root-only configuration read. [Sandbox](docs/security.md#the-sandbox)
@@ -76,8 +81,23 @@ Every step, with a drawing for each: [docs/how-it-works.md](docs/how-it-works.md
 
 ![The three test routers, a Flint 2 and two Beryl AX, with the same measurements beside each](docs/routers.svg)
 
-1.0.0-rc1 from the signed feed on three routers, 2026-10-23. How each figure was taken:
-[docs/measured.md](docs/measured.md).
+1.0.0-rc1 from the signed feed on three routers, 2026-10-23. On 2026-10-30 and 31 the same routers
+ran internal builds of `main` (rc92 to rc97) behind a test uplink that cut, flapped, delayed and
+dropped their uplink traffic.
+
+- **Footprint**: 12.6 to 15.5 MB resident, 0.14 to 0.15% of one core, 65 to 80 KB of state on
+  flash; the package is 4.9 MB to download and 11 MiB installed.
+- **Sandbox**: uid 1660, `NoNewPrivs: 1`, `Seccomp: 2` on every thread, every capability set empty,
+  the same after each reboot.
+- **Reboots**: a forced one and a clean one, one chat line each, back after 39 s and 45 s,
+  confirmed by 2 of 2.
+- **Outages**: on rc97 a WAN that flapped and then stayed down, and both uplinks down, two messages
+  each, the start and the end; on rc92, when the sender lost its internet, another router took
+  over sending within 30 to 60 s.
+- **DNS and quiet hours** on rc93: a 5-minute DNS cut told 55 to 70 s in; all 19 messages of a
+  night arrived without a sound.
+
+How each figure was taken: [docs/measured.md](docs/measured.md).
 
 ## Next to hermes-openwrt
 
@@ -93,7 +113,8 @@ bot.
 ![Install: trust the signed feed, apk add, create the group, add the others, roles, the token, bind the chat, check](docs/install-flow.svg)
 
 OpenWrt 25.12 with apk on each router, and a bot token from @BotFather that no other program
-uses. Only `aarch64_cortex-a53` has run on a router; the other targets build and pass the tests.
+uses. `aarch64_cortex-a53` has run on three hardware routers and `x86_64` on three virtual ones;
+every other target builds and passes the tests.
 For an AI agent, with a check after every step: [docs/agent-install.md](docs/agent-install.md).
 
 **1. Trust the feed** on every router. The sum must be
@@ -188,27 +209,21 @@ keys and, on a sender, the bot token. If you remove a sender for good, revoke it
 
 ![From the tests to the routers: tests, simulator, gates, mutation, reproducible builds, the lab, the release candidate](docs/proof.svg)
 
+- **Tests**: 946 tests and 965 subtests pass on the head of `main`, 94.6% of the statements of
+  `internal/` covered (2026-11-01); 54 scenarios in plain words, each bound to a test.
 - **Simulator**: virtual routers under random faults; 200 seeds on every push, 1000 clean.
-- **Gates with teeth**: 19 gates, each made to fail on a planted copy of its fault.
+- **Gates with teeth**: 19 gates, each made to fail on a planted copy of its fault, 128 cases.
 - **Mutation testing**: bugs planted in the product code, and the share the tests catch.
 - **Reproducible and attested**: two arm64 builds byte-identical; every release file attested.
 - **A lab run on three routers** found four defects the tests had not; each now has a gate.
 - **Virtual routers in separate networks**, each with its own DHCP: a cut power, a pulled WAN cable,
   an upstream internet cut and a planned reboot, each told as what it was.
+- **A test uplink on the lab routers**: degraded links, flapping WANs, DNS cuts and cuts of two
+  hours; five defects in how an outage is told came out of it (one outage in up to six messages, a
+  DNS cut that was never told, a later outage stretched back to old pieces, a start told twice, a
+  flap into an outage in three messages), each fixed in `main` and run again on a later build.
 
 Details: [docs/testing.md](docs/testing.md) and [docs/reports/v1-report.md](docs/reports/v1-report.md).
-
-## Not yet
-
-- No final 1.0.0 yet, and no feed for OpenWrt 24.10 (opkg).
-- On hardware only `aarch64_cortex-a53`, x86_64 in virtual routers; MIPS has not run anywhere,
-  OpenWrt 24.10 not on a router.
-- A mesh and NAT: only in the simulator so far. Separate networks with their own DHCP: on
-  virtual routers, not yet on hardware.
-- sysupgrade and a pulled power cord: not run yet.
-- Flash writes and wear over days, and network bytes: the long run started on 2026-10-23 will
-  measure them.
-- The LuCI pages on a router: installed, not used yet.
 
 ## Documents
 
@@ -224,3 +239,11 @@ Details: [docs/testing.md](docs/testing.md) and [docs/reports/v1-report.md](docs
 | [docs/lab/runbook.md](docs/lab/runbook.md) | the lab runbook for the three test routers |
 | [packaging/README.md](packaging/README.md) | what the package installs, the filter, the jail, the snapshot |
 | [SECURITY.md](SECURITY.md) · [CONTRIBUTING.md](CONTRIBUTING.md) | reporting a vulnerability, changing the code |
+
+## Related OpenWrt packages
+
+Packages that run on the OpenWrt router itself:
+
+- [hermes-openwrt](https://github.com/TAIPANBOX/hermes-openwrt): Hermes Agent as a native OpenWrt service (apk, procd, UCI, no Docker), with a LuCI page and Telegram; changes with a high impact wait until you approve them.
+- [openwrt-mcp](https://github.com/TAIPANBOX/openwrt-mcp): an MCP server on the router, so an AI client can inspect and change it; calls are allowed by standing policies, and config changes arm a rollback timer.
+- [openwrt-llm-gateway](https://github.com/TAIPANBOX/openwrt-llm-gateway): the models a house runs on its own machines behind one name on the router, with a key per device, HTTPS under a name-constrained CA and a journal that never holds a prompt.

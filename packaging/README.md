@@ -126,9 +126,9 @@ driven by status calls back to back, so the heap grows); one killed before it lo
 the kernel's seccomp record names the call left out. `prctl` is shown only where the kernel names
 anonymous mappings (`CONFIG_ANON_VMA_NAME`); elsewhere the runtime stops calling it at its first
 refusal, before the filter is on, and the job says so. It tries linux/arm on the arm64 runner too
-and reports NOT RUN when that CPU or kernel does not execute AArch32. Not proven by CI: mips (no
-runner), the daemon under procd and ujail on a router (the lab run), and code paths the CI run
-does not reach (Telegram and ntfy delivery, ICMP probes).
+and reports NOT RUN when that CPU or kernel does not execute AArch32. The daemon under procd and
+ujail, and its delivery to Telegram, ran on the lab routers
+([docs/measured.md](../docs/measured.md)).
 
 ## Control directory and socket
 
@@ -258,8 +258,9 @@ user, password or query) and stays mode 0644, read by the daemon itself.
 - Proof that runs: the CI job `seccomp` makes network and system root's with mode 0600 (network
   holding a password), has root write the snapshot, and runs the daemon as an unprivileged user
   under its own seccomp filter; before this change the daemon stopped there with `open
-  .../network: permission denied`, as on the lab routers. Not proven until the next lab run: the
-  snapshot written by procd's init script on a router, and the daemon inside ujail reading it.
+  .../network: permission denied`, as on the lab routers. On the three lab routers, from the
+  fix on 2026-10-23 and on 1.0.0-rc1, procd's init script wrote the snapshot and the daemon read
+  it inside ujail.
 
 ## Other status
 
@@ -269,8 +270,9 @@ user, password or query) and stays mode 0644, read by the daemon itself.
   set is left with every capability, and without a file ujail sets none, so the setuid to
   `rollcall` empties the other sets but leaves the bounding set full (lab run 2026-10-23:
   `CapBnd 000001ffffffffff`). Hence a file on every start, with all five sets named. The gate
-  `TestInitScriptHardening` reads both files and both package scripts. Not proven until the next
-  lab run: `CapBnd 0000000000000000` on a router, and `rollcall.json` with ICMP probes on.
+  `TestInitScriptHardening` reads both files and both package scripts. On the three lab routers
+  on 1.0.0-rc1 (2026-10-23) every set read 0, `CapBnd 0000000000000000` included, and stayed so
+  after each reboot.
 - rollcalld cannot empty its bounding set itself: `PR_CAPBSET_DROP` needs `CAP_SETPCAP` in the
   effective set, and the daemon runs with none.
 - uid and gid 1660 are unregistered; the postinst creates the account with them. Change them

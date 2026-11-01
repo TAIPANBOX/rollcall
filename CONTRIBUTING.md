@@ -1,6 +1,6 @@
 # Contributing
 
-Pull requests are welcome: a fix, a router we have not tried, a clearer page. This file says how to
+Pull requests are welcome: a fix, a report from another kind of router, a clearer page. This file says how to
 build and test what CI builds and tests, and what a pull request is held to before it is merged.
 
 A security problem goes through [SECURITY.md](SECURITY.md), not a pull request or an issue.

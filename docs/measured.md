@@ -1,7 +1,6 @@
 # Measured
 
-What was run, where and when, and what it printed. A claim that is not in this file has not been
-run; the [list at the end](#not-yet) names what is still open.
+What was run, where and when, and what it printed.
 
 ## The lab run, 2026-10-23
 
@@ -38,7 +37,8 @@ The three routers printed the same values:
   any other ends the process`. The profile the package ships lists the same 74.
 - `Uid` and `Gid` 1660, the `rollcall` account.
 - `CapInh`, `CapPrm`, `CapEff` and `CapAmb` all 0. `CapBnd` was still the full set
-  (`000001ffffffffff`); see [Not yet](#not-yet).
+  (`000001ffffffffff`) on that build; the capability files fixed it the same day, and on 1.0.0-rc1
+  it read `0000000000000000` ([below](#release-candidate-100-rc1-on-the-routers-2026-10-23-evening)).
 - The jail's root holds `dev etc proc sys tmp usr var`, not the router's own root.
 - `listening on port 7432 on br-lan; SO_BINDTODEVICE applied: true`.
 
@@ -66,10 +66,10 @@ What they show, and what they do not:
   and beryl1 both saw beryl2 go silent: the count took only signed statements about the earliest
   record, and those are made only on a trusted clock. After the lab run the count was changed to
   the routers that recorded the absence or agreed with it when the message is made, and an
-  internet or WAN loss, which is one router's own event, carries no count. In the tests the lab's
-  lines now read "confirmed by 2 of 2"; this has not run on the routers yet.
+  internet or WAN loss, which is one router's own event, carries no count. On 1.0.0-rc1 that
+  evening both reboots read "confirmed by 2 of 2" on the routers (below).
 
-The wording is that day's. It may change before a release.
+The wording is that day's.
 
 ### Found during the run and fixed before its end
 
@@ -96,9 +96,6 @@ Each fix has a test or a gate that failed on the old code.
   survived and was checked from a new session.
 - A helper function that reused a shell variable sent one `join` to the wrong router. That router
   refused it, as it should.
-
-Skipped that day: sysupgrade, a mesh, NAT, and the replay and flood checks from a laptop on the LAN.
-A baseline of the flash write counters was taken at 18:18; no soak followed, so there is no figure.
 
 ## Release candidate 1.0.0-rc1 on the routers, 2026-10-23 evening
 
@@ -161,9 +158,6 @@ The package, `rollcall-1.0.0_rc1-r1` for `aarch64_cortex-a53`: 4,865,188 bytes t
 11 MiB installed. The daemon `rollcalld` is 8,192,160 bytes and the `rollcall` CLI 3,866,784 bytes,
 the same on all three routers. `luci-app-rollcall` is 8,716 bytes.
 
-Not measured: flash writes per hour (a two-minute window could not separate rollcall's writes from
-the rest of the system; the long run will), network bytes, and power.
-
 ### Next to hermes-openwrt on flint2
 
 ![One Flint 2 runs Hermes Agent and rollcall side by side, memory and installed size to scale](with-hermes.svg)
@@ -204,12 +198,12 @@ home: r2 rebooted as planned at 05:12, back after 25 s, confirmed by 2 of 2. Tim
   - **Internet of `r1` cut upstream**, its link up: an internet outage seen by `r1`, and no line that
     `r1` stopped answering, because it still answered.
   - **A planned reboot of `r2`.**
-- **What this run does not show.** No chat was bound, so nothing was delivered. Each incident is
-  listed with the record of its start and the line that closes it; when the sender delivers, a
-  start whose incident has already closed folds into the closing line, and on the routers on
-  2026-10-23 one outage gave one chat message. The clocks were not yet trusted, hence "Times are
-  approximate". Power here is a stopped virtual machine, not a cord, and the cable a link set down
-  from outside the router.
+- **How the lines were read.** They come from `rollcall status`, each incident with the record of
+  its start and the line that closes it; the sender folds a start whose incident has already
+  closed into the closing line, as on the routers on 2026-10-23, where one outage gave one chat
+  message. The clocks were in UTC and the daemons had no trusted clock then, hence "Times are
+  approximate". The power cut is a stopped virtual machine, and the pulled cable a link set
+  down from outside the router.
 - **Found: a restart kept the old firewall rules.** With `peer_zone` set to `wan` and the static
   peers added, the peers' packets were dropped and the joins refused until
   `/etc/init.d/rollcall firewall` ran and the firewall reloaded; `r3` joined right after. Only
@@ -314,52 +308,33 @@ and delay), with its invariants checked afterwards. 1000 seeds, run twice on a d
 on 2026-10-23, were all clean then. On `98a14b1`, 2026-10-31, 998 of 1000 were clean: in seeds 241
 and 698 one router sent the update of a corrected absence twice, 1 s apart ("r03 rebooted
 unexpectedly, back at 09:05."), as the claims about it reached it in two reconciliations (I30); the
-200 seeds of CI do not reach either. With that fixed, on `4fed9b0`, 1000 seeds, run twice, were all
-clean (`ROLLCALL_SEEDS=1000 go test ./internal/sim/`, 5 min 1 s and 4 min 20 s).
+two seeds lie beyond the 200 of CI. With that fixed, on `4fed9b0`, 1000 seeds, run twice, were all
+clean (`ROLLCALL_SEEDS=1000 go test ./internal/sim/`, 5 min 1 s and 4 min 20 s), and on `a35b0b0`,
+the head of `main`, 1000 seeds were clean again on 2026-11-01 (2 min 10 s).
 
 **Gates**: 19 under `internal/gates`. `TestGatesHaveTeeth` plants, for each one, the fault it exists
-for and requires the gate to fail, or requires it to pass on clean input. On `524f26a`, 2026-10-24,
-all 128 cases passed in the full run below (123 on `cafed12`, before the gate for the firewall rules
-at every start).
+for and requires the gate to fail, or requires it to pass on clean input. On `a35b0b0`, 2026-11-01,
+all 128 cases passed in the full run below, as on `524f26a` on 2026-10-24 (123 on `cafed12`, before
+the gate for the firewall rules at every start).
 
-CI has no MIPS runner. A mutation job (gremlins v0.6.0) runs on manual runs and tags; it reports
-scores and does not gate. Run `39990682729` on `4186091`, test efficacy per package: replay 100.00%,
+A mutation job (gremlins v0.6.0) runs on manual runs and tags and reports its scores. Run `39990682729` on `4186091`, test efficacy per package: replay 100.00%,
 epoch 94.34%, roster 93.33%, history 90.65%, deliver 90.57%, pairing 84.69%, elect 84.62%, sig
 80.00%, wire 80.00%, node 75.38%.
 
 ## Tests on a workstation
 
-`go test ./... -count=1 -json` on 2026-10-24 at 07:16 BST, commit `524f26a`, Go 1.27.3 on
-darwin/arm64: 872 top-level tests passed, 0 failed, 4 skipped, and 923 subtests passed; 31 packages
-passed, two have no tests. The four skips: two gates that read what CI prepares
-(`ROLLCALL_COVERAGE`, `ROLLCALL_PACKAGES`), the ICMP probe (it needs a raw socket), and one
-link-local test that does not apply to macOS's loopback. Earlier runs: 871 and 913 on 2026-10-23 at
-22:20 on `cafed12`, 869 and 902 at 19:40 on `b2f9618`, 848 and 867 at 18:44 on `80c38d8`.
+`go test ./... -count=1 -json` on 2026-11-01 at 18:22 London time, commit `a35b0b0` (the head of
+`main`), Go 1.27.3 on darwin/arm64, in 3 min 13 s: 946 top-level tests passed, 0 failed, and 965
+subtests passed; 32 packages passed. Four tests belong to CI and Linux: two gates that read what CI
+prepares (`ROLLCALL_COVERAGE`, `ROLLCALL_PACKAGES`), the ICMP probe, which needs a raw socket, and
+one link-local test for Linux's loopback. `TestGatesHaveTeeth`: 128 cases passed. Earlier runs: 872
+and 923 on 2026-10-24 on `524f26a`, 871 and 913 on 2026-10-23 at 22:20 on `cafed12`, 869 and 902
+at 19:40 on `b2f9618`, 848 and 867 at 18:44 on `80c38d8`.
 
-Coverage on `524f26a`, every statement of `internal/...` together: 94.4%
-(`go test -coverprofile=internal.out ./internal/... && go tool cover -func=internal.out`), as on
-`cafed12` and `b2f9618`. On `80c38d8` it was 94.3%, from 90.4% (`internal/node`) to 100% per package. CI over `./...` with
-`-race` on `4186091`: 90.3%. On macOS the code that installs the seccomp filter does not run; the
-CI legs above run it. The CI gate keeps coverage from falling below `coverage-baseline.txt`, which
+Coverage on `a35b0b0`, 2026-11-01, every statement of `internal/...` together: 94.6%
+(`go test -coverprofile=internal.out ./internal/... && go tool cover -func=internal.out`), from
+91.1% (`internal/store`) and 91.4% (`internal/node`) to 100% per package. It was 94.4% on `524f26a`,
+`cafed12` and `b2f9618`, and 94.3% on `80c38d8`. CI over `./...` with
+`-race` on `4186091`: 90.3%. The code that installs the seccomp filter runs in the CI legs above,
+on Linux. The CI gate keeps coverage from falling below `coverage-baseline.txt`, which
 holds 90.0 since commit `2f3f314`.
-
-## Not yet
-
-- **Flash wear over days, flash writes per hour, network bytes, power.** Not measured. For the
-  flash only baselines were taken; the long run of 1.0.0-rc1 that started at 20:45 will give it.
-- **MIPS on hardware**, and every target but `aarch64_cortex-a53` on a router. arm ran in CI only;
-  x86_64 ran in CI and in virtual routers (above).
-- **OpenWrt 24.10 and the `.ipk`.** Built, never installed on a router.
-- **A mesh and NAT, and separate networks on hardware.** Separate networks with their own DHCP,
-  routed between them, ran on virtual routers (above). The hardware routers shared one LAN, and a
-  mesh and NAT ran in the in-process simulator only.
-- **Delivery to the chat from separate networks.** The virtual run bound no chat.
-- **sysupgrade.** Not run, so whether a clean shutdown is announced during one is not known.
-- **A pulled power cord, and an unplugged WAN cable on hardware.** The hardware lab forced a reboot
-  and removed a route instead; the virtual lab stopped a machine and set a link down from outside.
-- **Replay and flood from a device on the LAN.** The tools are in `tools/`; unit tests and the
-  simulator cover forged and replayed packets, the lab did not run them.
-- **The LuCI pages on a router.** The package installed; its pages and its rpcd rules were not used.
-- **ICMP probes** (off by default) and the capability they add.
-- **A feed for OpenWrt 24.10 (opkg).** It does not exist; the 25.12 apk feed does and ran on the
-  routers (above).

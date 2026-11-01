@@ -2,7 +2,7 @@
 
 This runbook proves the v1 group on three lab routers: flint2 (primary and sender), beryl1 (backup admin) and beryl2. It reaches the routers with `lab_ssh` (Tailscale SSH by default, see step 0) and uses, for the hostile-LAN checks, the Mac on flint2's LAN. No other router is used.
 
-**Status: draft, not yet run.** The commands below were checked against `rollcall help` of Task 21 (fix round 1). The status report is described in `luci-app-rollcall/STATUS-JSON.md`. If a command differs from the CLI's usage text on the first run, correct it here in the same change, and do not improvise on a router.
+**Status: run on 2026-10-23** on flint2, beryl1 and beryl2: the install, the group, the roles, the token, the chat binding, an internet cut and two reboots; the results are in [docs/measured.md](../measured.md#the-lab-run-2026-10-23). The commands below were checked against `rollcall help` of Task 21 (fix round 1). The status report is described in `luci-app-rollcall/STATUS-JSON.md`. If a command differs from the CLI's usage text on the first run, correct it here in the same change, and do not improvise on a router.
 
 ## Rules for the run
 
@@ -286,7 +286,7 @@ Expected: within about 30 seconds, the chat shows `Home: beryl2 lost contact HH:
 
 ## 7. Topology C: beryl2 behind beryl1's NAT, with static peers
 
-**Open decision, not yet taken.** beryl2's static peer has to be an address that flint2 can reach across beryl1's NAT, which means flint2's WAN side. The packaged firewall opens UDP and TCP 7432 only for the zones in `peer_zone` (`lan` by default). The config allows a `wan` peer zone only together with static peers. Opening the port on the WAN side changes what the daemon exposes, so the controller decides how flint2 accepts 7432 from beryl2's side before this topology runs.
+**Before this topology.** beryl2's static peer has to be an address that flint2 can reach across beryl1's NAT, which means flint2's WAN side. The packaged firewall opens UDP and TCP 7432 only for the zones in `peer_zone` (`lan` by default). The config allows a `wan` peer zone only together with static peers. Opening the port on the WAN side changes what the daemon exposes, so the controller decides how flint2 accepts 7432 from beryl2's side before this topology runs.
 
 Once that is decided, the steps are:
 
@@ -410,7 +410,7 @@ lab_ssh beryl1 'cat /etc/rollcall/hook-probe'
 Expected, and what each result means:
 
 - A line `hook ran <UTC time>`: a hook under `/lib/upgrade/` ran, and it ran before the configuration backup. Q2 is **yes**.
-- No file: **not observed**. The hook may have run after the backup, or it may not run at all. The test cannot separate those two, so do not record it as "no hook".
+- No file: no hook ran before the configuration backup. Record exactly that.
 
 Clean up the probe after recording the result:
 

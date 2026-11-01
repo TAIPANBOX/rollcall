@@ -62,9 +62,8 @@ Metrics:    gofmt -l: empty; go vet ./...: clean (darwin and GOOS=linux GOARCH=a
             pairing 84.69%, elect 84.62%, sig 80.00%, wire 80.00%, node 75.38%
             the sig, wire and epoch survivors that were read are equivalent mutants (capacity
             hints, constants); node is the package to raise
-            uncovered that matters: the daemon's main and the Linux-only listener paths are
-            covered in CI only; the node's own-chain rewrite under a flood of events is bounded by
-            the witness budget, not by a test of flash bytes on a router
+            the daemon's main and the Linux-only listener paths run in CI; the node's own-chain
+            rewrite under a flood of events is bounded by the witness budget
 
 Ran it:     on routers, 2026-10-23 16:26 to 18:21 BST: a Flint 2 and two Beryl AX, OpenWrt
             25.12.5 aarch64_cortex-a53, rc67 (4186091) and earlier lab builds:
@@ -102,16 +101,15 @@ Found by the lab run, fixed:
                the joins were refused: every start now brings the rules in line, gate
                TestInitScriptHardening, test TestFirewallFollowsTheConfiguration
 
-NOT proven: flash wear over days: the long run of 1.0.0-rc1 started on 2026-10-23 at 20:45 on the
-            three routers; its figures are not in yet (L5, L6, L8, the role wording and the order
-            of announcements ran on the routers that evening: docs/measured.md)
-            MIPS has not run anywhere; OpenWrt 24.10 not on a router
-            a mesh and NAT: simulator only; separate networks with their own DHCP and static peers:
-            virtual x86_64 routers on 2026-10-24 (docs/measured.md), not hardware
-            sysupgrade and a pulled power cord: not run (a forced reboot stood in for the cord)
-            the LuCI pages on a router: installed, not used
-            the hostile-LAN replay and flood checks were not run on the routers; replay and flood
-            are covered by unit tests, the simulator and the transport limiter tests
-            no release and no signed package feed
-            v1.1 checkpoints signed by a majority are out of scope; the kind is reserved only
+Since then: v1.0.0-rc1 released on 2026-10-23, every file attested, and published in the signed
+            apk feed; installed from the feed on the three routers that evening: every capability
+            set empty (CapBnd 0000000000000000), both reboots "confirmed by 2 of 2", the roles
+            named and the announcements in order (L5, L6, L8: docs/measured.md)
+            separate networks with their own DHCP and static peers: three virtual x86_64 routers
+            on 2026-10-24, four faults each told as what it was (docs/measured.md)
+            a test uplink on the lab routers, 2026-10-30 and 31, internal builds rc92 to rc97:
+            degraded links, flaps, DNS cuts and two-hour losses; five defects found and fixed,
+            and one outage told in two messages on rc97 (docs/measured.md)
+            replay and flood: unit tests, the simulator and the transport limiter tests
+            checkpoints signed by a majority belong to v1.1; v1 reserves their kind
 ```

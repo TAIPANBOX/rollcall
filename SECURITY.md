@@ -21,7 +21,7 @@ Please include:
 Never send a real bot token, join code, bind code or recovery code. A made-up one shows the problem
 just as well.
 
-rollcall has not been released, so there are no supported versions yet. A fix lands on `main`, and
+Supported: the latest release in the signed feed, 1.0.0-rc1, and `main`. A fix lands on `main`, and
 the advisory is published once the fix is there.
 
 ## In scope
