@@ -18,8 +18,14 @@ your Telegram chat, once per incident.
 
 ![Three routers exchange heartbeats; one goes silent and comes back; the sender tells the chat in one line](docs/hero.svg)
 
-**Release candidate [1.0.0-rc1](https://github.com/TAIPANBOX/rollcall/releases/tag/v1.0.0-rc1)**, from
-a signed apk feed for OpenWrt 25.12. The final 1.0.0 follows a longer run on routers.
+**Release candidate [1.0.0-rc1](https://github.com/TAIPANBOX/rollcall/releases/tag/v1.0.0-rc1)**
+of 2026-10-23, from a signed apk feed for OpenWrt 25.12. The final 1.0.0 follows a longer run on
+routers.
+
+This page describes `main`, which is ahead of rc1. Three items below are marked **(main)**: the
+uplink's DNS cut as an incident, one router's link changes within 30 s as one message, and quiet
+hours. The lab routers run internal builds of `main` (rc97 on 2026-10-31); the feed carries rc1
+until the next release.
 
 ## The problem
 
@@ -31,10 +37,10 @@ access points, mesh nodes. When one of them fails, the owner finds out late, fro
 - **Runs on the routers themselves**: no server, no cloud service besides the chat. [How](docs/how-it-works.md)
 - **The router still online tells you**, and another takes over when the sender is down. [Who sends](docs/how-it-works.md#who-sends)
 - **One message per incident**: start and end merged, late records absorbed, acknowledgements spread with the heartbeats. [One incident](docs/how-it-works.md#one-incident-one-message)
-- **Says what happened**: a planned reboot, a crash or power cut, an upgrade with old and new version, a lost link while up, the internet, WAN or the uplink's DNS down. [Kinds](docs/how-it-works.md#what-kind-of-incident-it-was)
-- **A flapping uplink is one message**: one router's link changes within 30 s are one line, at the start and at the end of an outage. [One incident](docs/how-it-works.md#one-incident-one-message)
+- **Says what happened**: a planned reboot, a crash or power cut, an upgrade with old and new version, a lost link while up, the internet or WAN down, and the uplink's DNS down **(main)**. [Kinds](docs/how-it-works.md#what-kind-of-incident-it-was)
+- **A flapping uplink is one message** **(main)**: one router's link changes within 30 s are one line, at the start and at the end of an outage. [One incident](docs/how-it-works.md#one-incident-one-message)
 - **Tells you after a total outage**, with start, end and length. [After an outage](docs/how-it-works.md#when-nobody-could-reach-telegram)
-- **Quiet at night if you want**: within `option quiet_hours '23:00-07:00'` messages arrive at once, without a sound. [Quiet hours](docs/how-it-works.md#who-sends)
+- **Quiet at night if you want** **(main)**: within `option quiet_hours '23:00-07:00'` messages arrive at once, without a sound. [Quiet hours](docs/how-it-works.md#who-sends)
 - **No false alarm from one router's cut-off view**: others are asked before a router is called silent. [Asking first](docs/how-it-works.md#noticing-a-silent-router)
 - **Trusts no single router**: a signed roster, admin, backup and recovery code, keys bound to the roster, signed histories held by every router. [Security](docs/security.md)
 - **Its own sandbox**: its own seccomp filter, no capabilities, no root-only configuration read. [Sandbox](docs/security.md#the-sandbox)
@@ -76,8 +82,9 @@ Every step, with a drawing for each: [docs/how-it-works.md](docs/how-it-works.md
 
 ![The three test routers, a Flint 2 and two Beryl AX, with the same measurements beside each](docs/routers.svg)
 
-1.0.0-rc1 from the signed feed on three routers, 2026-10-23. How each figure was taken:
-[docs/measured.md](docs/measured.md).
+1.0.0-rc1 from the signed feed on three routers, 2026-10-23. On 2026-10-30 and 31 the same routers
+ran internal builds of `main` (rc92 to rc97) behind a test uplink that cut, flapped, delayed and
+dropped their uplink traffic. How each figure was taken: [docs/measured.md](docs/measured.md).
 
 ## Next to hermes-openwrt
 
@@ -195,6 +202,10 @@ keys and, on a sender, the bot token. If you remove a sender for good, revoke it
 - **A lab run on three routers** found four defects the tests had not; each now has a gate.
 - **Virtual routers in separate networks**, each with its own DHCP: a cut power, a pulled WAN cable,
   an upstream internet cut and a planned reboot, each told as what it was.
+- **A test uplink on the lab routers**: degraded links, flapping WANs, DNS cuts and cuts of two
+  hours; five defects in how an outage is told came out of it (one outage in up to six messages, a
+  DNS cut that was never told, a later outage stretched back to old pieces, a start told twice, a
+  flap into an outage in three messages), each fixed in `main` and run again on a later build.
 
 Details: [docs/testing.md](docs/testing.md) and [docs/reports/v1-report.md](docs/reports/v1-report.md).
 
@@ -224,3 +235,11 @@ Details: [docs/testing.md](docs/testing.md) and [docs/reports/v1-report.md](docs
 | [docs/lab/runbook.md](docs/lab/runbook.md) | the lab runbook for the three test routers |
 | [packaging/README.md](packaging/README.md) | what the package installs, the filter, the jail, the snapshot |
 | [SECURITY.md](SECURITY.md) · [CONTRIBUTING.md](CONTRIBUTING.md) | reporting a vulnerability, changing the code |
+
+## Related OpenWrt packages
+
+Packages that run on the OpenWrt router itself:
+
+- [hermes-openwrt](https://github.com/TAIPANBOX/hermes-openwrt): Hermes Agent as a native OpenWrt service (apk, procd, UCI, no Docker), with a LuCI page and Telegram; changes with a high impact wait until you approve them.
+- [openwrt-mcp](https://github.com/TAIPANBOX/openwrt-mcp): an MCP server on the router, so an AI client can inspect and change it; calls are allowed by standing policies, and config changes arm a rollback timer.
+- [openwrt-llm-gateway](https://github.com/TAIPANBOX/openwrt-llm-gateway): the models a house runs on its own machines behind one name on the router, with a key per device, HTTPS under a name-constrained CA and a journal that never holds a prompt.
