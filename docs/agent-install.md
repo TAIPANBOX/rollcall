@@ -51,11 +51,10 @@ grep '^Seccomp:' /proc/self/status                  # expect: Seccomp:	0 (the li
 apk list --installed | grep -cE '^(procd-ujail|procd-seccomp|ca-bundle)-'   # expect: 3 (fewer: see below)
 ```
 
-- `aarch64_cortex-a53` is the only target that has run on a router. Another target builds
-  (`aarch64_generic`, `arm_cortex-a7`, `arm_cortex-a9`, `mipsel_24kc`, `mips_24kc`, `x86_64`) but
-  is untested on hardware: tell the person, and go on only with their yes.
-- Not 25.12, or no `apk`: stop. These steps are for vanilla OpenWrt 25.12. An `.ipk` for 24.10
-  is built but has never been installed on a router.
+- `aarch64_cortex-a53` has run on three hardware routers and `x86_64` on three virtual ones. Every
+  other target (`aarch64_generic`, `arm_cortex-a7`, `arm_cortex-a9`, `mipsel_24kc`, `mips_24kc`)
+  builds and passes the tests: name the target to the person, and go on with their yes.
+- Not 25.12, or no `apk`: stop. These steps are for vanilla OpenWrt 25.12.
 - No `Seccomp:` line: stop. The daemon refuses to run without its filter.
 - Fewer than 3 sandbox packages: apk fetches them from the OpenWrt feeds in step 3, so
   `apk update` must succeed first.

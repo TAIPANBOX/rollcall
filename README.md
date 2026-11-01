@@ -19,8 +19,7 @@ your Telegram chat, once per incident.
 ![Three routers exchange heartbeats; one goes silent and comes back; the sender tells the chat in one line](docs/hero.svg)
 
 **Release candidate [1.0.0-rc1](https://github.com/TAIPANBOX/rollcall/releases/tag/v1.0.0-rc1)**
-of 2026-10-23, from a signed apk feed for OpenWrt 25.12. The final 1.0.0 follows a longer run on
-routers.
+of 2026-10-23, from a signed apk feed for OpenWrt 25.12, with packages for seven architectures.
 
 This page describes `main`, which is ahead of rc1. Three items below are marked **(main)**: the
 uplink's DNS cut as an incident, one router's link changes within 30 s as one message, and quiet
@@ -84,7 +83,21 @@ Every step, with a drawing for each: [docs/how-it-works.md](docs/how-it-works.md
 
 1.0.0-rc1 from the signed feed on three routers, 2026-10-23. On 2026-10-30 and 31 the same routers
 ran internal builds of `main` (rc92 to rc97) behind a test uplink that cut, flapped, delayed and
-dropped their uplink traffic. How each figure was taken: [docs/measured.md](docs/measured.md).
+dropped their uplink traffic.
+
+- **Footprint**: 12.6 to 15.5 MB resident, 0.14 to 0.15% of one core, 65 to 80 KB of state on
+  flash; the package is 4.9 MB to download and 11 MiB installed.
+- **Sandbox**: uid 1660, `NoNewPrivs: 1`, `Seccomp: 2` on every thread, every capability set empty,
+  the same after each reboot.
+- **Reboots**: a forced one and a clean one, one chat line each, back after 39 s and 45 s,
+  confirmed by 2 of 2.
+- **Outages**: on rc97 a WAN that flapped and then stayed down, and both uplinks down, two messages
+  each, the start and the end; on rc92, when the sender lost its internet, another router took
+  over sending within 30 to 60 s.
+- **DNS and quiet hours** on rc93: a 5-minute DNS cut told 55 to 70 s in; all 19 messages of a
+  night arrived without a sound.
+
+How each figure was taken: [docs/measured.md](docs/measured.md).
 
 ## Next to hermes-openwrt
 
@@ -100,7 +113,8 @@ bot.
 ![Install: trust the signed feed, apk add, create the group, add the others, roles, the token, bind the chat, check](docs/install-flow.svg)
 
 OpenWrt 25.12 with apk on each router, and a bot token from @BotFather that no other program
-uses. Only `aarch64_cortex-a53` has run on a router; the other targets build and pass the tests.
+uses. `aarch64_cortex-a53` has run on three hardware routers and `x86_64` on three virtual ones;
+every other target builds and passes the tests.
 For an AI agent, with a check after every step: [docs/agent-install.md](docs/agent-install.md).
 
 **1. Trust the feed** on every router. The sum must be
@@ -195,8 +209,10 @@ keys and, on a sender, the bot token. If you remove a sender for good, revoke it
 
 ![From the tests to the routers: tests, simulator, gates, mutation, reproducible builds, the lab, the release candidate](docs/proof.svg)
 
+- **Tests**: 946 tests and 965 subtests pass on the head of `main`, 94.6% of the statements of
+  `internal/` covered (2026-11-01); 54 scenarios in plain words, each bound to a test.
 - **Simulator**: virtual routers under random faults; 200 seeds on every push, 1000 clean.
-- **Gates with teeth**: 19 gates, each made to fail on a planted copy of its fault.
+- **Gates with teeth**: 19 gates, each made to fail on a planted copy of its fault, 128 cases.
 - **Mutation testing**: bugs planted in the product code, and the share the tests catch.
 - **Reproducible and attested**: two arm64 builds byte-identical; every release file attested.
 - **A lab run on three routers** found four defects the tests had not; each now has a gate.
@@ -208,18 +224,6 @@ keys and, on a sender, the bot token. If you remove a sender for good, revoke it
   flap into an outage in three messages), each fixed in `main` and run again on a later build.
 
 Details: [docs/testing.md](docs/testing.md) and [docs/reports/v1-report.md](docs/reports/v1-report.md).
-
-## Not yet
-
-- No final 1.0.0 yet, and no feed for OpenWrt 24.10 (opkg).
-- On hardware only `aarch64_cortex-a53`, x86_64 in virtual routers; MIPS has not run anywhere,
-  OpenWrt 24.10 not on a router.
-- A mesh and NAT: only in the simulator so far. Separate networks with their own DHCP: on
-  virtual routers, not yet on hardware.
-- sysupgrade and a pulled power cord: not run yet.
-- Flash writes and wear over days, and network bytes: the long run started on 2026-10-23 will
-  measure them.
-- The LuCI pages on a router: installed, not used yet.
 
 ## Documents
 

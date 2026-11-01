@@ -25,8 +25,8 @@ and `sha256sum /etc/apk/keys/rollcall.pem` on the router prints the same. Withou
 drops the feed without a word: `apk add rollcall` then says `rollcall (no such package)`.
 
 Architectures: every target in the Makefile (`aarch64_cortex-a53`, `aarch64_generic`,
-`arm_cortex-a7`, `arm_cortex-a9`, `mips_24kc`, `mipsel_24kc`, `x86_64`). rollcall has run on
-routers of one of them, `aarch64_cortex-a53`.
+`arm_cortex-a7`, `arm_cortex-a9`, `mips_24kc`, `mipsel_24kc`, `x86_64`). rollcall has run from
+this feed on three `aarch64_cortex-a53` routers and on three virtual `x86_64` routers.
 
 ## How a release gets into the feed
 
@@ -87,4 +87,7 @@ packages from the `release-set` artifact of release.yml run 40008459032:
   for both copies;
 - `teeth-feed.sh`: all 4 teeth held.
 
-Not run yet: an install from this feed on a router. Every check above ran in a container.
+The same evening the three lab routers, a Flint 2 and two Beryl AX on OpenWrt 25.12.5, installed
+`rollcall-1.0.0_rc1-r1` from this feed with no `--allow-untrusted`, every file owned by root, and
+on 2026-10-24 three virtual x86_64 routers did the same
+([measured.md](measured.md#release-candidate-100-rc1-on-the-routers-2026-10-23-evening)).

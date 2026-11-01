@@ -27,6 +27,10 @@ Each scenario in `features/*.feature` is bound to a named test, and the gate
 Five more cover the sandbox: a forbidden call ends the daemon, every thread is filtered, the filter
 is the list the package ships, nothing is opened first, and no sandbox means no listening.
 
+The table is the first ten of `group.feature`, which now holds 16. `links.feature` holds 23 (flaps,
+long outages, DNS cuts, routers of an older version) and `quiet.feature` 10: 54 scenarios in all,
+each bound to a test.
+
 ## Unit tests
 
 - 872 tests pass, 0 fail, 4 skip, plus 923 subtests (`go test ./... -count=1 -json` on `524f26a`).
@@ -112,8 +116,19 @@ Planted bugs in the product code, and the share the tests catch (gremlins v0.6.0
   a change of `peer_zone` the joins were refused. Every start now brings the rules in line, with a
   gate. The lines and the details: [measured.md](measured.md#virtual-routers-in-separate-networks-2026-10-24).
 
-## Not proven yet
+## The test uplink
 
-The list is in the [README](../README.md#not-yet) and in [measured.md](measured.md#not-yet): no
-mesh, no NAT, no separate networks and no MIPS on hardware yet, no sysupgrade, no pulled power
-cord, no flash wear over days.
+- On 2026-10-30 and 31 the three lab routers each sat behind a WAN of their own, two of them
+  behind a fourth router that cut, flapped, delayed or dropped their uplink traffic on command.
+  They ran internal builds of `main`, rc92 to rc97, through 31 cells and their reruns.
+- Degraded links (300 ms delay, 10 % and 30 % loss, 256 kbit/s) gave no message and no change of
+  sender on rc92; a cut opened its incident 4 to 8 s in; when the sender's internet was cut,
+  `beryl1` took over sending within 30 to 60 s.
+- Five defects in how an outage is told came out of it: one outage in up to six messages, a DNS
+  cut that was never told, a later outage stretched back to old pieces, a start told twice, a flap
+  into an outage in three messages. Each was fixed with a test, and on rc97 a flap into an outage
+  and both uplinks down gave two messages each.
+- A DNS cut of 5 minutes was told 55 to 70 s in and its end 37 to 42 s after the return. With quiet
+  hours set, all 19 messages of the night reached the phone without a sound; the phone still
+  vibrated, which Telegram leaves to the phone. The cells and the lines:
+  [measured.md](measured.md#faults-on-a-test-uplink-2026-10-30).
