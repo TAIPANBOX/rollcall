@@ -287,6 +287,22 @@ and after each cell. Senders: `flint2`, then `beryl1`. Times are London time.
   joined the capped chain with no message. Both uplinks down for 2 min 13 s (R1.5): 2 messages, the
   start from beryl1 at 06:12:45 and the end from flint2 at 06:14:52, "2 min 28 s".
 
+## A replaced package, 2026-11-07
+
+`scripts/gate-upgrade.sh` in CI's packaging job, with OpenWrt's own apk in the 25.12.6 `x86-64` root
+file system, replacing the package back and forth between two revisions.
+
+| | The package without `post-upgrade` | With it |
+|---|---|---|
+| What apk ran on a replacement | nothing: `Upgrading rollcall (0.0.0_pre0-r1 -> 0.0.0_pre0-r2)` and no script | `Executing rollcall-0.0.0_pre0-r2.post-upgrade` |
+| Enabled service | not touched, so the old daemon runs on | `enabled restart` |
+| Firewall rules removed beforehand | still gone | back, built by the start |
+| Snapshot removed beforehand | still gone | written by the start |
+| Account removed beforehand | still gone | made again |
+| `/etc/rollcall` at 0755, root's | left so | 0700, `rollcall`'s |
+| Service the owner disabled | left off, its rules gone | left off, not started, rules built |
+| `/etc/config/rollcall`, `/etc/rollcall` | kept | kept |
+
 ## CI
 
 Run `39990683889`, the push of commit `4186091` on 2026-10-23. Every job passed:
