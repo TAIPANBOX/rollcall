@@ -131,7 +131,7 @@ else
 	cat > "$CTRL/postinst" <<'EOF'
 #!/bin/sh
 [ -n "${IPKG_INSTROOT:-}" ] && exit 0
-rm -rf /tmp/luci-indexcache /tmp/luci-modulecache
+rm -rf /tmp/luci-indexcache /tmp/luci-indexcache.* /tmp/luci-modulecache
 exit 0
 EOF
 	chmod 0755 "$CTRL/postinst"

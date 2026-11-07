@@ -266,9 +266,10 @@ the `sandbox` object. The sender is `None` while no router can reach Telegram.
 ## Upgrading
 
 `apk update && apk upgrade rollcall luci-app-rollcall` on each router (only the packages the
-router has), then `/etc/init.d/rollcall restart` so the new daemon runs. apk keeps
-`/etc/rollcall` and `/etc/config/rollcall`: the group, the roles and the token stay. Then run the
-checks of steps 3 and 10 again.
+router has). The package restarts an enabled service itself, so the new daemon runs, and leaves a
+disabled one off; apk runs the script of the version it installs, so that holds for the upgrade to
+this version too. apk keeps `/etc/rollcall` and `/etc/config/rollcall`: the group, the roles and the
+token stay. Then run the checks of steps 3 and 10 again.
 
 ## Removing
 

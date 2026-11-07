@@ -133,7 +133,8 @@ sed -i '/^rollcall:/d' /etc/passwd /etc/group /etc/shadow
 replace
 if account; then pass check_upgrade_makes_the_account; else fail check_upgrade_makes_the_account "no rollcall account after the replacement"; fi
 
-# ---- the state directory changed
+# ---- the state directory changed. The account comes back by hand if the replacement left it gone,
+# so a run against a package without the script goes on to report the rest.
 account || { echo 'rollcall:x:1660:' >>/etc/group; echo 'rollcall:x:1660:1660:rollcall:/var/empty:/bin/false' >>/etc/passwd; }
 chown 0:0 /etc/rollcall
 chmod 0755 /etc/rollcall

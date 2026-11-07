@@ -102,27 +102,32 @@ fi
 
 # ---- lifecycle scripts
 #
-# apk's stage names differ from opkg's. post-install covers a fresh install and an upgrade;
-# pre-deinstall is opkg's prerm. The rollcall scripts are the same files mkipk.sh puts in
-# control.tar.gz, and they carry their own guards: apk runs them inside the target root, so
-# there is no IPKG_INSTROOT to test.
+# apk's stages differ from opkg's, and not only in name. opkg runs postinst on an install and on an
+# upgrade alike, with PKG_UPGRADE=1 on an upgrade; apk runs post-install only when nothing was
+# installed before and post-upgrade when it replaces a version (apk_db_install_pkg). So post-upgrade
+# is the postinst with PKG_UPGRADE=1 on top, the way OpenWrt's package-pack.mk writes it, and
+# internal/gates/upgrade_test.go runs what this line writes. pre-deinstall is opkg's prerm. The
+# rollcall scripts are the same files mkipk.sh puts in control.tar.gz, and they carry their own
+# guards: apk runs them inside the target root, so there is no IPKG_INSTROOT to test.
 SCRIPTS=""
 if [ "$PKG" = rollcall ]; then
 	install -m 0755 "$ROOT/packaging/postinst" "$BUILD/post-install"
+	{ echo '#!/bin/sh'; echo 'export PKG_UPGRADE=1'; sed '/^#!/d' "$ROOT/packaging/postinst"; } > "$BUILD/post-upgrade"
+	chmod 0755 "$BUILD/post-upgrade"
 	install -m 0755 "$ROOT/packaging/prerm"    "$BUILD/pre-deinstall"
 	DEPENDS="procd-seccomp procd-ujail ca-bundle"
 	DESCRIPTION="Watches the routers of one site over the LAN and reports incidents to a chat."
-	SCRIPTS="--script post-install:$BUILD/post-install --script pre-deinstall:$BUILD/pre-deinstall"
+	SCRIPTS="--script post-install:$BUILD/post-install --script post-upgrade:$BUILD/post-upgrade --script pre-deinstall:$BUILD/pre-deinstall"
 else
 	cat > "$BUILD/post-install" <<'EOF'
 #!/bin/sh
-rm -rf /tmp/luci-indexcache /tmp/luci-modulecache
+rm -rf /tmp/luci-indexcache /tmp/luci-indexcache.* /tmp/luci-modulecache
 exit 0
 EOF
 	chmod 0755 "$BUILD/post-install"
 	DEPENDS="luci-base rollcall"
 	DESCRIPTION="LuCI pages for rollcall: status, and the administration buttons."
-	SCRIPTS="--script post-install:$BUILD/post-install"
+	SCRIPTS="--script post-install:$BUILD/post-install --script post-upgrade:$BUILD/post-install"
 fi
 
 # ---- find a writer for the format, and give the tree to root

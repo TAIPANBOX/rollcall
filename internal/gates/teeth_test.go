@@ -296,8 +296,8 @@ var toothCases = []toothCase{
 	{
 		name: "upgrade_fails_with_the_restart", gate: "TestPackageUpgradeScripts",
 		plant: func(t *testing.T, dst string) {
-			replaceIn(t, filepath.Join(dst, "packaging/postinst"), "\t/etc/init.d/rollcall restart\n\t\texit 0\n",
-				"\t/etc/init.d/rollcall restart\n\t\texit $?\n")
+			replaceIn(t, filepath.Join(dst, "packaging/postinst"), "\t/etc/init.d/rollcall restart\n\texit 0\n",
+				"\t/etc/init.d/rollcall restart\n\texit $?\n")
 		},
 		outcome: wantFail, expect: "apk would mark the package broken",
 	},

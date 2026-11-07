@@ -14,13 +14,32 @@ and the generator that writes one profile per architecture. `scripts/mkipk.sh` a
 | `/etc/hotplug.d/iface/50-rollcall` | forwards interface events to `rollcall notify iface` and writes the snapshot again (`rollcall snapshot`), both in the background |
 | `/etc/hotplug.d/ntp/50-rollcall` | tells the daemon the clock is synchronised (`rollcall notify clock-synced`), in the background, on busybox ntpd's `step`, and on `stratum` or `periodic` with a stratum below 16, so a daemon started after the clock synced hears it within about 11 minutes |
 | `/etc/config/rollcall` | site configuration; kept across upgrades |
-| `/etc/uci-defaults/90-rollcall` | builds the firewall rules at first boot and after an upgrade (`/etc/init.d/rollcall firewall`) |
+| `/etc/uci-defaults/90-rollcall` | builds the firewall rules at the next boot after an install or an upgrade (`/etc/init.d/rollcall firewall`) |
 | `/etc/seccomp/rollcall.json` | the system call allow-list of the target architecture in procd's format: the readable record of the filter rollcalld installs itself from the same lists; procd does not load it |
 | `/etc/capabilities/rollcall.json` | `CAP_NET_RAW` in every set and nothing else, used only when `option icmp '1'` |
 | `/etc/capabilities/rollcall-none.json` | all five sets present and empty, used on every start without ICMP probes, so the bounding set is empty too |
 | `/lib/upgrade/keep.d/rollcall` | keeps `/etc/rollcall/` and `/etc/config/rollcall` on sysupgrade |
 
 The package has no ubus ACL: the daemon never calls ubus.
+
+## What an upgrade does
+
+apk runs `post-install` only when nothing was installed before and `post-upgrade` when it replaces
+a version; opkg runs its `postinst` for both, with `PKG_UPGRADE=1` on an upgrade. `packaging/postinst`
+serves all of them: `mkapk.sh` packs it as `post-install` and, with `PKG_UPGRADE=1` on top, as
+`post-upgrade`, the way OpenWrt's own `package-pack.mk` does.
+
+| | Install | Upgrade, service enabled | Upgrade, service not enabled |
+|---|---|---|---|
+| Account `rollcall`, `/etc/rollcall` at 0700 | made | made if gone | made if gone |
+| Firewall rules | built | brought in line by the start | built |
+| Snapshot | at the first start | written by the start | at the next start |
+| Service | enabled, not started: it needs `rollcall init` | restarted onto the new binary | left off and stopped |
+
+`@decided 2026-11-07`: an upgrade restarts a service that is enabled and never enables one, so the
+start at boot stays as the owner set it. `luci-app-rollcall` clears the caches of the LuCI menu on an
+install and on an upgrade alike. The gate is `TestPackageUpgradeScripts`, and
+`scripts/gate-upgrade.sh` does it with OpenWrt's own apk in CI's packaging job.
 
 ## Every entry is owned by root
 
@@ -150,8 +169,9 @@ the init script sets, and reads the path from `ControlDirPath` in `cmd/rollcalld
 
 ## Firewall
 
-One builder writes the rules: `/etc/init.d/rollcall firewall`. The postinst and
-`uci-defaults/90-rollcall` run it at install, and every start runs it again
+One builder writes the rules: `/etc/init.d/rollcall firewall`. The postinst runs it at install and
+on an upgrade of a service that is not enabled, `uci-defaults/90-rollcall` at the next boot after
+either, and every start runs it again
 (`rollcall_firewall_follow`), so a restart after a change of `peer_zone`, `port` or the static
 peers opens what the new configuration needs; the firewall reloads only when the rules changed.
 A change of the rollcall or firewall configuration through LuCI or `reload_config` runs
