@@ -237,6 +237,14 @@ jobs:
           grep -q 'usr/bin/planted: user nobody' "$t/out.txt" || { cat "$t/out.txt"; echo "the owner check failed, but not on the planted file"; exit 1; }
           echo "the owner check fails on the planted nobody-owned file, as it must"
 
+      # apk runs post-upgrade, not post-install, when it replaces a version, and a package without
+      # it leaves the old daemon running. This replaces the package with OpenWrt's own apk.
+      - name: An upgrade leaves the router as the new version needs it
+        run: |
+          set -eu
+          OUTDIR=dist/upgrade PKGREL=2 ./scripts/mkapk.sh dist/bin/x86_64/rollcalld dist/bin/x86_64/rollcall 0.0.0-ci x86_64
+          ./scripts/gate-upgrade.sh dist/release/rollcall-0.0.0_pre0-r1-x86_64.apk dist/upgrade/rollcall-0.0.0_pre0-r2-x86_64.apk
+
   # rollcalld started directly, as procd starts it on a router, with no loader: it installs its own
   # seccomp filter (internal/sandbox) from the shipped list of its architecture, because procd
   # cannot filter a statically linked program. The job requires that filter in force on every

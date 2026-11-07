@@ -241,6 +241,102 @@ var toothCases = []toothCase{
 		},
 		outcome: wantFail, expect: "measured nothing",
 	},
+	{name: "upgrade_clean", gate: "TestPackageUpgradeScripts", outcome: wantPass},
+	{
+		name: "upgrade_no_post_upgrade_in_the_package", gate: "TestPackageUpgradeScripts",
+		plant: func(t *testing.T, dst string) {
+			replaceIn(t, filepath.Join(dst, "scripts/mkapk.sh"), ` --script post-upgrade:$BUILD/post-upgrade`, "")
+		},
+		outcome: wantFail, expect: "packs no post-upgrade",
+	},
+	{
+		name: "upgrade_luci_has_no_post_upgrade", gate: "TestPackageUpgradeScripts",
+		plant: func(t *testing.T, dst string) {
+			replaceIn(t, filepath.Join(dst, "scripts/mkapk.sh"), ` --script post-upgrade:$BUILD/post-install`, "")
+		},
+		outcome: wantFail, expect: "packs no post-upgrade",
+	},
+	{
+		name: "upgrade_writes_no_post_upgrade", gate: "TestPackageUpgradeScripts",
+		plant: func(t *testing.T, dst string) {
+			replaceIn(t, filepath.Join(dst, "scripts/mkapk.sh"), `> "$BUILD/post-upgrade"`, `> "$BUILD/post-later"`)
+		},
+		outcome: wantFail, expect: "writes no post-upgrade",
+	},
+	{
+		name: "upgrade_enables_the_service", gate: "TestPackageUpgradeScripts",
+		plant: func(t *testing.T, dst string) {
+			replaceIn(t, filepath.Join(dst, "packaging/postinst"), `[ "${PKG_UPGRADE:-0}" = 1 ] || /etc/init.d/rollcall enable`,
+				`/etc/init.d/rollcall enable`)
+		},
+		outcome: wantFail, expect: `must not run "rollcall enable"`,
+	},
+	{
+		name: "upgrade_restarts_a_disabled_service", gate: "TestPackageUpgradeScripts",
+		plant: func(t *testing.T, dst string) {
+			replaceIn(t, filepath.Join(dst, "packaging/postinst"), `/etc/init.d/rollcall enabled;`, `true;`)
+		},
+		outcome: wantFail, expect: `must not run "rollcall restart"`,
+	},
+	{
+		name: "upgrade_does_not_restart", gate: "TestPackageUpgradeScripts",
+		plant: func(t *testing.T, dst string) {
+			replaceIn(t, filepath.Join(dst, "packaging/postinst"), "\t/etc/init.d/rollcall restart\n", "\ttrue\n")
+		},
+		outcome: wantFail, expect: `no "rollcall restart"`,
+	},
+	{
+		name: "upgrade_skips_the_account", gate: "TestPackageUpgradeScripts",
+		plant: func(t *testing.T, dst string) {
+			replaceIn(t, filepath.Join(dst, "packaging/postinst"), "group_exists rollcall ||",
+				"[ \"${PKG_UPGRADE:-0}\" != 1 ] || { /etc/init.d/rollcall restart; exit 0; }\ngroup_exists rollcall ||")
+		},
+		outcome: wantFail, expect: "group_add rollcall 1660",
+	},
+	{
+		name: "upgrade_fails_with_the_restart", gate: "TestPackageUpgradeScripts",
+		plant: func(t *testing.T, dst string) {
+			replaceIn(t, filepath.Join(dst, "packaging/postinst"), "\t/etc/init.d/rollcall restart\n\t\texit 0\n",
+				"\t/etc/init.d/rollcall restart\n\t\texit $?\n")
+		},
+		outcome: wantFail, expect: "apk would mark the package broken",
+	},
+	{
+		name: "upgrade_install_starts_the_daemon", gate: "TestPackageUpgradeScripts",
+		plant: func(t *testing.T, dst string) {
+			replaceIn(t, filepath.Join(dst, "packaging/postinst"), `[ "${PKG_UPGRADE:-0}" = 1 ] || /etc/init.d/rollcall enable`,
+				`[ "${PKG_UPGRADE:-0}" = 1 ] || { /etc/init.d/rollcall enable; /etc/init.d/rollcall start; }`)
+		},
+		outcome: wantFail, expect: `must not run "rollcall start"`,
+	},
+	{
+		name: "upgrade_the_wrong_comment_again", gate: "TestPackageUpgradeScripts",
+		plant: func(t *testing.T, dst string) {
+			appendFile(t, filepath.Join(dst, "scripts/mkapk.sh"), "\n# post-install covers an upgrade\n")
+		},
+		outcome: wantFail, expect: "post-install covers an upgrade",
+	},
+	{
+		name: "upgrade_luci_cache_left", gate: "TestPackageUpgradeScripts",
+		plant: func(t *testing.T, dst string) {
+			replaceIn(t, filepath.Join(dst, "scripts/mkipk.sh"), "/tmp/luci-indexcache.*", "/tmp/luci-indexcache")
+		},
+		outcome: wantFail, expect: "luci-indexcache",
+	},
+	{
+		name: "upgrade_no_postinst", gate: "TestPackageUpgradeScripts",
+		plant: func(t *testing.T, dst string) {
+			removeFile(t, filepath.Join(dst, "packaging/postinst"))
+		},
+		outcome: wantFail, expect: "measured nothing",
+	},
+	{
+		name: "upgrade_no_scripts_in_mkapk", gate: "TestPackageUpgradeScripts",
+		plant: func(t *testing.T, dst string) {
+			writeFile(t, filepath.Join(dst, "scripts/mkapk.sh"), "#!/bin/sh\n/tmp/luci-indexcache.*\n")
+		},
+		outcome: wantFail, expect: "measured nothing",
+	},
 }
 
 // TestGatesHaveTeeth plants each gate's fault in a copy of the repository and
@@ -477,6 +573,20 @@ func appendFile(t *testing.T, path, text string) {
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// replaceIn replaces every occurrence of old in a file, and fails when there is none: a fault that
+// plants nothing proves nothing.
+func replaceIn(t *testing.T, path, old, new string) {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), old) {
+		t.Fatalf("%q is not in %s: the code moved, so move the fault", old, path)
+	}
+	writeFile(t, path, strings.ReplaceAll(string(b), old, new))
 }
 
 func removeFile(t *testing.T, path string) {
