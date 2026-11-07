@@ -200,6 +200,12 @@ jobs:
           grep -q 'name: etc/seccomp' "$RUNNER_TEMP/adbdump.txt" || { echo "apk lacks the seccomp profile"; exit 1; }
           # The empty capability set of every start without ICMP probes: without it ujail refuses to start.
           grep -q 'name: rollcall-none.json' "$RUNNER_TEMP/adbdump.txt" || { echo "apk lacks the empty capabilities file"; exit 1; }
+          # apk runs post-upgrade when it replaces a version, for the LuCI package as well.
+          for name in "$apk" luci-app-rollcall-0.0.0_pre0-r1-noarch.apk; do
+            docker run --rm -v "$PWD:/work" -w /work \
+              alpine@sha256:020dfcbaaf4cc1078bf2d9c7ba31a8466e334061dcd2f248001d68f79e52c000 \
+              apk adbdump "$name" | grep -q 'post-upgrade' || { echo "$name carries no post-upgrade"; exit 1; }
+          done
 
       # procd runs /etc/init.d/rollcall as root and hotplug runs /usr/bin/rollcall as root, so an
       # entry any other account owns lets that account gain root. The gate reads every header of
@@ -236,6 +242,17 @@ jobs:
           fi
           grep -q 'usr/bin/planted: user nobody' "$t/out.txt" || { cat "$t/out.txt"; echo "the owner check failed, but not on the planted file"; exit 1; }
           echo "the owner check fails on the planted nobody-owned file, as it must"
+
+      # apk runs post-upgrade, not post-install, when it replaces a version, and a package without
+      # it leaves the old daemon running. This replaces the package with OpenWrt's own apk.
+      - name: An upgrade leaves the router as the new version needs it
+        run: |
+          set -eu
+          OUTDIR=dist/upgrade PKGREL=2 ./scripts/mkapk.sh dist/bin/x86_64/rollcalld dist/bin/x86_64/rollcall 0.0.0-ci x86_64
+          ./scripts/gate-upgrade.sh dist/release/rollcall-0.0.0_pre0-r1-x86_64.apk dist/upgrade/rollcall-0.0.0_pre0-r2-x86_64.apk
+
+      - name: The upgrade gate goes red on a package without the script, and on the other faults (teeth)
+        run: ./scripts/teeth-upgrade.sh dist/bin/x86_64/rollcalld dist/bin/x86_64/rollcall 0.0.0-ci x86_64
 
   # rollcalld started directly, as procd starts it on a router, with no loader: it installs its own
   # seccomp filter (internal/sandbox) from the shipped list of its architecture, because procd

@@ -1,8 +1,20 @@
 #!/bin/sh
-# Runs after install and after upgrade. Creates the unprivileged account and the state
-# directory, builds the firewall rules (/etc/init.d/rollcall firewall) and enables the service.
-# It does not start the daemon: that needs `rollcall init` first, and the daemon fails closed
-# until then.
+# Runs after an install and after an upgrade. opkg runs this file for both and sets PKG_UPGRADE to
+# 1 on an upgrade. apk runs post-install for an install and post-upgrade when it replaces a
+# version, and scripts/mkapk.sh writes post-upgrade from this file with PKG_UPGRADE=1 on top, as
+# OpenWrt's own package-pack.mk does.
+#
+# Both make sure of the unprivileged account and the state directory: procd says nothing about a
+# user that does not exist, and starts the daemon without one.
+#
+# An install builds the firewall rules (/etc/init.d/rollcall firewall) and enables the service. It
+# does not start the daemon: that needs `rollcall init` first, and the daemon fails closed until
+# then.
+#
+# An upgrade never enables: the start at boot stays as the owner set it. An enabled service
+# restarts, or the old daemon runs on until the next reboot with the new one on disk; that start
+# brings the firewall rules in line and writes the snapshot. A service that is not enabled is not
+# started, and its rules are kept current here.
 [ -n "${IPKG_INSTROOT:-}" ] && exit 0
 . /lib/functions.sh
 
@@ -13,7 +25,12 @@ mkdir -p /etc/rollcall
 chown rollcall:rollcall /etc/rollcall
 chmod 0700 /etc/rollcall
 
+if [ "${PKG_UPGRADE:-0}" = 1 ] && /etc/init.d/rollcall enabled; then
+	/etc/init.d/rollcall restart
+	exit 0
+fi
+
 /etc/init.d/rollcall firewall
 /etc/init.d/firewall reload >/dev/null 2>&1 || true
-/etc/init.d/rollcall enable
+[ "${PKG_UPGRADE:-0}" = 1 ] || /etc/init.d/rollcall enable
 exit 0
