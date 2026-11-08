@@ -322,6 +322,54 @@ the history file, the kernel boot ID against `/proc`.
 One call takes under 10 ms (`time`: 0.00 s real). The downgrade was the release file edited before a
 reboot, which is what rollcall reads; the lab has only the 25.12.5 image.
 
+## 1.0.0-rc3 on the routers, 2026-11-08
+
+The three lab routers, a Flint 2 (`flint2`) and two Beryl AX (`beryl1`, `beryl2`), OpenWrt 25.12.5
+(`aarch64_cortex-a53`), from internal build rc97 to `rollcall-1.0.0_rc3-r1` from the signed feed, one
+router at a time, with no reboot. The package was named with a floor, `apk add 'rollcall>=1.0.0_rc3'`,
+after `apk add --simulate` showed it moving one package: `apk add -u rollcall` would also have
+upgraded two OpenWrt libraries it depends on. The rc2 package, from the tag `feed-v1.0.0-rc2`, was
+put beside each router first, for a way back.
+
+| | beryl1 | beryl2 | flint2 |
+|---|---|---|---|
+| Upgraded at (London) | 09:00:55 | 09:02:40 | 09:03:33 |
+| Packages changed | rollcall only, 157 | rollcall only, 157 | rollcall only, 239 |
+| After the post-upgrade restart | running, enabled, three members up, sandbox enforced | the same | the same, sender |
+| Daemon | uid 1660, every capability set 0, `NoNewPrivs: 1`, `Seccomp: 2` | the same | the same |
+| Temperature before and after, °C | 56.0, 56.0 | 56.6, 56.3 | 42.0, 42.1 |
+
+`rollcall attest --nonce` with a fresh 32-byte nonce on each router, as root, then in the same SSH
+session the kernel's boot ID, `roster.bin` and the history files. A verifier written apart from
+`internal/attest` checked each statement: it builds the signed bytes from [attest.md](attest.md)'s
+table (and first reproduces the document's own vector with them), takes the member key from the
+router's roster chain, verified version by version (version 6), verifies the Ed25519 signature,
+finds the signed head in the history file with its hash, compares the newest boot record and the
+kernel boot ID, and the clock.
+
+| | beryl1 | beryl2 | flint2 |
+|---|---|---|---|
+| Statement | rollcall 1.0.0-rc3, head 76, boot 14 on 25.12.5 | head 164, boot 11 on 25.12.5 | head 190, boot 17 on 25.12.5 |
+| Signature under the roster's key | verifies | verifies | verifies |
+| Kernel boot ID | equals the newest boot record's and `/proc`'s | the same | the same |
+
+Open controls on beryl1's statement: one second changed in `time` fails the signature; a nonce one
+byte off fails as not sent; another member's chain under this member's name fails its first entry's
+signature.
+
+The same command through the outside auditor's own key, whose line in
+`/etc/dropbear/authorized_keys` is a forced command, after that line gained a branch for it: the
+nonce is taken only as an even number of 32 to 128 lowercase hex digits, checked inside the forced
+command, and passed on as one argument. On each router the auditor's key read the version, the
+release file and the boot ID, and was refused `sh`, `--nonce 00; sh`, `--nonce $(id)`, 33, 30 and
+130 digits, and a valid nonce followed by `; id`; a valid nonce gave a statement the verifier above
+accepted (11 of 11 on each router). Before the branch, the valid nonce was refused too. The branch
+was first run on a virtual router with a stand-in that prints its arguments: 14 malformed commands
+refused (uppercase, empty, two spaces, a newline, `*` among them) and 32, 64 and 128 digits accepted,
+the nonce reaching the program as one unchanged argument. dropbear keeps a backslash inside
+`command="..."` as it is, so `\"$n\"` would reach the program with the quotes in it; the value is
+checked to hex digits before use, which the shell neither splits nor expands.
+
 ## CI
 
 Run `39990683889`, the push of commit `4186091` on 2026-10-23. Every job passed:

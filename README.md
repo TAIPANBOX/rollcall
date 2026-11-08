@@ -11,19 +11,20 @@ your Telegram chat, once per incident.
 [![ci](https://github.com/TAIPANBOX/rollcall/actions/workflows/ci.yml/badge.svg)](https://github.com/TAIPANBOX/rollcall/actions/workflows/ci.yml)
 ![OpenWrt 25.12](https://img.shields.io/badge/OpenWrt-25.12-2dd4bf)
 ![Go 1.27](https://img.shields.io/badge/Go-1.27-4493f8)
-![status: release candidate](https://img.shields.io/badge/status-1.0.0--rc2-e3b341)
+![status: release candidate](https://img.shields.io/badge/status-1.0.0--rc3-e3b341)
 ![license MIT](https://img.shields.io/badge/license-MIT-9aa7b8)
 
 </div>
 
 ![Three routers exchange heartbeats; one goes silent and comes back; the sender tells the chat in one line](docs/hero.svg)
 
-**Release candidate [1.0.0-rc2](https://github.com/TAIPANBOX/rollcall/releases/tag/v1.0.0-rc2)**
-of 2026-11-07, from a signed apk feed for OpenWrt 25.12, with packages for seven architectures.
+**Release candidate [1.0.0-rc3](https://github.com/TAIPANBOX/rollcall/releases/tag/v1.0.0-rc3)**
+of 2026-11-08, from a signed apk feed for OpenWrt 25.12, with packages for seven architectures.
 
-This page describes `main`, which rc2 was tagged from. The lab routers ran internal builds of `main`
-(rc97 on 2026-10-31) whose daemon is the code rc2 carries; rc2 adds package scripts by which an
-upgrade restarts an enabled service and never enables one.
+This page describes `main`, which rc3 was tagged from. The three lab routers run rc3 from the feed
+since 2026-11-08. Since rc2, `rollcall attest --nonce` gives an outside auditor a statement of the
+router's state signed over the auditor's own nonce ([docs/attest.md](docs/attest.md)), and a return
+to an older OpenWrt release is told as a downgrade.
 
 ## The problem
 

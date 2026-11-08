@@ -31,7 +31,7 @@ this feed on three `aarch64_cortex-a53` routers and on three virtual `x86_64` ro
 ## How a release gets into the feed
 
 ```sh
-./scripts/publish-feed.sh v1.0.0-rc2
+./scripts/publish-feed.sh v1.0.0-rc3
 ```
 
 1. **Download and verify.** `scripts/build-feed.sh` downloads the tag's `.apk` files, which
@@ -68,7 +68,8 @@ installs from that tag with the same key, through the raw URL of the tag:
 echo "https://raw.githubusercontent.com/TAIPANBOX/rollcall/feed-v1.0.0-rc1/25.12/$(cat /etc/apk/arch)/packages.adb" >> /etc/apk/repositories.d/customfeeds.list
 ```
 
-Kept so far: [`feed-v1.0.0-rc1`](https://github.com/TAIPANBOX/rollcall/tree/feed-v1.0.0-rc1).
+Kept so far: [`feed-v1.0.0-rc1`](https://github.com/TAIPANBOX/rollcall/tree/feed-v1.0.0-rc1) and
+[`feed-v1.0.0-rc2`](https://github.com/TAIPANBOX/rollcall/tree/feed-v1.0.0-rc2).
 
 ## What the gate proves
 
@@ -88,6 +89,20 @@ that is published as the feed's key (it must pass), on the same copy with the re
 measured nothing).
 
 ## What has been run
+
+On 2026-11-08, `publish-feed.sh` published v1.0.0-rc3 (apk version `1.0.0_rc3-r1`), taking the
+packages from its release page, which release.yml run 42463761888 created itself:
+
+- all 8 `.apk` files and `SHA256SUMS` passed the checksum and attestation checks;
+- every architecture's packages and index were signed and verified against keys/rollcall.pem
+  only, with the private half's public key compared with keys/rollcall.pem first;
+- `gate-feed.sh` passed all 4 checks on the local copy and then on the published URL, in the
+  `x86-64-25.12.6` root file system, `rollcall version` printing `rollcall 1.0.0-rc3`;
+- `teeth-feed.sh`: all 4 teeth held.
+
+Before the push the rc2 feed was kept under the tag `feed-v1.0.0-rc2`, and `gate-feed.sh` passed all
+4 checks against its raw URL, `rollcall version` printing `rollcall 1.0.0-rc2`. The same day the
+three lab routers took rc3 from the feed ([measured.md](measured.md#100-rc3-on-the-routers-2026-11-08)).
 
 On 2026-11-07, `publish-feed.sh` published v1.0.0-rc2 (apk version `1.0.0_rc2-r1`), taking the
 packages from its release page, which release.yml run 42426936308 created itself:
