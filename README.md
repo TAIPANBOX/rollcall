@@ -11,20 +11,19 @@ your Telegram chat, once per incident.
 [![ci](https://github.com/TAIPANBOX/rollcall/actions/workflows/ci.yml/badge.svg)](https://github.com/TAIPANBOX/rollcall/actions/workflows/ci.yml)
 ![OpenWrt 25.12](https://img.shields.io/badge/OpenWrt-25.12-2dd4bf)
 ![Go 1.27](https://img.shields.io/badge/Go-1.27-4493f8)
-![status: release candidate](https://img.shields.io/badge/status-1.0.0--rc1-e3b341)
+![status: release candidate](https://img.shields.io/badge/status-1.0.0--rc2-e3b341)
 ![license MIT](https://img.shields.io/badge/license-MIT-9aa7b8)
 
 </div>
 
 ![Three routers exchange heartbeats; one goes silent and comes back; the sender tells the chat in one line](docs/hero.svg)
 
-**Release candidate [1.0.0-rc1](https://github.com/TAIPANBOX/rollcall/releases/tag/v1.0.0-rc1)**
-of 2026-10-23, from a signed apk feed for OpenWrt 25.12, with packages for seven architectures.
+**Release candidate [1.0.0-rc2](https://github.com/TAIPANBOX/rollcall/releases/tag/v1.0.0-rc2)**
+of 2026-11-07, from a signed apk feed for OpenWrt 25.12, with packages for seven architectures.
 
-This page describes `main`, which is ahead of rc1. Three items below are marked **(main)**: the
-uplink's DNS cut as an incident, one router's link changes within 30 s as one message, and quiet
-hours. The lab routers run internal builds of `main` (rc97 on 2026-10-31); the feed carries rc1
-until the next release.
+This page describes `main`, which rc2 was tagged from. The lab routers ran internal builds of `main`
+(rc97 on 2026-10-31) whose daemon is the code rc2 carries; rc2 adds package scripts by which an
+upgrade restarts an enabled service and never enables one.
 
 ## The problem
 
@@ -36,10 +35,10 @@ access points, mesh nodes. When one of them fails, the owner finds out late, fro
 - **Runs on the routers themselves**: no server, no cloud service besides the chat. [How](docs/how-it-works.md)
 - **The router still online tells you**, and another takes over when the sender is down. [Who sends](docs/how-it-works.md#who-sends)
 - **One message per incident**: start and end merged, late records absorbed, acknowledgements spread with the heartbeats. [One incident](docs/how-it-works.md#one-incident-one-message)
-- **Says what happened**: a planned reboot, a crash or power cut, an upgrade with old and new version, a lost link while up, the internet or WAN down, and the uplink's DNS down **(main)**. [Kinds](docs/how-it-works.md#what-kind-of-incident-it-was)
-- **A flapping uplink is one message** **(main)**: one router's link changes within 30 s are one line, at the start and at the end of an outage. [One incident](docs/how-it-works.md#one-incident-one-message)
+- **Says what happened**: a planned reboot, a crash or power cut, an upgrade with old and new version, a lost link while up, the internet or WAN down, and the uplink's DNS down. [Kinds](docs/how-it-works.md#what-kind-of-incident-it-was)
+- **A flapping uplink is one message**: one router's link changes within 30 s are one line, at the start and at the end of an outage. [One incident](docs/how-it-works.md#one-incident-one-message)
 - **Tells you after a total outage**, with start, end and length. [After an outage](docs/how-it-works.md#when-nobody-could-reach-telegram)
-- **Quiet at night if you want** **(main)**: within `option quiet_hours '23:00-07:00'` messages arrive at once, without a sound. [Quiet hours](docs/how-it-works.md#who-sends)
+- **Quiet at night if you want**: within `option quiet_hours '23:00-07:00'` messages arrive at once, without a sound. [Quiet hours](docs/how-it-works.md#who-sends)
 - **No false alarm from one router's cut-off view**: others are asked before a router is called silent. [Asking first](docs/how-it-works.md#noticing-a-silent-router)
 - **Trusts no single router**: a signed roster, admin, backup and recovery code, keys bound to the roster, signed histories held by every router. [Security](docs/security.md)
 - **Its own sandbox**: its own seccomp filter, no capabilities, no root-only configuration read. [Sandbox](docs/security.md#the-sandbox)

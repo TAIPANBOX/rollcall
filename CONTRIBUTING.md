@@ -105,9 +105,11 @@ and what you ran. Before pasting a log, look for tokens and codes in it.
 
 ## Releases
 
-There is no release yet, and no package feed. The release workflow runs only on a tag: it tests,
-builds every target twice and requires the two builds to be byte-identical, packages them, writes an
-SBOM per binary and a `SHA256SUMS`, attests every file and publishes a GitHub release.
+A release is a tag on `main`, `vX.Y.Z` or `vX.Y.Z-rcN`. The release workflow runs only on a tag: it
+tests, builds every target twice and requires the two builds to be byte-identical, packages them,
+writes an SBOM per binary and a `SHA256SUMS`, attests every file and publishes a GitHub release.
+The signed apk feed is then published from the signing workstation with `scripts/publish-feed.sh`
+([docs/feed.md](docs/feed.md)).
 
 ## License
 

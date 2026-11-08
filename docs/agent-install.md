@@ -8,7 +8,7 @@ prints what **expect** says. On anything else, stop and report the step, the com
 output to the person you work for, with any token or code taken out. Never improvise around a
 failed check.
 
-rollcall 1.0.0-rc1 is a release candidate. Its packages for OpenWrt 25.12 come from a signed apk
+rollcall 1.0.0-rc2 is a release candidate. Its packages for OpenWrt 25.12 come from a signed apk
 feed ([feed.md](feed.md)). Use it on routers the person has set aside for testing until 1.0.0.
 
 ## 0. Before anything
@@ -76,7 +76,7 @@ apk update
 sha256sum /etc/apk/keys/rollcall.pem | cut -d' ' -f1
 # expect: 1dd696c7afce0464688a5106229723f60c8cfb9bd2f6ec296ee5fec24f57ff39
 grep -c taipanbox.github.io/rollcall /etc/apk/repositories.d/customfeeds.list   # expect: 1
-apk search rollcall                                 # expect: rollcall-1.0.0_rc1-r1 (and luci-app-rollcall)
+apk search rollcall                                 # expect: rollcall-1.0.0_rc2-r1 (and luci-app-rollcall)
 ```
 
 A different sum: delete `/etc/apk/keys/rollcall.pem`, remove the line from `customfeeds.list`,
@@ -95,7 +95,7 @@ apk add rollcall
 **Check**, on the router:
 
 ```sh
-apk list --installed | grep -E '^(rollcall|luci-app-rollcall)-'   # expect: rollcall-1.0.0_rc1-r1
+apk list --installed | grep -E '^(rollcall|luci-app-rollcall)-'   # expect: rollcall-1.0.0_rc2-r1
 id rollcall                                         # expect: uid=1660(rollcall) gid=1660(rollcall) ...
 ls -ld /etc/rollcall | awk '{print $1, $3}'         # expect: drwx------ rollcall
 uci -q get firewall.rollcall_1                      # expect: rule
@@ -340,7 +340,7 @@ If the router was a sender and leaves for good, tell the person to revoke the to
 | `set-token` says the router does not have the sender role | step 7 skipped for this router | step 7 |
 | `... This router sends only with option sender '1' ...` | step 4 skipped | step 4, then `/etc/init.d/rollcall restart` |
 | a member stays `unheard` or `silent` | it cannot reach the others on port 7432 in a peer zone | check that both routers are in the zone named by `peer_zone`, and `uci -q get firewall.rollcall_1` |
-| joins refused or members `unheard` after a change of `peer_zone`, `port` or `peer` on 1.0.0-rc1 | on rc1 a restart keeps the firewall rules of the old configuration | `/etc/init.d/rollcall reload`; from the next release every start brings the rules in line |
+| joins refused or members `unheard` after a change of `peer_zone`, `port` or `peer` on 1.0.0-rc1 | on rc1 a restart keeps the firewall rules of the old configuration | `/etc/init.d/rollcall reload`; from 1.0.0-rc2 every start brings the rules in line |
 
 ## Reporting
 

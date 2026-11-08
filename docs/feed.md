@@ -31,7 +31,7 @@ this feed on three `aarch64_cortex-a53` routers and on three virtual `x86_64` ro
 ## How a release gets into the feed
 
 ```sh
-./scripts/publish-feed.sh v1.0.0-rc1
+./scripts/publish-feed.sh v1.0.0-rc2
 ```
 
 1. **Download and verify.** `scripts/build-feed.sh` downloads the tag's `.apk` files, which
@@ -57,6 +57,19 @@ trusts it keeps trusting anything signed with it until someone deletes the file 
 `/etc/apk/keys`. The private half was made once, by `scripts/feed-keygen.sh`, and is never
 committed; `TestNoPrivateKeyCommittable` fails if git would commit any private key.
 
+## Earlier releases
+
+The feed serves one release, the latest. The packages of an earlier one stay in two places: the
+original files on its release page, with their attestations, and its signed feed, kept under the
+tag `feed-<release tag>` on the commit `gh-pages` held before the next release replaced it. apk
+installs from that tag with the same key, through the raw URL of the tag:
+
+```sh
+echo "https://raw.githubusercontent.com/TAIPANBOX/rollcall/feed-v1.0.0-rc1/25.12/$(cat /etc/apk/arch)/packages.adb" >> /etc/apk/repositories.d/customfeeds.list
+```
+
+Kept so far: [`feed-v1.0.0-rc1`](https://github.com/TAIPANBOX/rollcall/tree/feed-v1.0.0-rc1).
+
 ## What the gate proves
 
 `scripts/gate-feed.sh` installs from the feed in a clean `openwrt/rootfs` 25.12.6 container:
@@ -75,6 +88,20 @@ that is published as the feed's key (it must pass), on the same copy with the re
 measured nothing).
 
 ## What has been run
+
+On 2026-11-07, `publish-feed.sh` published v1.0.0-rc2 (apk version `1.0.0_rc2-r1`), taking the
+packages from its release page, which release.yml run 42426936308 created itself:
+
+- all 8 `.apk` files and `SHA256SUMS` passed the checksum and attestation checks;
+- every architecture's packages and index were signed and verified against keys/rollcall.pem
+  only;
+- `gate-feed.sh` passed all 4 checks on the local copy and then on the published URL, in the
+  `x86-64-25.12.6` root file system, `rollcall version` printing `rollcall 1.0.0-rc2`;
+- `teeth-feed.sh`: all 4 teeth held.
+
+Before the push the rc1 feed was kept under the tag `feed-v1.0.0-rc1`, and on 2026-11-08
+`gate-feed.sh` passed all 4 checks against its raw URL, `rollcall version` printing
+`rollcall 1.0.0-rc1`.
 
 On 2026-10-23, `publish-feed.sh` published v1.0.0-rc1 (apk version `1.0.0_rc1-r1`), taking the
 packages from the `release-set` artifact of release.yml run 40008459032:
