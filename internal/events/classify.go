@@ -33,9 +33,13 @@ type Return struct {
 //   - A zero boot ID on either side is unknown: neither a reboot nor a link
 //     loss can be claimed, so the result is MemberBack.
 //   - Upgraded needs both versions known and different. A downgrade is a
-//     version change and counts as Upgraded (old -> new). With a version
-//     unknown, the reboot is still certain and is classified by the
-//     announcement alone.
+//     version change and counts as Upgraded (old -> new): the type is a
+//     name on the wire, which history entries and corrections carry and
+//     older versions read, so it stays. The message tells the change by the
+//     order of the two versions: upgraded, downgraded, or changed firmware
+//     when they have no order (internal/deliver). With a version unknown,
+//     the reboot is still certain and is classified by the announcement
+//     alone.
 func Classify(b Before, r Return) Type {
 	switch {
 	case b.BootID == (ids.BootID{}) || r.BootID == (ids.BootID{}):

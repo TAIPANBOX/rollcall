@@ -69,7 +69,7 @@ const (
 	ClassMemberBack      = "member_back"      // it is back; nothing more is claimed about the absence
 	ClassRebootPlanned   = "reboot_planned"   // it rebooted after announcing it
 	ClassRebootUnplanned = "reboot_unplanned" // it rebooted unannounced: a crash or a power cut
-	ClassUpgraded        = "upgraded"         // it came back with a new firmware version
+	ClassUpgraded        = "upgraded"         // it came back with another firmware version, newer or older
 )
 
 // knownClass reports whether c is one of the correction classes.

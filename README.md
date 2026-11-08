@@ -35,7 +35,7 @@ access points, mesh nodes. When one of them fails, the owner finds out late, fro
 - **Runs on the routers themselves**: no server, no cloud service besides the chat. [How](docs/how-it-works.md)
 - **The router still online tells you**, and another takes over when the sender is down. [Who sends](docs/how-it-works.md#who-sends)
 - **One message per incident**: start and end merged, late records absorbed, acknowledgements spread with the heartbeats. [One incident](docs/how-it-works.md#one-incident-one-message)
-- **Says what happened**: a planned reboot, a crash or power cut, an upgrade with old and new version, a lost link while up, the internet or WAN down, and the uplink's DNS down. [Kinds](docs/how-it-works.md#what-kind-of-incident-it-was)
+- **Says what happened**: a planned reboot, a crash or power cut, an upgrade or a downgrade with old and new version, a lost link while up, the internet or WAN down, and the uplink's DNS down. [Kinds](docs/how-it-works.md#what-kind-of-incident-it-was)
 - **A flapping uplink is one message**: one router's link changes within 30 s are one line, at the start and at the end of an outage. [One incident](docs/how-it-works.md#one-incident-one-message)
 - **Tells you after a total outage**, with start, end and length. [After an outage](docs/how-it-works.md#when-nobody-could-reach-telegram)
 - **Quiet at night if you want**: within `option quiet_hours '23:00-07:00'` messages arrive at once, without a sound. [Quiet hours](docs/how-it-works.md#who-sends)
@@ -189,6 +189,7 @@ to your bot in a private chat within 10 minutes. Other chats are ignored. **8. C
 | `rollcall admin takeover` | the backup admin | takes over when the primary is gone |
 | `rollcall admin recover` | any router | the recovery code, read from standard input |
 | `rollcall status` | any router | members, sender, incidents, sandbox; `--json` for scripts |
+| `rollcall attest --nonce <hex>` | any router, as root | a statement of its state signed over your nonce, for an outside check; writes nothing ([format](docs/attest.md)) |
 
 `rollcall help` lists every command and option. To build the packages yourself:
 `make apk luci VERSION=<version>` (Go 1.27 and Docker). To remove rollcall:
@@ -209,7 +210,7 @@ keys and, on a sender, the bot token. If you remove a sender for good, revoke it
 ![From the tests to the routers: tests, simulator, gates, mutation, reproducible builds, the lab, the release candidate](docs/proof.svg)
 
 - **Tests**: 946 tests and 965 subtests pass on the head of `main`, 94.6% of the statements of
-  `internal/` covered (2026-11-01); 54 scenarios in plain words, each bound to a test.
+  `internal/` covered (2026-11-01); 72 scenarios in plain words, each bound to a test.
 - **Simulator**: virtual routers under random faults; 200 seeds on every push, 1000 clean.
 - **Gates with teeth**: 19 gates, each made to fail on a planted copy of its fault, 128 cases.
 - **Mutation testing**: bugs planted in the product code, and the share the tests catch.
@@ -234,6 +235,7 @@ Details: [docs/testing.md](docs/testing.md) and [docs/reports/v1-report.md](docs
 | [docs/measured.md](docs/measured.md) | what ran on routers and in CI, and what it printed |
 | [docs/agent-install.md](docs/agent-install.md) | the install as an AI agent runs it, with a check after each step |
 | [docs/feed.md](docs/feed.md) | the signed apk feed: the key, how a release reaches it |
+| [docs/attest.md](docs/attest.md) | `rollcall attest`: the signed bytes, how to verify them, a test vector |
 | [docs/superpowers/specs](docs/superpowers/specs/) | the design and the security architecture |
 | [docs/lab/runbook.md](docs/lab/runbook.md) | the lab runbook for the three test routers |
 | [packaging/README.md](packaging/README.md) | what the package installs, the filter, the jail, the snapshot |

@@ -39,6 +39,20 @@ Feature: Router group watches itself and reports incidents
     When it comes back after the upgrade
     Then the group reports the upgrade with the old and the new version
 
+  @test:TestDowngradeReported
+  @test:TestRenderVersions
+  Scenario: A return to an older firmware is reported as a downgrade
+    Given a router in the group is put back on an older version
+    When it comes back
+    Then the group reports a downgrade with the old and the new version, and never an upgrade
+
+  @test:TestVersionOrder
+  @test:TestRenderVersions
+  Scenario: A change between versions that have no order is reported as a firmware change
+    Given a router comes back on a version that cannot be put in order with the one before, such as a snapshot
+    When the group reports its return
+    Then the message says it changed firmware, with both versions, and claims no direction
+
   @test:TestQuietDayEmptyChat
   Scenario: A day without incidents leaves the chat empty
     Given the group runs for a whole day without any incident

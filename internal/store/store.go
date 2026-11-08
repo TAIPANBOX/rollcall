@@ -132,6 +132,18 @@ func (s *Store) ReadFile(name string) ([]byte, error) {
 	return readFile(s.dir, name)
 }
 
+// ReadFileIn returns the content of name in the store directory dir, with
+// the checks of ReadFile, without opening the store: it creates nothing and
+// removes nothing, so a reader that must not write to flash (rollcall
+// attest) reads with it. A directory that is not there is an error wrapping
+// fs.ErrNotExist, as a missing file is.
+func ReadFileIn(dir, name string) ([]byte, error) {
+	if err := checkName(name); err != nil {
+		return nil, err
+	}
+	return readFile(dir, name)
+}
+
 // LastError returns the outcome of the most recent write: a WriteFileAtomic
 // call, or a flush made by a Flusher from NewFlusher. A flush's outcome is what
 // its write function returned, so a failure in any file the flush writes shows

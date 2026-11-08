@@ -55,6 +55,11 @@ To report a vulnerability: [SECURITY.md](../SECURITY.md).
   Two signed entries with one author and one number raise an alarm in the chat and mark the author
   suspicious (test `TestForkDetected`; in every simulator seed one router shows two faces and is
   caught).
+- **A signed answer to an outside auditor**: `rollcall attest --nonce <hex>` signs, with the
+  router's member key, its member ID, the head of its own chain, the kernel's boot ID and its
+  newest boot record over the auditor's nonce, under a signature domain no entry or roster shares,
+  and writes nothing ([attest.md](attest.md); tests `TestAttestVector`,
+  `TestAttestDomainSeparated`, `TestAttestWritesNothing`).
 
 ## Keys and secrets
 

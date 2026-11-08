@@ -267,7 +267,30 @@ func TestUpgradeReported(t *testing.T) {
 	if u := matching(ms, `^Home: r02 upgraded 24\.10\.4 -> 24\.10\.5 at 09:01, back after 3 min( [0-9]+ s)?[,.]`); len(u) != 1 {
 		v.fail("", "%d messages tell the upgrade with both versions, want 1", len(u))
 	}
-	if r := matching(ms, `rebooted|upgraded`); len(r) != 1 {
+	if r := matching(ms, `rebooted|upgraded|downgraded|changed firmware`); len(r) != 1 {
+		v.fail("", "%d messages about r02's return, want 1", len(r))
+	}
+}
+
+// TestDowngradeReported: a router that comes back on an older OpenWrt
+// release is told as downgraded, with the old and the new version, and
+// never as upgraded.
+func TestDowngradeReported(t *testing.T) {
+	v := newVerdict(t)
+	defer v.done()
+	s := NewSite(3, 5)
+	defer s.Close()
+	s.Run(90 * time.Second)
+	s.Upgrade(1, "24.10.3")
+	s.Run(6 * time.Minute)
+	ms := logChat(t, s)
+	if d := matching(ms, `^Home: r02 downgraded 24\.10\.4 -> 24\.10\.3 at 09:01, back after 3 min( [0-9]+ s)?[,.]`); len(d) != 1 {
+		v.fail("", "%d messages tell the downgrade with both versions, want 1", len(d))
+	}
+	if u := matching(ms, `upgraded`); len(u) != 0 {
+		v.fail("", "a downgrade told as an upgrade: %v", u)
+	}
+	if r := matching(ms, `rebooted|upgraded|downgraded|changed firmware`); len(r) != 1 {
 		v.fail("", "%d messages about r02's return, want 1", len(r))
 	}
 }
