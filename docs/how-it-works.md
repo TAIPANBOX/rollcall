@@ -1,7 +1,7 @@
 # How rollcall works
 
 The routers of one site watch each other over the LAN, keep signed records, and one of them tells
-the chat. Everything here describes the code of 1.0.0-rc1; what ran on routers is in
+the chat. Everything here describes the code of 1.0.0-rc2; what ran on routers is in
 [measured.md](measured.md), the full design in [superpowers/specs](superpowers/specs/).
 
 ![Heartbeats over the LAN, signed records on every router, the same rule chooses the sender, one message per incident](how-it-works.svg)
