@@ -105,6 +105,10 @@ const (
 	filePrefix  = "history-" // one file per origin: history-<hex ID>.json
 )
 
+// HistoryFile returns the name of the file in the store that holds the
+// chain of origin: history-<hex ID>.json.
+func HistoryFile(origin ids.MemberID) string { return filePrefix + origin.String() + ".json" }
+
 // Errors.
 var (
 	ErrNoRoster   = errors.New("node: no roster in the store; run init or join")

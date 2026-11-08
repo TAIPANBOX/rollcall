@@ -303,6 +303,25 @@ file system, replacing the package back and forth between two revisions.
 | Service the owner disabled | left off, its rules gone | left off, not started, rules built |
 | `/etc/config/rollcall`, `/etc/rollcall` | kept | kept |
 
+## rollcall attest on a virtual router, 2026-11-08
+
+One x86_64 router on OpenWrt 25.12.5 (kernel 6.12.94) in the virtual lab, with the package of this
+change (`rollcall 0.0.0-attest`) and a group of one. Each statement was checked by a verifier
+written from [attest.md](attest.md) alone: Ed25519 over bytes it builds itself, the head against
+the history file, the kernel boot ID against `/proc`.
+
+| | What it printed |
+|---|---|
+| A fresh 32-byte nonce, daemon running | signature verifies under the member key; the chain holds the head (seq 1); the newest boot record matches (seq 2, 25.12.5); kernel boot ID equals the record's |
+| 100 calls, daemon stopped, a stale `.alive.json.4242` planted | `vda` sectors written: 34105 before, 34105 after; `/etc/rollcall` identical (names, sizes, full mtimes, modes, owners, SHA-256), the stale file kept |
+| Nonces of 0, 3, 30, 34 (`0x...`), 32 (`zz...`) and 130 characters | exit 2, nothing on stdout, `the nonce must be 16 to 64 bytes in hex` |
+| As user `nobody` | exit 1, `only root may read: run it as root` |
+| After a reboot, daemon not started | signature verifies; kernel boot ID `35e7b3d4...` differs from the newest record's `0f284f7f...`: a boot the chain has not recorded |
+| Daemon started, release file set to 25.12.4 before the reboot | kernel boot ID equals the new record's (seq 6, 25.12.4); the chat line `vlab: r1 downgraded 25.12.5 -> 25.12.4 at 08:02, back after 42 s.`, while the event in the chain keeps the type `upgraded` with `from` 25.12.5 and `to` 25.12.4 |
+
+One call takes under 10 ms (`time`: 0.00 s real). The downgrade was the release file edited before a
+reboot, which is what rollcall reads; the lab has only the 25.12.5 image.
+
 ## CI
 
 Run `39990683889`, the push of commit `4186091` on 2026-10-23. Every job passed:

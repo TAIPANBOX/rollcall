@@ -23,13 +23,20 @@ Each scenario in `features/*.feature` is bound to a named test, and the gate
 | Separate routers with their own LAN and DHCP form a group | `TestSeparateRoutersFormGroup` |
 | A single router works on its own | `TestSingleRouterGroup` |
 | A device never paired cannot inject events | `TestUnpairedDeviceCannotInject` |
+| A return to an older firmware is told as a downgrade | `TestDowngradeReported` |
+| An outside auditor gets a fresh statement signed over its nonce | `TestAttestCommand` |
+| A copy of a router's files cannot pass for the router | `TestAttestShowsACopy` |
+| A statement's signature never passes for a history entry or a roster | `TestAttestDomainSeparated` |
+| A verifier with only docs/attest.md gets the same signature | `TestAttestVector` |
+| An hourly attest wears nothing | `TestAttestWritesNothing` |
 
 Five more cover the sandbox: a forbidden call ends the daemon, every thread is filtered, the filter
 is the list the package ships, nothing is opened first, and no sandbox means no listening.
 
-The table is the first ten of `group.feature`, which now holds 16. `links.feature` holds 23 (flaps,
-long outages, DNS cuts, routers of an older version) and `quiet.feature` 10: 54 scenarios in all,
-each bound to a test.
+The table is the first ten of `group.feature` and a few later ones. `group.feature` now holds 18,
+`links.feature` 23 (flaps, long outages, DNS cuts, routers of an older version), `quiet.feature` 10,
+`sandbox.feature` 5, `upgrade.feature` 7 and `attest.feature` 9 (the signed answer to an outside
+auditor, [attest.md](attest.md)): 72 scenarios in all, each bound to a test.
 
 ## Unit tests
 

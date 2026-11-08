@@ -666,3 +666,61 @@ func TestMarkAndTickAreSafeConcurrently(t *testing.T) {
 		t.Errorf("final file = %q, %v; want x", got, err)
 	}
 }
+
+// TestReadFileInOpensNoStore: ReadFileIn reads with ReadFile's checks and
+// opens no store: a missing directory is not created, a stale temporary
+// file is not removed, and a name that escapes, a file open to group or
+// others, a link and a directory others may write are refused.
+func TestReadFileInOpensNoStore(t *testing.T) {
+	parent := t.TempDir()
+	missing := filepath.Join(parent, "none")
+	if _, err := ReadFileIn(missing, "a.json"); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("a missing directory: %v, want fs.ErrNotExist", err)
+	}
+	if _, err := os.Stat(missing); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("ReadFileIn created %s", missing)
+	}
+	dir := filepath.Join(parent, "state")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(dir, ".a.json.123")
+	for path, data := range map[string]string{filepath.Join(dir, "a.json"): `{"a":1}`, stale: "{}"} {
+		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b, err := ReadFileIn(dir, "a.json")
+	if err != nil || string(b) != `{"a":1}` {
+		t.Errorf("ReadFileIn = %q, %v", b, err)
+	}
+	if _, err := os.Stat(stale); err != nil {
+		t.Errorf("ReadFileIn removed the stale temporary file: %v", err)
+	}
+	for _, name := range []string{"", "../a.json", "sub/a.json", ".a.json.123", "a\\b"} {
+		if _, err := ReadFileIn(dir, name); !errors.Is(err, ErrName) {
+			t.Errorf("name %q: %v, want ErrName", name, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "open.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(dir, "open.json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadFileIn(dir, "open.json"); !errors.Is(err, ErrPermissions) {
+		t.Errorf("a file open to others: %v, want ErrPermissions", err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "a.json"), filepath.Join(dir, "link.json")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadFileIn(dir, "link.json"); !errors.Is(err, ErrNotRegular) {
+		t.Errorf("a link: %v, want ErrNotRegular", err)
+	}
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadFileIn(dir, "a.json"); !errors.Is(err, ErrPermissions) {
+		t.Errorf("a directory others may write: %v, want ErrPermissions", err)
+	}
+}

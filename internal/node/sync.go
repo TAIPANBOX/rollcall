@@ -154,7 +154,7 @@ func (n *Node) writeOwnLocked(next history.Entry) error {
 	if err != nil {
 		return err
 	}
-	return n.st.WriteFileAtomic(filePrefix+n.id.ID.String()+".json", b)
+	return n.st.WriteFileAtomic(HistoryFile(n.id.ID), b)
 }
 
 // retryWritesLocked retries the records whose write to flash failed.
@@ -275,7 +275,7 @@ func (n *Node) writeHistory() error {
 func (n *Node) writeChainLocked(o ids.MemberID) error {
 	b, err := json.Marshal(n.log.Range(o, 1, n.log.Head(o).Seq))
 	if err == nil {
-		err = n.st.WriteFileAtomic(filePrefix+o.String()+".json", b)
+		err = n.st.WriteFileAtomic(HistoryFile(o), b)
 	}
 	if err == nil {
 		delete(n.dirty, o)
@@ -300,7 +300,7 @@ func (n *Node) writeForksLocked() error {
 func (n *Node) loadHistory(now clock.Stamp) {
 	n.inc.loading = true
 	for _, m := range n.cur().Members {
-		b, err := n.st.ReadFile(filePrefix + m.ID.String() + ".json")
+		b, err := n.st.ReadFile(HistoryFile(m.ID))
 		if err != nil {
 			continue
 		}

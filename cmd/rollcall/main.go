@@ -22,6 +22,8 @@ import (
 
 	"github.com/TAIPANBOX/rollcall/internal/config"
 	"github.com/TAIPANBOX/rollcall/internal/control"
+	"github.com/TAIPANBOX/rollcall/internal/host"
+	"github.com/TAIPANBOX/rollcall/internal/ids"
 	"github.com/TAIPANBOX/rollcall/internal/pairing"
 	"github.com/TAIPANBOX/rollcall/internal/roster"
 )
@@ -85,6 +87,14 @@ State:
       /var/run/rollcall/snapshot.json; the init script and hotplug run it
   rollcall version
 
+For an auditor outside the router:
+  rollcall attest --nonce <hex>
+      as root: print one JSON statement of this router's state (its member ID,
+      the head of its own history, the kernel's boot ID, its latest boot
+      record, the rollcall version and the time), signed with its member key
+      over the nonce, 16 to 64 bytes in hex; it reads and writes nothing
+      (docs/attest.md)
+
 The router name defaults to the hostname. Names are 1 to 32 characters from
 a-z, 0-9 and '-', and do not start with '-'.
 `
@@ -110,6 +120,11 @@ type cli struct {
 	configPath   string
 	snapshotPath string
 	hostname     func() (string, error)
+	// For attest: the effective user ID, the kernel's boot ID and the
+	// clock. Unset, attest refuses to run.
+	euid   func() int
+	bootID func() (ids.BootID, error)
+	now    func() time.Time
 }
 
 func main() {
@@ -118,6 +133,7 @@ func main() {
 		call:     control.Client(ControlSocketPath).CallContext,
 		stateDir: defaultStateDir, configPath: defaultConfigPath, snapshotPath: config.SnapshotPath,
 		hostname: os.Hostname,
+		euid:     os.Geteuid, bootID: host.BootID, now: time.Now,
 	}
 	os.Exit(c.run(os.Args[1:]))
 }
@@ -167,6 +183,8 @@ func (c *cli) run(args []string) int {
 		err = c.notify(rest)
 	case "snapshot":
 		err = c.snapshot(rest)
+	case "attest":
+		err = c.attest(rest)
 	default:
 		err = badUsage("unknown command; see rollcall help")
 	}
