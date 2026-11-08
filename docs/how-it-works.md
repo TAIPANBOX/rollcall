@@ -34,7 +34,9 @@ the chat. Everything here describes the code of 1.0.0-rc2; what ran on routers i
 - **The boot ID decides.** It is random per boot; the same boot ID means the router stayed up.
 - **Planned or not.** At a clean shutdown the daemon sends "going down" three times, to the
   multicast group and to every known peer, so one lost packet cannot turn it into a crash.
-- **Upgrade.** A new OpenWrt version after a new boot is an upgrade, with both versions.
+- **Upgrade.** Another OpenWrt version after a new boot is told with both versions: upgraded when
+  the new one comes after the old, downgraded when before, and changed firmware when the two have
+  no order, such as a snapshot.
 - **Fast reboots count.** A heartbeat with a new boot ID is a reboot even without a 30 s silence.
 
 ## One incident, one message

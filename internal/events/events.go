@@ -24,7 +24,7 @@ const (
 	MemberBack      Type = "member_back"      // it answers again; nothing is claimed about the absence
 	RebootPlanned   Type = "reboot_planned"   // it rebooted after announcing it
 	RebootUnplanned Type = "reboot_unplanned" // it rebooted unannounced: a crash or a power cut
-	Upgraded        Type = "upgraded"         // it came back with a new firmware version
+	Upgraded        Type = "upgraded"         // it came back with another firmware version, newer or older (see Classify)
 	LinkLost        Type = "link_lost"        // it stayed up; the path to it broke
 
 	WanDown          Type = "wan_down"          // a member's WAN interface went down

@@ -156,6 +156,12 @@ Classification when a silent member comes back:
 | anything | new boot ID, new OpenWrt version | `upgraded` (old -> new) |
 | nothing announced | same boot ID | `link_lost`: it stayed up, the path to it broke |
 
+`@decided 2026-11-08`: a return on an older OpenWrt version is never told as an upgrade. The
+event keeps the type `upgraded` (old -> new), as history entries and corrections carry it; the
+message says upgraded, downgraded or changed firmware by the order of the two versions (refined
+during implementation on 2026-11-08, after a virtual lab rollback from 25.12.5 to 25.12.4 was told
+as upgraded).
+
 Coalescing: events that share a cause inside a short window become one incident and
 one message. Example: the main router reboots, every access point loses internet,
 the chat gets one message about the main router with the outage duration, not five.

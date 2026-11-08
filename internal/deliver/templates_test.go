@@ -283,11 +283,19 @@ func TestRenderEveryShape(t *testing.T) {
 		{"planned, start not known", absence(back, back, []string{kitchen}, events.RebootPlanned), Facts{Names: names},
 			"Home: ap-kitchen rebooted as planned, back at 14:03."},
 		{"upgrade without versions", absence(at, back, []string{gwHex}, events.MemberSilent, events.Upgraded), Facts{Names: names},
-			"Home: gateway upgraded at 14:02, back after 1 min 5 s."},
+			"Home: gateway changed firmware at 14:02, back after 1 min 5 s."},
 		{"upgrade, start not known", absence(back, back, []string{gwHex}, events.Upgraded), Facts{Names: names, From: "25.12.4", To: "25.12.5"},
 			"Home: gateway upgraded 25.12.4 -> 25.12.5, back at 14:03."},
 		{"upgrade with one version only", absence(at, back, []string{gwHex}, events.MemberSilent, events.Upgraded), Facts{Names: names, To: "25.12.5"},
-			"Home: gateway upgraded at 14:02, back after 1 min 5 s."},
+			"Home: gateway changed firmware at 14:02, back after 1 min 5 s."},
+		{"downgrade", absence(at, back, []string{gwHex}, events.MemberSilent, events.Upgraded), Facts{Names: names, From: "25.12.5", To: "25.12.4"},
+			"Home: gateway downgraded 25.12.5 -> 25.12.4 at 14:02, back after 1 min 5 s."},
+		{"downgrade, start not known", absence(back, back, []string{gwHex}, events.Upgraded), Facts{Names: names, From: "25.12.5", To: "25.12.4"},
+			"Home: gateway downgraded 25.12.5 -> 25.12.4, back at 14:03."},
+		{"firmware change with no order", absence(at, back, []string{gwHex}, events.MemberSilent, events.Upgraded), Facts{Names: names, From: "25.12.4", To: "SNAPSHOT"},
+			"Home: gateway changed firmware 25.12.4 -> SNAPSHOT at 14:02, back after 1 min 5 s."},
+		{"firmware change with no order, start not known", absence(back, back, []string{gwHex}, events.Upgraded), Facts{Names: names, From: "SNAPSHOT", To: "25.12.4"},
+			"Home: gateway changed firmware SNAPSHOT -> 25.12.4, back at 14:03."},
 		{"link lost, start not known", absence(back, back, []string{office}, events.LinkLost), Facts{Names: names},
 			"Home: ap-office lost contact until 14:03 but stayed up: a link problem, not a reboot."},
 		{"back", absence(at, back, []string{kitchen}, events.MemberSilent, events.MemberBack), Facts{Names: names},
@@ -299,7 +307,7 @@ func TestRenderEveryShape(t *testing.T) {
 		{"several members rebooted", absence(back, back, []string{gwHex, kitchen}, events.RebootUnplanned), Facts{Names: names},
 			"Home: gateway, ap-kitchen rebooted unexpectedly, back at 14:03."},
 		{"the strongest return wins", absence(at, back, []string{gwHex}, events.MemberSilent, events.LinkLost, events.Upgraded), Facts{Names: names},
-			"Home: gateway upgraded at 14:02, back after 1 min 5 s."},
+			"Home: gateway changed firmware at 14:02, back after 1 min 5 s."},
 		{"absence of an unknown member", events.Incident{ID: "0123456789abcdef", Start: at, End: at, Events: []events.Type{events.MemberSilent}},
 			Facts{Names: names}, "Home: an unknown router stopped answering at 14:02."},
 		{"internet lost", link(at, at, []string{kitchen, office}, events.InternetLost), Facts{Names: names},
@@ -479,15 +487,17 @@ func TestRenderNames(t *testing.T) {
 
 func TestRenderVersions(t *testing.T) {
 	inc := absence(local(2, 0, 0), local(2, 3, 0), []string{gwHex}, events.MemberSilent, events.Upgraded)
-	shown := []struct{ from, to string }{
-		{"25.12.4", "25.12.5"},
-		{"24.10.0-rc1", "24.10.0"},
-		{"SNAPSHOT", "r28427-6df0e3d02a"},
-		{"23.05.5", "24.10.0_beta"},
+	shown := []struct{ from, to, word string }{
+		{"25.12.4", "25.12.5", "upgraded"},
+		{"24.10.0-rc1", "24.10.0", "upgraded"},
+		{"25.12.5", "25.12.4", "downgraded"},
+		{"24.10.0", "24.10.0-rc1", "downgraded"},
+		{"SNAPSHOT", "r28427-6df0e3d02a", "changed firmware"},
+		{"23.05.5", "24.10.0_beta", "changed firmware"},
 	}
 	for _, v := range shown {
 		got := Render(inc, "Home", cet, Facts{Names: names, From: v.from, To: v.to})
-		if want := "Home: gateway upgraded " + v.from + " -> " + v.to + " at 02:00, back after 3 min."; got != want {
+		if want := "Home: gateway " + v.word + " " + v.from + " -> " + v.to + " at 02:00, back after 3 min."; got != want {
 			t.Errorf("versions %q -> %q: Render = %q, want %q", v.from, v.to, got, want)
 		}
 	}
@@ -501,13 +511,13 @@ func TestRenderVersions(t *testing.T) {
 	for _, v := range hidden {
 		for _, pair := range [][2]string{{v, "25.12.5"}, {"25.12.4", v}} {
 			got := Render(inc, "Home", cet, Facts{Names: names, From: pair[0], To: pair[1]})
-			if want := "Home: gateway upgraded at 02:00, back after 3 min."; got != want {
+			if want := "Home: gateway changed firmware at 02:00, back after 3 min."; got != want {
 				t.Errorf("versions %q -> %q: Render = %q, want %q", pair[0], pair[1], got, want)
 			}
 		}
 	}
 	if got, want := Render(inc, "Home", cet, Facts{Names: names, From: strings.Repeat("1", 32), To: "2"}),
-		"Home: gateway upgraded "+strings.Repeat("1", 32)+" -> 2 at 02:00, back after 3 min."; got != want {
+		"Home: gateway downgraded "+strings.Repeat("1", 32)+" -> 2 at 02:00, back after 3 min."; got != want {
 		t.Errorf("32 characters: Render = %q, want %q", got, want)
 	}
 }
@@ -674,4 +684,55 @@ func FuzzRender(f *testing.F) {
 			t.Fatalf("a dash in %q", got)
 		}
 	})
+}
+
+// TestVersionOrder: two OpenWrt versions are put in order only when both
+// are release numbers (digits between dots, at most one "-rcN" after them),
+// compared number by number, a release candidate before its release; any
+// other pair has no order, and neither has a pair that names one release
+// in two ways.
+func TestVersionOrder(t *testing.T) {
+	cases := []struct {
+		from, to string
+		want     int
+	}{
+		{"25.12.4", "25.12.5", 1},
+		{"25.12.5", "25.12.4", -1},
+		{"24.10.5", "25.12.0", 1},
+		{"25.12.4", "25.12.10", 1}, // numbers, not text
+		{"9.0", "10.0", 1},
+		{"25.12.0-rc1", "25.12.0", 1},
+		{"25.12.0", "25.12.0-rc1", -1},
+		{"25.12.0-rc1", "25.12.0-rc2", 1},
+		{"25.12.0-rc10", "25.12.0-rc9", -1},
+		{"24.10.5", "25.12.0-rc1", 1},
+		{"1.2.3.4.5", "1.2.3.4.6", 1},
+		{"99999999999999999999.1", "99999999999999999999.2", 1}, // past uint64, no overflow
+		{"100000000000000000000", "99999999999999999999", -1},
+		{strings.Repeat("1", 32), "2", -1},
+		{"25.12", "25.12.0", 0}, // one release named two ways
+		{"025.12.4", "25.12.4", 0},
+		{"25.12.4", "25.12.4", 0},
+		{"25.12.0-rc01", "25.12.0-rc1", 0},
+		{"SNAPSHOT", "25.12.4", 0},
+		{"25.12.4", "SNAPSHOT", 0},
+		{"24.10-SNAPSHOT", "24.10.5", 0},
+		{"r28427-6df0e3d02a", "r28500-0aaaaaaaaa", 0},
+		{"25.12.4-rc", "25.12.5", 0},
+		{"25.12.4-RC1", "25.12.5", 0},
+		{"25.12.4-rc1-x", "25.12.5", 0},
+		{"25.12.4_beta", "25.12.5", 0},
+		{"", "25.12.4", 0},
+		{"25..12", "25.12.5", 0},
+		{".25.12", "25.12.5", 0},
+		{"25.12.", "25.12.5", 0},
+	}
+	for _, c := range cases {
+		if got := versionOrder(c.from, c.to); got != c.want {
+			t.Errorf("versionOrder(%q, %q) = %d, want %d", c.from, c.to, got, c.want)
+		}
+		if got := versionOrder(c.to, c.from); got != -c.want {
+			t.Errorf("versionOrder(%q, %q) = %d, want %d (the reverse)", c.to, c.from, got, -c.want)
+		}
+	}
 }

@@ -36,6 +36,10 @@ const (
 	wordPlannedBack  = "%s rebooted as planned, back at %s"
 	wordUpgraded     = "%s upgraded%s at %s, back after %s"
 	wordUpgradedBack = "%s upgraded%s, back at %s"
+	wordDowngraded   = "%s downgraded%s at %s, back after %s"
+	wordDownBack     = "%s downgraded%s, back at %s"
+	wordFirmware     = "%s changed firmware%s at %s, back after %s"
+	wordFirmwareBack = "%s changed firmware%s, back at %s"
 	wordVersions     = " %s -> %s"
 	wordLinkLost     = "%s lost contact %s to %s but stayed up: a link problem, not a reboot"
 	wordLinkLostBack = "%s lost contact until %s but stayed up: a link problem, not a reboot"
@@ -134,8 +138,12 @@ type Facts struct {
 	// "router" and the first 8 hex digits of its ID.
 	Names map[string]string
 	// From and To are the OpenWrt versions before and after an Upgraded
-	// incident. The node fills them only when every member the incident
-	// names went from From to To; both must be plain versions to be shown.
+	// incident (a return on another version, either way). The node fills
+	// them only when every member the incident names went from From to To;
+	// both must be plain versions to be shown. Their order picks the word:
+	// "upgraded" when To comes after From, "downgraded" when before, and
+	// "changed firmware" when they have no order (versionOrder) or are not
+	// both shown.
 	From, To string
 	// Confirmed and Of give "confirmed by Confirmed of Of": of the Of
 	// members other than the absent ones, Confirmed saw the absence. The
@@ -431,7 +439,7 @@ func (m *message) absence(kind events.Type, known bool, who string, inc events.I
 		case events.RebootPlanned:
 			return fmt.Sprintf(wordPlannedBack, who, back)
 		case events.Upgraded:
-			return fmt.Sprintf(wordUpgradedBack, who, m.versions(), back)
+			return fmt.Sprintf(m.firmware(false), who, m.versions(), back)
 		case events.LinkLost:
 			return fmt.Sprintf(wordLinkLostBack, who, back)
 		default: // MemberBack
@@ -445,7 +453,7 @@ func (m *message) absence(kind events.Type, known bool, who string, inc events.I
 	case events.RebootPlanned:
 		return fmt.Sprintf(wordPlanned, who, at, took)
 	case events.Upgraded:
-		return fmt.Sprintf(wordUpgraded, who, m.versions(), at, took)
+		return fmt.Sprintf(m.firmware(true), who, m.versions(), at, took)
 	case events.LinkLost:
 		from, to := m.span(inc.Start.Wall, inc.End.Wall)
 		return fmt.Sprintf(wordLinkLost, who, from, to)
@@ -690,6 +698,125 @@ func has(types []events.Type, t events.Type) bool {
 		}
 	}
 	return false
+}
+
+// firmware returns the words of a return on another OpenWrt version, with
+// the moment it began when started, by the order of the versions it shows:
+// a router that came back on an older release is never told as upgraded.
+func (m *message) firmware(started bool) string {
+	order := 0
+	if m.versions() != "" {
+		order = versionOrder(m.f.From, m.f.To)
+	}
+	switch {
+	case order > 0 && started:
+		return wordUpgraded
+	case order > 0:
+		return wordUpgradedBack
+	case order < 0 && started:
+		return wordDowngraded
+	case order < 0:
+		return wordDownBack
+	case started:
+		return wordFirmware
+	}
+	return wordFirmwareBack
+}
+
+// versionOrder reports whether the OpenWrt version to comes after from (1),
+// before it (-1), or has no order with it (0). Both must be release
+// numbers: digits between dots ("25.12.4"), with at most one "-rc" and
+// digits after them ("25.12.0-rc1"). They compare number by number, as
+// numbers of any length, a missing number counting as 0, and a release
+// candidate comes before the release with its numbers. Anything else
+// ("SNAPSHOT", "24.10-SNAPSHOT", "r28427-6df0e3d02a"), and two strings that
+// name one release in two ways ("25.12" and "25.12.0"), have no order.
+func versionOrder(from, to string) int {
+	a, arc, aok := releaseNumbers(from)
+	b, brc, bok := releaseNumbers(to)
+	if !aok || !bok {
+		return 0
+	}
+	for i := range max(len(a), len(b)) {
+		x, y := "0", "0"
+		if i < len(a) {
+			x = a[i]
+		}
+		if i < len(b) {
+			y = b[i]
+		}
+		if c := compareNumbers(y, x); c != 0 {
+			return c
+		}
+	}
+	return compareNumbers(brc, arc)
+}
+
+// release stands for the release itself in the place of a release
+// candidate's number: it comes after every candidate.
+const release = "\xff"
+
+// releaseNumbers splits a release version into its numbers and the number
+// of its release candidate, or release when it is none: "25.12.0" gives
+// 25 12 0 and release, "25.12.0-rc1" gives 25 12 0 and 1. Leading zeros are
+// dropped, so "025" is 25. ok is false for anything that is not a release
+// number.
+func releaseNumbers(v string) (nums []string, rc string, ok bool) {
+	rc = release
+	if i := strings.Index(v, "-rc"); i >= 0 {
+		v, rc = v[:i], v[i+len("-rc"):]
+		if !allDigits(rc) {
+			return nil, "", false
+		}
+		rc = noLeadingZeros(rc)
+	}
+	for _, p := range strings.Split(v, ".") {
+		if !allDigits(p) {
+			return nil, "", false
+		}
+		nums = append(nums, noLeadingZeros(p))
+	}
+	return nums, rc, true
+}
+
+func noLeadingZeros(n string) string {
+	if n = strings.TrimLeft(n, "0"); n == "" {
+		return "0"
+	}
+	return n
+}
+
+// compareNumbers compares two numbers written without leading zeros, of any
+// length, or release, which is above every number.
+func compareNumbers(x, y string) int {
+	switch {
+	case x == y:
+		return 0
+	case x == release:
+		return 1
+	case y == release:
+		return -1
+	case len(x) != len(y):
+		if len(x) < len(y) {
+			return -1
+		}
+		return 1
+	case x < y:
+		return -1
+	}
+	return 1
+}
+
+func allDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if !isDigit(s[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // versions returns " From -> To" when both are plain versions, else "".
