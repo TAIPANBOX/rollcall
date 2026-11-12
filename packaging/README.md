@@ -178,8 +178,15 @@ A change of the rollcall or firewall configuration through LuCI or `reload_confi
 `reload_service` (`procd_add_reload_trigger rollcall firewall`), which starts the service again,
 and procd restarts the daemon when `/etc/config/rollcall` or the snapshot changed
 (`procd_set_param file`). Before, only `reload_service` rebuilt the rules, and a restart kept the
-old ones (virtual lab run, 2026-10-24). It reads the configuration through `uci` alone and removes every rule
-an earlier run wrote (`firewall.rollcall_N`, and `firewall.rollcall` of earlier versions).
+old ones (virtual lab run, 2026-10-24). It reads the configuration through `uci` alone. A rule that already
+holds what the configuration needs is left exactly as it is, and a start that changes nothing writes and
+commits nothing. A rule that differs is rewritten where it stands: its options are removed and written
+again, never the section, because uci adds a new section at the end of the file. The rules an earlier run
+wrote beyond those needed are removed (`firewall.rollcall_N`, and `firewall.rollcall` of earlier versions).
+Until 2026-11-12 every start deleted each rule and added it again, so a firewall reload, which starts the
+service, moved `rollcall_1` below every section written after it (Flint 2 on OpenWrt 25.12.6: below the
+include `hermes_net`), and a check that compares `uci export firewall` with a baseline saw a change nobody
+made. `scripts/gate-firewall-place.sh` runs the builder against OpenWrt's own `uci`.
 
 - One rule per peer zone, `src` = that zone (fw4 takes one zone per rule), UDP and TCP to
   `option port` (default 7432). No `peer_zone` means `lan`, the daemon's default.

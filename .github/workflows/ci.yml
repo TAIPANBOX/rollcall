@@ -254,6 +254,16 @@ jobs:
       - name: The upgrade gate goes red on a package without the script, and on the other faults (teeth)
         run: ./scripts/teeth-upgrade.sh dist/bin/x86_64/rollcalld dist/bin/x86_64/rollcall 0.0.0-ci x86_64
 
+      # A firewall reload starts the service again, and the rule builder must leave a rule that holds
+      # what the configuration needs where it is in /etc/config/firewall and rewrite one that differs
+      # in its place (I13h). This runs the builder against OpenWrt's own uci, in the same root file
+      # system as the upgrade gate.
+      - name: A start leaves rollcall's firewall rules where they stand
+        run: ./scripts/gate-firewall-place.sh
+
+      - name: The firewall place gate goes red on the builder that moved the rule, and on the other faults (teeth)
+        run: ./scripts/teeth-firewall-place.sh
+
   # rollcalld started directly, as procd starts it on a router, with no loader: it installs its own
   # seccomp filter (internal/sandbox) from the shipped list of its architecture, because procd
   # cannot filter a statically linked program. The job requires that filter in force on every
