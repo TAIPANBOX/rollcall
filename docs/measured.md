@@ -370,6 +370,25 @@ the nonce reaching the program as one unchanged argument. dropbear keeps a backs
 `command="..."` as it is, so `\"$n\"` would reach the program with the quotes in it; the value is
 checked to hex digits before use, which the shell neither splits nor expands.
 
+## The firewall rule stays in place, 2026-11-12
+
+On Flint 2 (OpenWrt 25.12.6), a firewall reload through `reload_config` moved `config rule
+'rollcall_1'` below `config include 'hermes_net'`, with the same content. A firewall reload starts the
+service, and the builder deleted each rule and added it again, which uci places at the end of the file.
+The nightly drift check of the lab routers, which compares `uci export` with a baseline, reported 10
+lines nobody changed. The builder now leaves a rule that holds what the configuration needs where it
+is and writes nothing, and rewrites one that differs in its place (I13h).
+
+On forge, Docker with `openwrt/rootfs:x86-64-25.12.6` pinned by digest:
+
+| Run | What it printed |
+|---|---|
+| `scripts/gate-firewall-place.sh` with the init script of `4c1eb56` | 4 of 5 checks FAIL; after each start the named sections stood as `hermes_net rollcall_1 rollcall_2`, the rules below the include written after them |
+| `scripts/gate-firewall-place.sh` with the fixed init script | 5 of 5 PASS: the file the same byte for byte after one start and after two in a row, nothing staged, a changed port and a new static peer rewritten where the rules stand, a rule no longer needed removed with the other left in place |
+| `scripts/teeth-firewall-place.sh` | 3 planted faults red at the check named for each, and no init script read as measuring nothing |
+| `TestFirewallRuleKeepsItsPlace` with the init script of `4c1eb56` | all 7 cases FAIL: 9 and 29 writes with nothing to change, `rollcall_1` below `hermes_net` in every case |
+| `TestFirewallRuleKeepsItsPlace` with the fixed init script | 7 of 7 PASS |
+
 ## CI
 
 Run `39990683889`, the push of commit `4186091` on 2026-10-23. Every job passed:

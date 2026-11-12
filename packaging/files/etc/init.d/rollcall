@@ -59,7 +59,7 @@ start_service() {
 	procd_set_param respawn
 	# The daemon reads these at start; reload_service restarts it when one of them changed. The
 	# snapshot changes when a zone, its devices or the time zone do, and not when the firewall
-	# command rewrites the firewall file unchanged.
+	# command finds the rules as the configuration needs them and leaves the file alone.
 	procd_set_param file /etc/config/rollcall /var/run/rollcall/snapshot.json
 	procd_set_param stdout 1
 	procd_set_param stderr 1
@@ -118,9 +118,13 @@ rollcall_firewall_reload() {
 	/etc/init.d/firewall reload >/dev/null 2>&1 || true
 }
 
-# firewall rebuilds the firewall rules that open the rollcall port. It is the only rule builder:
-# uci-defaults and postinst run it at install, every start through rollcall_firewall_follow. It
-# reads the configuration through uci alone and removes every rule an earlier run wrote first.
+# firewall brings the firewall rules that open the rollcall port in line with the configuration. It
+# is the only rule builder: uci-defaults and postinst run it at install, every start through
+# rollcall_firewall_follow. It reads the configuration through uci alone. A rule that already holds
+# what the configuration needs is left as it is and one that differs is rewritten where it stands
+# (rollcall_rule); the rules an earlier run wrote beyond those needed are removed, and
+# firewall.rollcall of earlier versions with them. It commits only when it changed something, so a
+# start that changes nothing writes nothing.
 #
 # One rule per peer zone (no peer_zone: lan, the daemon's default), UDP and TCP to option port
 # (default 7432). A zone that faces the internet, as internal/config decides it (masq or masq6
@@ -129,13 +133,8 @@ rollcall_firewall_reload() {
 # rule at all without a static peer. An unknown zone, a bad port or no rollcall section gives no
 # rule, and says why.
 firewall() {
-	local port zones zone peer addr kind v4= v6= n=0 i=1
+	local port zones zone peer addr kind v4= v6= n=0 i changed=
 	set -f
-	uci -q delete firewall.rollcall
-	while uci -q get "firewall.rollcall_$i" >/dev/null; do
-		uci -q delete "firewall.rollcall_$i"
-		i=$((i + 1))
-	done
 	if ! uci -q get 'rollcall.@rollcall[0]' >/dev/null; then
 		rollcall_warn "no rollcall section in /etc/config/rollcall: no firewall rule"
 	elif ! port=$(rollcall_port); then
@@ -173,28 +172,72 @@ firewall() {
 			esac
 		done
 	fi
-	uci commit firewall
+	if uci -q get firewall.rollcall >/dev/null; then
+		uci -q delete firewall.rollcall
+		changed=1
+	fi
+	i=$((n + 1))
+	while uci -q get "firewall.rollcall_$i" >/dev/null; do
+		uci -q delete "firewall.rollcall_$i"
+		changed=1
+		i=$((i + 1))
+	done
+	[ -z "$changed" ] || uci commit firewall
 	set +f
 }
 
-# rollcall_rule writes rule number n: the zone, and for a zone facing the internet the address
-# family and the static peers' addresses of that family.
+# rollcall_rule makes section rollcall_n the rule for zone $1, and for a zone facing the internet
+# the rule for the address family $2 and the static peers' addresses $3 of that family. A section
+# that already holds exactly this rule is left alone. One that differs keeps its place in
+# /etc/config/firewall: its options are removed and written again, never the section itself. uci
+# adds a new section at the end of the file, so the delete and add of earlier versions moved the
+# rule below every section written after it at each start, and a firewall reload starts the
+# service (Flint 2 on OpenWrt 25.12.6, 2026-11-12: rollcall_1 moved below a later include, and the
+# nightly drift check of the lab routers reported a change nobody made).
 rollcall_rule() {
-	local s a
+	local s o v ips
 	n=$((n + 1))
 	s=firewall.rollcall_$n
-	uci set "$s=rule"
-	uci set "$s.name=Allow-rollcall-$1${2:+-$2}"
-	uci set "$s.src=$1"
-	uci add_list "$s.proto=udp"
-	uci add_list "$s.proto=tcp"
-	uci set "$s.dest_port=$port"
-	uci set "$s.target=ACCEPT"
-	[ -n "$2" ] || return 0
-	uci set "$s.family=$2"
-	for a in $3; do
-		uci add_list "$s.src_ip=$a"
+	# The addresses one space apart, as uci get prints a list.
+	ips=$(echo ${3:-})
+	set -- "name=Allow-rollcall-$1${2:+-$2}" "src=$1" "proto=udp tcp" "dest_port=$port" "target=ACCEPT" \
+		${2:+"family=$2"} ${ips:+"src_ip=$ips"}
+	rollcall_rule_holds "$s" "$@" && return 0
+	for o in $(rollcall_options "$s"); do
+		uci -q delete "$s.$o"
 	done
+	uci set "$s=rule"
+	for o in "$@"; do
+		case ${o%%=*} in
+		proto | src_ip)
+			for v in ${o#*=}; do
+				uci add_list "$s.${o%%=*}=$v"
+			done
+			;;
+		*) uci set "$s.$o" ;;
+		esac
+	done
+	changed=1
+}
+
+# rollcall_rule_holds reports whether section $1 is a rule that holds exactly the options given as
+# name=value, a list as its values one space apart, and no other option.
+rollcall_rule_holds() {
+	local s=$1 o k=0
+	shift
+	[ "$(uci -q get "$s")" = rule ] || return 1
+	for o in "$@"; do
+		[ "$(uci -q get "$s.${o%%=*}")" = "${o#*=}" ] || return 1
+	done
+	for o in $(rollcall_options "$s"); do
+		k=$((k + 1))
+	done
+	[ "$k" = $# ]
+}
+
+# rollcall_options prints the names of the options of section $1, firewall.rollcall_N.
+rollcall_options() {
+	uci -q show "$1" | sed -n "s/^firewall\.${1#firewall.}\.\([A-Za-z0-9_]*\)=.*/\1/p"
 }
 
 # rollcall_port prints option port without leading zeros, or fails when it is not a number from
